@@ -1,0 +1,15 @@
+{
+  "version": "1.0",
+  "tasks": [
+    {
+      "label": "Tungsten: quality check",
+      "command": "npm run check",
+      "kind": "test"
+    },
+    {
+      "label": "Tungsten: desktop package",
+      "command": "npm run desktop:pack",
+      "kind": "build"
+    }
+  ]
+}

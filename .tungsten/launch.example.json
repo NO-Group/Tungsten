@@ -1,0 +1,17 @@
+{
+  "version": "1.0",
+  "configurations": [
+    {
+      "name": "Example DAP configuration",
+      "type": "custom",
+      "request": "launch",
+      "adapter": {
+        "command": "path-to-debug-adapter",
+        "args": []
+      },
+      "arguments": {
+        "program": "${workspaceFolder}/src/main.tsx"
+      }
+    }
+  ]
+}

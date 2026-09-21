@@ -1,0 +1,99 @@
+name: Build desktop installers
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'arena/01a09e56-graphene'
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+          - name: macOS
+            os: macos-14
+          - name: Linux
+            os: ubuntu-latest
+
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run check
+      - name: Configure optional code signing
+        shell: bash
+        env:
+          SIGNING_LINK: ${{ runner.os == 'macOS' && secrets.MAC_CSC_LINK || runner.os == 'Windows' && secrets.WIN_CSC_LINK || '' }}
+          SIGNING_PASSWORD: ${{ runner.os == 'macOS' && secrets.MAC_CSC_PASSWORD || runner.os == 'Windows' && secrets.WIN_CSC_PASSWORD || '' }}
+          NOTARY_APPLE_ID: ${{ secrets.APPLE_ID }}
+          NOTARY_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          NOTARY_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: |
+          if [ -n "$SIGNING_LINK" ]; then
+            echo "CSC_LINK=$SIGNING_LINK" >> "$GITHUB_ENV"
+            echo "CSC_KEY_PASSWORD=$SIGNING_PASSWORD" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$NOTARY_APPLE_ID" ]; then
+            echo "APPLE_ID=$NOTARY_APPLE_ID" >> "$GITHUB_ENV"
+            echo "APPLE_APP_SPECIFIC_PASSWORD=$NOTARY_PASSWORD" >> "$GITHUB_ENV"
+            echo "APPLE_TEAM_ID=$NOTARY_TEAM_ID" >> "$GITHUB_ENV"
+          fi
+      - name: Build installers
+        shell: bash
+        run: |
+          set -o pipefail
+          if ! npm run desktop:dist -- --publish never 2>&1 | tee installer-build.log; then
+            diagnostic="$(grep -Eai '⨯|error|failed|cannot|cause=|command=|exit code|ERR_' installer-build.log | tail -n 8 | tr '\n' ' ' | sed 's/%/%25/g; s/\r/%0D/g')"
+            echo "::error title=Installer build failed::${diagnostic:-See the uploaded installer-build.log artifact.}"
+            exit 1
+          fi
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Upload installer build log
+        if: failure()
+        uses: actions/upload-artifact@v5
+        with:
+          name: tungsten-${{ runner.os }}-build-log
+          path: installer-build.log
+          if-no-files-found: ignore
+      - uses: actions/upload-artifact@v5
+        with:
+          name: tungsten-${{ runner.os }}
+          path: |
+            out/*.AppImage
+            out/*.deb
+            out/*.exe
+            out/*.dmg
+            out/*.zip
+            out/*.blockmap
+            out/latest*.yml
+            out/latest*.yaml
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: release-assets
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: release-assets/*
