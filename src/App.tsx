@@ -56,6 +56,10 @@ import {
   Search,
   Filter,
   Code,
+  Shapes,
+  List,
+  Variable,
+  Hash,
   Replace,
   Settings,
   ShieldCheck,
@@ -71,6 +75,7 @@ import {
   Zap,
 } from 'lucide-react'
 import { defaultFiles, fileIconClass, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
+import { fileIconFor, folderIconFor } from './theme/fileIcons'
 import {
   applyMonacoTheme,
   applyWorkbenchTheme,
@@ -480,13 +485,35 @@ function Highlight({ text, matches }: { text: string; matches: Match[] }) {
   return <>{parts}</>
 }
 
+/** Outline icons per symbol kind, mirroring VS Code's symbol iconography. */
+const symbolIcons: Record<string, typeof Braces> = {
+  function: Braces,
+  method: Braces,
+  class: Box,
+  interface: Shapes,
+  enum: List,
+  struct: Box,
+  variable: Variable,
+  constant: Variable,
+  property: Variable,
+  html: Code,
+  symbol: Hash,
+}
+
+/**
+ * File icon, resolved through the Seti-style icon theme so every common file
+ * type gets its own glyph and colour.
+ */
 function FileGlyph({ path }: { path: string }) {
-  const kind = fileIconClass(path)
-  const labels: Record<string, string> = {
-    js: 'JS', ts: 'TS', css: '#', html: '<>', data: '{}', md: 'M↓', npm: '⬡',
-    script: 'λ', native: '◆', shell: '$_', query: 'Q', docker: '▣', file: '·',
-  }
-  return <span className={`file-glyph ${kind}`}>{labels[kind]}</span>
+  const icon = fileIconFor(path)
+  return (
+    <span
+      className={`file-glyph ${fileIconClass(path)}`}
+      style={{ color: icon.color }}
+      title={icon.label}
+      aria-hidden
+    >{icon.glyph}</span>
+  )
 }
 
 function TipButton({
@@ -549,7 +576,9 @@ function ExplorerTree({
             })}
           >
             {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-            {isOpen ? <FolderOpen size={15} className="folder-icon" /> : <Folder size={15} className="folder-icon" />}
+            {isOpen
+              ? <FolderOpen size={15} className="folder-icon" style={{ color: folderIconFor(node.name, true).color }} />
+              : <Folder size={15} className="folder-icon" style={{ color: folderIconFor(node.name).color }} />}
             <span>{node.name}</span>
           </button>
           {isOpen && node.children.map((child) => renderNode(child, depth + 1))}
@@ -2551,7 +2580,24 @@ export default function App() {
         <ExplorerTree files={files} activePath={activePath} openFile={openFile} dirty={dirty} onFileContext={(event, path) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, path }) }} />
         <div className="outline-section">
           <div className="section-heading"><ChevronDown size={13} /><span>OUTLINE</span><span /><Ellipsis size={14} /></div>
-          {symbols.length ? <div className="symbols-list">{symbols.map((symbol, index) => <div key={`${symbol.label}-${index}`}><Braces size={13} /><span>{symbol.label}</span></div>)}</div> : <p className="outline-empty">No symbols found</p>}
+          {symbols.length ? <div className="symbols-list">{symbols.map((symbol, index) => {
+            // Each kind gets its own icon and colour, and nesting is indented,
+            // so the outline reads like VS Code's rather than a flat list.
+            const SymbolIcon = symbolIcons[symbol.type] ?? Braces
+            return (
+              <button
+                key={`${symbol.label}-${symbol.line}-${index}`}
+                className={activeFile && cursor.line === symbol.line ? 'active' : ''}
+                style={{ paddingLeft: 22 + symbol.depth * 11 }}
+                title={`${symbol.type} · line ${symbol.line}`}
+                onClick={() => revealLine(symbol.line)}
+              >
+                <SymbolIcon size={12} className={`symbol-icon symbol-${symbol.type}`} />
+                <span>{symbol.label}</span>
+                <small>{symbol.line}</small>
+              </button>
+            )
+          })}</div> : <p className="outline-empty">No symbols found</p>}
         </div>
         <div className="collapsed-section"><ChevronRight size={13} /> TIMELINE</div>
       </>
