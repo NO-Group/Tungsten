@@ -195,23 +195,115 @@ export const fileIconClass = (path: string) => {
   return 'file'
 }
 
-export const symbolsFor = (file?: WorkspaceFile) => {
+/** A symbol discovered in a document, with the 1-based line it declares on. */
+export type DocumentSymbol = {
+  /** Symbol kind, used to pick an icon. */
+  type: 'function' | 'method' | 'class' | 'interface' | 'enum' | 'struct' | 'variable' | 'constant' | 'property' | 'html' | 'symbol'
+  label: string
+  line: number
+  /** Nesting depth, derived from leading indentation. */
+  depth: number
+}
+
+/** Map a captured declaration keyword to a symbol kind. */
+function symbolKindFor(keyword: string): DocumentSymbol['type'] {
+  switch (keyword) {
+    case 'class': return 'class'
+    case 'interface': return 'interface'
+    case 'enum': return 'enum'
+    case 'struct': case 'impl': case 'trait': return 'struct'
+    case 'const': return 'constant'
+    case 'let': case 'var': return 'variable'
+    case 'type': return 'interface'
+    default: return 'function'
+  }
+}
+
+/**
+ * Extract an outline from a document.
+ *
+ * This is a lightweight lexical scan rather than a parse: it runs instantly on
+ * every keystroke and works for files whose language server is unavailable. When
+ * an LSP is attached the editor's own symbol provider supersedes it.
+ */
+export const symbolsFor = (file?: WorkspaceFile): DocumentSymbol[] => {
   if (!file) return []
+  const lines = file.content.split('\n')
+  const symbols: DocumentSymbol[] = []
+  const depthOf = (line: string) => Math.floor((line.match(/^[\t ]*/)?.[0].replace(/\t/g, '  ').length || 0) / 2)
+
   if (['css', 'scss', 'less'].includes(file.language)) {
-    return [...file.content.matchAll(/(?:^|\n)([^@\n][^{\n]+)\s*\{/g)].slice(0, 10).map((match) => ({
-      type: 'class',
-      label: match[1].trim().split(',')[0],
-    }))
+    lines.forEach((line, index) => {
+      const match = line.match(/^\s*([^@{}\n][^{\n]*?)\s*\{\s*$/)
+      if (match) symbols.push({ type: 'class', label: match[1].trim().split(',')[0], line: index + 1, depth: depthOf(line) })
+    })
+    return symbols.slice(0, 400)
   }
-  if (['html', 'handlebars'].includes(file.language)) {
-    return [...file.content.matchAll(/<(main|nav|section|article|header|footer|form|h[1-6])(?:\s[^>]*)?>/g)].slice(0, 10).map((match) => ({
-      type: 'html',
-      label: match[1],
-    }))
+
+  if (['html', 'handlebars', 'xml', 'vue', 'svelte'].includes(file.language)) {
+    lines.forEach((line, index) => {
+      for (const match of line.matchAll(/<(main|nav|section|article|aside|header|footer|form|template|script|style|h[1-6])(?:\s[^>]*)?>/g)) {
+        const id = line.match(/\bid=["']([^"']+)["']/)?.[1]
+        symbols.push({ type: 'html', label: id ? `${match[1]}#${id}` : match[1], line: index + 1, depth: depthOf(line) })
+      }
+    })
+    return symbols.slice(0, 400)
   }
-  const expression = /(?:function|class|interface|enum|struct|def|fn|func)\s+([A-Za-z_$][\w$]*)|(?:const|let|var)\s+([A-Za-z_$][\w$]*)/g
-  return [...file.content.matchAll(expression)].slice(0, 12).map((match) => ({
-    type: /function|def|fn|func/.test(match[0]) ? 'function' : 'symbol',
-    label: match[1] || match[2],
-  }))
+
+  if (['markdown', 'mdx'].includes(file.language)) {
+    lines.forEach((line, index) => {
+      const match = line.match(/^(#{1,6})\s+(.+?)\s*#*$/)
+      if (match) symbols.push({ type: 'symbol', label: match[2], line: index + 1, depth: match[1].length - 1 })
+    })
+    return symbols.slice(0, 400)
+  }
+
+  if (['json', 'jsonc'].includes(file.language)) {
+    lines.forEach((line, index) => {
+      const match = line.match(/^\s*"([^"]+)"\s*:\s*[[{]/)
+      if (match) symbols.push({ type: 'property', label: match[1], line: index + 1, depth: depthOf(line) })
+    })
+    return symbols.slice(0, 400)
+  }
+
+  if (['yaml', 'yml'].includes(file.language)) {
+    lines.forEach((line, index) => {
+      const match = line.match(/^(\s*)([\w.-]+):\s*$/)
+      if (match) symbols.push({ type: 'property', label: match[2], line: index + 1, depth: Math.floor(match[1].length / 2) })
+    })
+    return symbols.slice(0, 400)
+  }
+
+  // General-purpose declaration scan covering the C-like and scripting families.
+  const declaration = /\b(function|class|interface|enum|struct|impl|trait|def|fn|func|type)\s+([A-Za-z_$][\w$]*)/
+  const assigned = /\b(const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s*)?(?:\([^)]*\)\s*=>|function\b|class\b)/
+  const binding = /^\s*(?:export\s+)?(const|let|var)\s+([A-Za-z_$][\w$]*)\s*[=:]/
+  const method = /^\s*(?:public|private|protected|static|async|readonly|\s)*([A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*$/
+
+  lines.forEach((line, index) => {
+    if (/^\s*(\/\/|\*|#)/.test(line)) return
+    const depth = depthOf(line)
+
+    const declarationMatch = line.match(declaration)
+    if (declarationMatch) {
+      symbols.push({ type: symbolKindFor(declarationMatch[1]), label: declarationMatch[2], line: index + 1, depth })
+      return
+    }
+    const assignedMatch = line.match(assigned)
+    if (assignedMatch) {
+      symbols.push({ type: 'function', label: assignedMatch[2], line: index + 1, depth })
+      return
+    }
+    const bindingMatch = line.match(binding)
+    if (bindingMatch) {
+      symbols.push({ type: symbolKindFor(bindingMatch[1]), label: bindingMatch[2], line: index + 1, depth })
+      return
+    }
+    const methodMatch = line.match(method)
+    if (methodMatch && !['if', 'for', 'while', 'switch', 'catch', 'return', 'else', 'do', 'try'].includes(methodMatch[1])) {
+      symbols.push({ type: 'method', label: methodMatch[1], line: index + 1, depth })
+    }
+  })
+
+  return symbols.slice(0, 400)
 }

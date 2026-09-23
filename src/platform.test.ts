@@ -6,6 +6,7 @@ const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url)
 const rendererEntry = readFileSync(new URL('./main.tsx', import.meta.url), 'utf8')
 const renderer = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
 const configuredEditor = readFileSync(new URL('./components/ConfiguredEditor.tsx', import.meta.url), 'utf8')
+const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8')
 
 describe('desktop bridge contract', () => {
   it('registers every renderer-invoked IPC channel in the main process', () => {
@@ -59,8 +60,33 @@ describe('desktop bridge contract', () => {
   })
 
   it('persists editable shortcuts and renders inline debugger values', () => {
-    expect(renderer).toContain("KEYBINDINGS_KEY = 'tungsten.keybindings.v1'")
-    expect(renderer).toContain('shortcutFromEvent')
+    expect(renderer).toContain("KEYBINDINGS_KEY = 'tungsten.keybindings.v2'")
+    // Keystrokes are dispatched through the chord-aware resolver.
+    expect(renderer).toContain('keybindingResolver.resolve')
+    expect(renderer).toContain('chordFromEvent')
     expect(renderer).toContain("inlineClassName: 'debug-inline-value'")
+  })
+
+  it('drives the workbench from the imported VS Code themes', () => {
+    expect(renderer).toContain('applyWorkbenchTheme')
+    expect(renderer).toContain('monacoThemeName(activeTheme)')
+    // The stylesheet must consume the runtime custom properties rather than
+    // hard-coding Tungsten's original palette.
+    expect(styles).toContain('var(--tg-background')
+    expect(styles).toContain("data-theme-kind='hc-dark'")
+  })
+
+  it('routes commands through a single id-keyed table', () => {
+    // Every command carries a stable id so the palette, menus, keybinding editor
+    // and keystroke dispatch all agree on what exists.
+    expect(renderer).toContain('const commandsById = useMemo')
+    expect(renderer).toContain('runCommandById')
+    expect(renderer).toContain('parseWhenClause')
+  })
+
+  it('scores quick access with the fuzzy scorer rather than substring matching', () => {
+    expect(renderer).toContain('scoreItem(')
+    expect(renderer).toContain('prepareQuery(')
+    expect(renderer).not.toContain('files.filter((file) => file.path.toLowerCase().includes(')
   })
 })

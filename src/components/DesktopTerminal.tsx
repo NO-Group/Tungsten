@@ -4,15 +4,22 @@ import { FitAddon } from '@xterm/addon-fit'
 import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 
+import { getTheme, terminalTheme } from '../theme/themeService'
+
 type CommandRequest = { id: number; command: string } | null
 type SearchRequest = { id: number; query: string } | null
 
-export default function DesktopTerminal({ sessionKey, command, profile, searchRequest }: { sessionKey: number; command: CommandRequest; profile?: { kind: 'wsl' | 'container'; id: string }; searchRequest?: SearchRequest }) {
+export default function DesktopTerminal({ sessionKey, command, profile, searchRequest, themeId, fontSize }: { sessionKey: number; command: CommandRequest; profile?: { kind: 'wsl' | 'container'; id: string }; searchRequest?: SearchRequest; themeId?: string; fontSize?: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const searchAddonRef = useRef<SearchAddon | null>(null)
   const sessionRef = useRef<string | null>(null)
   const [ready, setReady] = useState(false)
+
+  // Recreating the terminal on every theme change would drop scrollback, so the
+  // palette is read once at construction and then patched live in a later effect.
+  const initialThemeRef = useRef(themeId)
+  const initialFontSizeRef = useRef(fontSize)
 
   useEffect(() => {
     if (!containerRef.current || !window.tungsten) return
@@ -23,34 +30,12 @@ export default function DesktopTerminal({ sessionKey, command, profile, searchRe
       allowProposedApi: false,
       convertEol: true,
       fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace",
-      fontSize: 11,
+      fontSize: initialFontSizeRef.current ?? 12,
       fontWeight: '400',
       lineHeight: 1.3,
       letterSpacing: 0,
-      scrollback: 8000,
-      theme: {
-        background: '#0e100e',
-        foreground: '#c8cdc8',
-        cursor: '#c8f169',
-        cursorAccent: '#111311',
-        selectionBackground: '#4b5d3277',
-        black: '#171a17',
-        red: '#d66f69',
-        green: '#9bc45f',
-        yellow: '#d4ab61',
-        blue: '#75a8d8',
-        magenta: '#b08bd0',
-        cyan: '#69bec1',
-        white: '#d9ddd9',
-        brightBlack: '#6c746d',
-        brightRed: '#ed817a',
-        brightGreen: '#b5df76',
-        brightYellow: '#e5c17b',
-        brightBlue: '#8dbbea',
-        brightMagenta: '#c6a2e2',
-        brightCyan: '#86d6d8',
-        brightWhite: '#f4f6f4',
-      },
+      scrollback: 10000,
+      theme: terminalTheme(getTheme(initialThemeRef.current || '')),
     })
     const fitAddon = new FitAddon()
     const searchAddon = new SearchAddon()
@@ -103,6 +88,19 @@ export default function DesktopTerminal({ sessionKey, command, profile, searchRe
     }
   }, [profile, sessionKey])
 
+  // Apply theme and font-size changes in place, preserving scrollback and the PTY.
+  useEffect(() => {
+    const terminal = terminalRef.current
+    if (!terminal) return
+    terminal.options.theme = terminalTheme(getTheme(themeId || ''))
+  }, [themeId])
+
+  useEffect(() => {
+    const terminal = terminalRef.current
+    if (!terminal || !fontSize) return
+    terminal.options.fontSize = fontSize
+  }, [fontSize])
+
   useEffect(() => {
     if (!ready || !command || !sessionRef.current || !window.tungsten) return
     void window.tungsten.writeTerminal(sessionRef.current, `${command.command}\r`)
@@ -111,8 +109,18 @@ export default function DesktopTerminal({ sessionKey, command, profile, searchRe
 
   useEffect(() => {
     if (!searchRequest?.query) return
-    searchAddonRef.current?.findNext(searchRequest.query, { caseSensitive: false, incremental: false, decorations: { matchBackground: '#687c3b', activeMatchBackground: '#d2ff72', matchOverviewRuler: '#687c3b', activeMatchColorOverviewRuler: '#d2ff72' } })
-  }, [searchRequest])
+    const palette = terminalTheme(getTheme(themeId || ''))
+    searchAddonRef.current?.findNext(searchRequest.query, {
+      caseSensitive: false,
+      incremental: false,
+      decorations: {
+        matchBackground: palette.brightBlack,
+        activeMatchBackground: palette.brightYellow,
+        matchOverviewRuler: palette.brightBlack,
+        activeMatchColorOverviewRuler: palette.brightYellow,
+      },
+    })
+  }, [searchRequest, themeId])
 
   return <div className="desktop-terminal" ref={containerRef} onClick={() => terminalRef.current?.focus()} />
 }

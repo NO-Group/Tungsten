@@ -68,6 +68,19 @@ import {
   Zap,
 } from 'lucide-react'
 import { defaultFiles, fileIconClass, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
+import {
+  applyMonacoTheme,
+  applyWorkbenchTheme,
+  getTheme,
+  loadThemeId,
+  monacoThemeName,
+  saveThemeId,
+  themes,
+} from './theme/themeService'
+import { prepareQuery, scoreItem, type Match } from './quickopen/fuzzyScorer'
+import { chordFromEvent, createResolver, keybindingLabel, parseKeybinding, type KeybindingRule } from './keybinding/keybindings'
+import defaultKeybindingRules from './keybinding/defaults'
+import { parseWhenClause, type Context as WhenContext } from './keybinding/contextkey'
 const DesktopTerminal = lazy(() => import('./components/DesktopTerminal'))
 const configuredEditor = () => import('./components/ConfiguredEditor')
 const Editor = lazy(configuredEditor)
@@ -75,15 +88,32 @@ const DiffEditor = lazy(() => configuredEditor().then((module) => ({ default: mo
 import './styles.css'
 
 type Activity = 'explorer' | 'search' | 'source' | 'debug' | 'tests' | 'extensions'
-type PaletteMode = 'commands' | 'files'
 type TerminalProfile = { kind: 'wsl' | 'container'; id: string; label?: string }
 type TerminalTab = { id: number; label: string; generation: number; profile?: Omit<TerminalProfile, 'label'> }
 type CommandItem = {
+  /** Stable VS Code-compatible command id, e.g. `workbench.action.files.save`. */
+  id: string
   label: string
   detail: string
   icon: typeof File
-  keys?: string[]
+  /** When clause gating palette visibility and keybinding dispatch. */
+  when?: string
   action: () => void | Promise<void>
+}
+
+/** Quick-access modes, mirroring VS Code's quick-open prefixes. */
+type PaletteMode = 'commands' | 'files' | 'symbols' | 'line'
+
+/** A scored row in quick access, carrying fuzzy highlight ranges. */
+type PaletteEntry = {
+  id: string
+  label: string
+  detail: string
+  icon: typeof File
+  action: () => void | Promise<void>
+  labelMatch: Match[]
+  detailMatch: Match[]
+  keybinding?: string
 }
 type SettingsState = {
   fontSize: number
@@ -110,13 +140,9 @@ const WORKSPACE_KEY = 'tungsten.workspace.v1'
 const SETTINGS_KEY = 'tungsten.settings.v1'
 const TERMINAL_LAYOUT_KEY = 'tungsten.terminals.v2'
 const WORKBENCH_LAYOUT_KEY = 'tungsten.workbench.v2'
-const KEYBINDINGS_KEY = 'tungsten.keybindings.v1'
-const defaultKeybindings: Record<string, string> = {
-  commandPalette: 'mod+shift+p', quickOpen: 'mod+p', refreshWorkspace: 'mod+shift+r', openFolder: 'mod+o', save: 'mod+s', toggleSidebar: 'mod+b', togglePanel: 'mod+j', runProject: 'mod+enter', toggleTerminal: 'mod+`', formatDocument: 'alt+shift+f', settings: 'mod+,', debug: 'f5',
-}
-const keybindingLabels: Record<string, string> = {
-  commandPalette: 'Show Command Palette', quickOpen: 'Quick Open File', refreshWorkspace: 'Refresh Workspace', openFolder: 'Open Folder', save: 'Save Active File', toggleSidebar: 'Toggle Primary Side Bar', togglePanel: 'Toggle Bottom Panel', runProject: 'Run Project', toggleTerminal: 'Toggle Terminal', formatDocument: 'Format Document', settings: 'Open Settings', debug: 'Start or Stop Debugging',
-}
+/** User keybinding overrides, keyed by command id. */
+const KEYBINDINGS_KEY = 'tungsten.keybindings.v2'
+const APP_VERSION = '3.0'
 const PREVIEW_PATH = '$preview'
 const lspLanguages = new Set(['javascript', 'typescript', 'python', 'rust', 'go', 'c', 'cpp', 'java', 'csharp', 'ruby', 'php', 'kotlin', 'lua'])
 const openedLspDocuments = new Set<string>()
@@ -329,24 +355,23 @@ function loadWorkbenchLayout() {
   catch { return {} }
 }
 
-function loadKeybindings() {
-  try { return { ...defaultKeybindings, ...JSON.parse(localStorage.getItem(KEYBINDINGS_KEY) || '{}') } as Record<string, string> }
-  catch { return { ...defaultKeybindings } }
+/** User overrides map a command id to a keybinding string ('' disables it). */
+function loadUserKeybindings(): Record<string, string> {
+  try { return JSON.parse(localStorage.getItem(KEYBINDINGS_KEY) || '{}') as Record<string, string> }
+  catch { return {} }
 }
 
-function shortcutFromEvent(event: KeyboardEvent | React.KeyboardEvent) {
-  const key = event.key.toLowerCase() === ' ' ? 'space' : event.key.toLowerCase()
-  if (['control', 'meta', 'alt', 'shift'].includes(key)) return ''
-  const parts: string[] = []
-  if (event.ctrlKey || event.metaKey) parts.push('mod')
-  if (event.altKey) parts.push('alt')
-  if (event.shiftKey) parts.push('shift')
-  parts.push(key)
-  return parts.join('+')
-}
-
-function formatShortcut(shortcut: string) {
-  return shortcut.split('+').map((part) => ({ mod: navigator.platform.includes('Mac') ? '⌘' : 'Ctrl', alt: navigator.platform.includes('Mac') ? '⌥' : 'Alt', shift: 'Shift', enter: 'Enter', f5: 'F5' })[part] || part.toUpperCase()).join(' ')
+/**
+ * Merge the shipped defaults with the user's overrides. A user entry replaces
+ * every default binding for that command, and an empty string unbinds it.
+ */
+function mergeKeybindings(overrides: Record<string, string>): KeybindingRule[] {
+  const overridden = new Set(Object.keys(overrides))
+  const rules = defaultKeybindingRules.filter((rule) => !overridden.has(rule.command))
+  for (const [command, key] of Object.entries(overrides)) {
+    if (key) rules.push({ command, key, isUser: true })
+  }
+  return rules
 }
 
 function buildTree(files: WorkspaceFile[]): TreeNode[] {
@@ -375,6 +400,23 @@ function buildTree(files: WorkspaceFile[]): TreeNode[] {
   }
   sort(root)
   return root
+}
+
+/**
+ * Render text with the fuzzy-matched characters emphasised, the way VS Code
+ * highlights quick-open results.
+ */
+function Highlight({ text, matches }: { text: string; matches: Match[] }) {
+  if (!matches.length) return <>{text}</>
+  const parts: React.ReactNode[] = []
+  let cursor = 0
+  matches.forEach((match, index) => {
+    if (match.start > cursor) parts.push(text.slice(cursor, match.start))
+    parts.push(<mark key={`${match.start}-${index}`}>{text.slice(match.start, match.end)}</mark>)
+    cursor = match.end
+  })
+  if (cursor < text.length) parts.push(text.slice(cursor))
+  return <>{parts}</>
 }
 
 function FileGlyph({ path }: { path: string }) {
@@ -526,7 +568,23 @@ export default function App() {
   const [paletteQuery, setPaletteQuery] = useState('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [keybindingsOpen, setKeybindingsOpen] = useState(false)
-  const [keybindings, setKeybindings] = useState<Record<string, string>>(loadKeybindings)
+  const [userKeybindings, setUserKeybindings] = useState<Record<string, string>>(loadUserKeybindings)
+  const [themeId, setThemeId] = useState<string>(loadThemeId)
+  const [themePickerOpen, setThemePickerOpen] = useState(false)
+  /** Chords entered so far in a multi-chord sequence such as `ctrl+k ctrl+s`. */
+  const [pendingChords, setPendingChords] = useState<string[]>([])
+  /** Which surface has focus, used for `when` clauses like `terminalFocus`. */
+  const [focusedSurface, setFocusedSurface] = useState<'editor' | 'terminal' | 'input' | 'none'>('none')
+  const [zenMode, setZenMode] = useState(false)
+  const [activityBarVisible, setActivityBarVisible] = useState(true)
+  const [centeredLayout, setCenteredLayout] = useState(false)
+  /** Recently closed editors, for Reopen Closed Editor. */
+  const [closedTabs, setClosedTabs] = useState<string[]>([])
+  /** Highlighted row in quick access, driven by the arrow keys. */
+  const [paletteIndex, setPaletteIndex] = useState(0)
+  /** Command currently capturing keystrokes in the keybinding editor. */
+  const [recordingCommand, setRecordingCommand] = useState<string | null>(null)
+  const [keybindingFilter, setKeybindingFilter] = useState('')
   const [settings, setSettings] = useState<SettingsState>(loadSettings)
   const [newFileOpen, setNewFileOpen] = useState(false)
   const [newFileName, setNewFileName] = useState('')
@@ -605,12 +663,58 @@ export default function App() {
   const restoredWorkspaceRef = useRef(false)
   const watchEvaluationQueueRef = useRef<string[]>([])
   const toggleBreakpointRef = useRef<(path: string, line: number) => void>(() => undefined)
+  /** Indirection so the global key listener always calls the latest dispatcher. */
+  const runCommandRef = useRef<(id: string) => Promise<boolean>>(async () => false)
 
   const activeFile = files.find((file) => file.path === activePath)
   const symbols = useMemo(() => symbolsFor(activeFile), [activeFile])
   const runEditorAction = useCallback((action: string) => {
     void editorInstance?.getAction(action)?.run()
   }, [editorInstance])
+
+  const activeTheme = useMemo(() => getTheme(themeId), [themeId])
+
+  // Paint the workbench and Monaco whenever the selected theme changes.
+  useEffect(() => {
+    applyWorkbenchTheme(activeTheme)
+    saveThemeId(activeTheme.id)
+    if (monacoApi) applyMonacoTheme(monacoApi, activeTheme)
+  }, [activeTheme])
+
+  /** Keybinding rules currently in force (defaults merged with user overrides). */
+  const keybindingRules = useMemo(() => mergeKeybindings(userKeybindings), [userKeybindings])
+  const keybindingResolver = useMemo(() => createResolver(keybindingRules), [keybindingRules])
+  /** Shortcut label for a command id, for menus and the palette. */
+  const shortcutFor = useCallback((commandId: string) => keybindingResolver.lookupLabel(commandId), [keybindingResolver])
+
+  /**
+   * Context keys for `when` clause evaluation, mirroring the keys VS Code
+   * exposes. Keybindings, palette entries and menu items are all filtered
+   * through these.
+   */
+  const whenContext = useMemo<WhenContext>(() => ({
+    editorFocus: focusedSurface === 'editor',
+    terminalFocus: focusedSurface === 'terminal',
+    editorTextFocus: focusedSurface === 'editor',
+    inputFocus: focusedSurface === 'input',
+    activityBar: activity,
+    panelVisible: panelOpen,
+    panelTab,
+    sidebarVisible,
+    zenMode,
+    editorIsOpen: Boolean(activePath) && activePath !== PREVIEW_PATH,
+    openTabs: openTabs.length,
+    resourceExtname: activePath.includes('.') ? `.${activePath.split('.').pop()}` : '',
+    resourceLangId: activeFile?.language || '',
+    dirtyCount: dirty.size,
+    isDesktop: Boolean(window.tungsten),
+    workspaceOpen: Boolean(workspaceRoot),
+    remoteConnected,
+    gitRepository: gitInfo.isRepository,
+    gitOperation: gitOperation.operation || '',
+    debugState: debugState.running ? (debugState.threadId ? 'stopped' : 'running') : '',
+    quickOpenOpen: palette.open,
+  }), [activePath, activeFile, activity, debugState.running, debugState.threadId, dirty.size, focusedSurface, gitInfo.isRepository, gitOperation.operation, openTabs.length, palette.open, panelOpen, panelTab, remoteConnected, sidebarVisible, workspaceRoot, zenMode])
 
   const notify = useCallback((message: string) => {
     setToast(message)
@@ -728,10 +832,59 @@ export default function App() {
     const index = openTabs.indexOf(path)
     const nextTabs = openTabs.filter((tab) => tab !== path)
     setOpenTabs(nextTabs)
+    // Remember real files so Reopen Closed Editor can bring them back.
+    if (path && path !== PREVIEW_PATH) setClosedTabs((current) => [...current.filter((tab) => tab !== path), path].slice(-20))
     if (activePath === path) {
       setActivePath(nextTabs[Math.min(index, nextTabs.length - 1)] || '')
     }
   }
+
+  /** Reopen the most recently closed editor, as Ctrl+Shift+T does in VS Code. */
+  const reopenClosedEditor = useCallback(() => {
+    setClosedTabs((current) => {
+      const path = current[current.length - 1]
+      if (!path) return current
+      setOpenTabs((tabs) => tabs.includes(path) ? tabs : [...tabs, path])
+      setActivePath(path)
+      return current.slice(0, -1)
+    })
+  }, [])
+
+  /** Move forward or back through open editors, wrapping at both ends. */
+  const cycleEditor = useCallback((offset: number) => {
+    setOpenTabs((tabs) => {
+      if (tabs.length < 2) return tabs
+      setActivePath((current) => {
+        const index = tabs.indexOf(current)
+        const next = (((index < 0 ? 0 : index) + offset) % tabs.length + tabs.length) % tabs.length
+        return tabs[next]
+      })
+      return tabs
+    })
+  }, [])
+
+  const toggleFullScreen = useCallback(() => {
+    if (document.fullscreenElement) void document.exitFullscreen().catch(() => undefined)
+    else void document.documentElement.requestFullscreen().catch(() => undefined)
+  }, [])
+
+  /** Move the cursor to a line in the active editor and centre it. */
+  const revealLine = useCallback((line: number) => {
+    if (!line) return
+    editorInstance?.setPosition({ lineNumber: line, column: 1 })
+    editorInstance?.revealLineInCenter(line)
+    editorInstance?.focus()
+  }, [editorInstance])
+
+  /** Send a DAP execution-control request for the stopped thread. */
+  const debugControl = useCallback(async (command: 'continue' | 'pause' | 'next' | 'stepIn' | 'stepOut') => {
+    if (!window.tungsten || !debugState.id) return
+    await window.tungsten.sendDebug(debugState.id, {
+      type: 'request',
+      command,
+      arguments: { threadId: debugState.threadId || 1 },
+    }).catch((error: Error) => notify(`Debug ${command} failed: ${error.message}`))
+  }, [debugState.id, debugState.threadId, notify])
 
   const updateFile = (value?: string) => {
     if (!activeFile || activeFile.language === 'diff' || value === undefined) return
@@ -1210,6 +1363,7 @@ export default function App() {
     if (extension.enabled === false) return []
     const contributions = extension.contributes as { commands?: Array<{ id?: string; title?: string; command?: string }> }
     return (contributions.commands || []).filter((command) => command.title && (command.id || command.command)).map((command) => ({
+      id: `extension.${extension.id}.${command.id || command.command}`,
       label: `Extension: ${command.title}`,
       detail: `${extension.name} · ${command.id || command.command}`,
       icon: Blocks,
@@ -1223,48 +1377,328 @@ export default function App() {
     }))
   })
 
-  const commands: CommandItem[] = [
-    { label: 'Project: New From Template', detail: 'Web, Node.js, Python, Rust or Go', icon: Rocket, keys: ['⌘', '⇧', 'N'], action: () => setProjectModal(true) },
-    { label: 'File: Open Folder', detail: window.tungsten ? 'Open a local project from this computer' : 'Available in the desktop app', icon: FolderOpen, keys: ['⌘', 'O'], action: openDesktopFolder },
-    { label: 'File: New File', detail: 'Create a file in the workspace', icon: File, keys: ['⌘', 'N'], action: openNewFileDialog },
-    { label: 'File: Rename Active File', detail: activeFile?.path || 'No editable file active', icon: FileCode2, action: () => { if (activeFile) renameFile(activeFile.path) } },
-    { label: 'File: Delete Active File', detail: activeFile?.path || 'No editable file active', icon: Trash2, action: () => { if (activeFile) void deleteFile(activeFile.path) } },
-    { label: 'File: Save Active File', detail: activePath && activePath !== PREVIEW_PATH ? fileName(activePath) : 'No editable file active', icon: Check, keys: ['⌘', 'S'], action: () => { if (activePath) void save(activePath).catch(() => undefined) } },
-    { label: 'File: Save All', detail: `${dirty.size} unsaved change${dirty.size === 1 ? '' : 's'}`, icon: Copy, action: () => { void save().catch(() => undefined) } },
-    { label: 'Editor: Format Document', detail: 'Run the registered Monaco formatter', icon: Braces, keys: ['⇧', '⌥', 'F'], action: () => runEditorAction('editor.action.formatDocument') },
-    { label: 'Editor: Toggle Word Wrap', detail: settings.wordWrap ? 'Word wrap is on' : 'Word wrap is off', icon: ChevronsDownUp, action: () => setSettings((current) => ({ ...current, wordWrap: !current.wordWrap })) },
-    { label: 'View: Welcome Dashboard', detail: 'Open workspace, remote, and collaboration actions', icon: Hammer, action: () => setActivePath('') },
-    { label: 'Run: Open Live Preview', detail: 'Build and run the current workspace', icon: Play, keys: ['⌃', '↵'], action: runProject },
-    { label: 'Debug: Start or Stop Session', detail: debugState.running ? 'Stop the active DAP session' : 'Start from .tungsten/launch.json', icon: BugPlay, keys: ['F5'], action: () => { if (debugState.running) void stopDebugging(); else void startDebugging() } },
-    { label: 'Test: Show Test Explorer', detail: `${discoveredTests.length} individual tests detected`, icon: FlaskConical, action: () => { setActivity('tests'); setSidebarVisible(true) } },
-    { label: 'Git: Show Blame for Active File', detail: activeFile?.path || 'No active file', icon: GitCommitHorizontal, action: openGitBlame },
-    { label: 'Remote: Connect over SSH', detail: 'Open the remote development dashboard', icon: SquareCode, action: () => { setRemoteModal(true); void window.tungsten?.remoteProfiles().then(setRemoteProfiles) } },
-    { label: 'Collaboration: Open Live Share', detail: collaborationActive ? `${participants.length} participants connected` : 'Host or join a Yjs room', icon: UsersRound, action: () => setCollaborationOpen(true) },
-    ...projectInfo.tasks.slice(0, 12).map((task) => ({ label: `Task: ${task.label}`, detail: task.command, icon: ListChecks, action: () => runIntegratedCommand(task.command) })),
-    ...extensionCommands,
-    { label: 'Extensions: Install From Folder', detail: 'Install a declarative Tungsten extension', icon: PackagePlus, action: () => { void installExtension() } },
-    { label: 'Update: Check for Updates', detail: updateState, icon: Download, action: () => { void window.tungsten?.checkForUpdates().then((result) => notify(result.message || (result.available ? 'Update available' : 'Tungsten is up to date'))) } },
-    { label: 'View: Toggle Side Preview', detail: sidePreview ? 'Close the side preview' : 'Preview beside the editor', icon: Columns2, action: () => setSidePreview((value) => !value) },
-    { label: 'View: Toggle Primary Side Bar', detail: sidebarVisible ? 'Hide the explorer' : 'Show the explorer', icon: PanelLeftClose, keys: ['⌘', 'B'], action: () => setSidebarVisible((value) => !value) },
-    { label: 'View: Toggle Panel', detail: panelOpen ? 'Hide the bottom panel' : 'Show the bottom panel', icon: PanelBottomOpen, keys: ['⌘', 'J'], action: () => setPanelOpen((value) => !value) },
-    { label: 'Workspace: Add Folder to Workspace', detail: `${workspaceRoots.length} roots currently open`, icon: FolderPlus, action: () => { void addWorkspaceFolder() } },
-    { label: 'Workspace: Refresh From Disk', detail: 'Reload files changed by other programs', icon: RefreshCw, action: refreshWorkspace },
-    { label: 'Preferences: Open Settings', detail: 'Editor and workspace preferences', icon: Settings, keys: ['⌘', ','], action: () => setSettingsOpen(true) },
-    { label: 'Preferences: Open Keyboard Shortcuts', detail: 'Edit persistent command bindings', icon: Keyboard, action: () => setKeybindingsOpen(true) },
-    { label: 'Workspace: Reset Starter', detail: 'Restore all starter files', icon: RotateCcw, action: resetWorkspace },
-  ]
+  /** Working-tree changes: git status merged with unsaved editor buffers. */
+  const sourceChanges = useMemo(() => {
+    const changes = new Map<string, { path: string; status: string; staged?: boolean; workingTree?: boolean }>()
+    if (gitInfo.isRepository) gitInfo.changes.forEach((change) => changes.set(change.path, change))
+    dirty.forEach((path) => changes.set(path, { ...(changes.get(path) || { path, status: 'M' }), workingTree: true }))
+    return [...changes.values()]
+  }, [dirty, gitInfo])
 
-  const paletteItems: CommandItem[] = palette.mode === 'files'
-    ? files.filter((file) => file.path.toLowerCase().includes(paletteQuery.toLowerCase())).map((file) => ({
-        label: fileName(file.path), detail: file.path, icon: FileCode2, action: () => openFile(file.path), keys: [] as string[],
+  /**
+   * The command table.
+   *
+   * Every entry has a stable VS Code-compatible id, so the same definition powers
+   * the command palette, the menu bar, the keybinding editor and keystroke
+   * dispatch. `when` clauses are evaluated against `whenContext`.
+   */
+  const commands: CommandItem[] = useMemo(() => {
+    const list: CommandItem[] = [
+      // File.
+      { id: 'workbench.action.files.openFolder', label: 'File: Open Folder', detail: window.tungsten ? 'Open a local project from this computer' : 'Available in the desktop app', icon: FolderOpen, action: openDesktopFolder },
+      { id: 'workbench.action.files.newUntitledFile', label: 'File: New File', detail: 'Create a file in the workspace', icon: File, action: openNewFileDialog },
+      { id: 'workbench.action.files.save', label: 'File: Save', detail: activePath && activePath !== PREVIEW_PATH ? fileName(activePath) : 'No editable file active', icon: Check, when: 'editorIsOpen', action: () => { if (activePath) void save(activePath).catch(() => undefined) } },
+      { id: 'workbench.action.files.saveAll', label: 'File: Save All', detail: `${dirty.size} unsaved change${dirty.size === 1 ? '' : 's'}`, icon: Copy, action: () => { void save().catch(() => undefined) } },
+      { id: 'workbench.action.files.rename', label: 'File: Rename Active File', detail: activeFile?.path || 'No editable file active', icon: FileCode2, when: 'editorIsOpen', action: () => { if (activeFile) renameFile(activeFile.path) } },
+      { id: 'workbench.action.files.delete', label: 'File: Delete Active File', detail: activeFile?.path || 'No editable file active', icon: Trash2, when: 'editorIsOpen', action: () => { if (activeFile) void deleteFile(activeFile.path) } },
+      { id: 'workbench.action.files.copyPathOfActiveFile', label: 'File: Copy Path of Active File', detail: activePath || 'No active file', icon: Copy, when: 'editorIsOpen', action: () => { void navigator.clipboard.writeText(activePath); notify('Path copied') } },
+      { id: 'workbench.action.files.revealActiveFileInExplorer', label: 'File: Reveal in File Manager', detail: activePath || 'No active file', icon: FolderOpen, when: 'editorIsOpen && isDesktop', action: () => { void window.tungsten?.revealPath(activePath) } },
+      { id: 'workbench.action.closeActiveEditor', label: 'View: Close Editor', detail: activePath ? fileName(activePath) : 'No editor open', icon: X, when: 'editorIsOpen', action: () => { if (activePath) closeTab(activePath) } },
+      { id: 'workbench.action.closeAllEditors', label: 'View: Close All Editors', detail: `${openTabs.length} open`, icon: X, action: () => { setOpenTabs([]); setActivePath('') } },
+      { id: 'workbench.action.reopenClosedEditor', label: 'View: Reopen Closed Editor', detail: closedTabs.length ? fileName(closedTabs[closedTabs.length - 1]) : 'Nothing to reopen', icon: Undo2, action: reopenClosedEditor },
+      { id: 'workbench.action.nextEditor', label: 'View: Next Editor', detail: 'Cycle forward through open tabs', icon: ChevronRight, when: 'openTabs > 1', action: () => cycleEditor(1) },
+      { id: 'workbench.action.previousEditor', label: 'View: Previous Editor', detail: 'Cycle back through open tabs', icon: ChevronRight, when: 'openTabs > 1', action: () => cycleEditor(-1) },
+
+      // Quick access.
+      { id: 'workbench.action.showCommands', label: 'View: Show Command Palette', detail: 'Search and run any command', icon: Command, action: () => { setPalette({ open: true, mode: 'commands' }); setPaletteQuery('') } },
+      { id: 'workbench.action.quickOpen', label: 'Go: Quick Open File', detail: 'Fuzzy-search files by name', icon: FileCode2, action: () => { setPalette({ open: true, mode: 'files' }); setPaletteQuery('') } },
+      { id: 'workbench.action.gotoSymbol', label: 'Go: Go to Symbol in Editor', detail: `${symbols.length} symbols in the active file`, icon: Braces, when: 'editorIsOpen', action: () => { setPalette({ open: true, mode: 'symbols' }); setPaletteQuery('') } },
+      { id: 'workbench.action.gotoLine', label: 'Go: Go to Line/Column', detail: 'Jump to a line in the active file', icon: CornerDownRight, when: 'editorIsOpen', action: () => { setPalette({ open: true, mode: 'line' }); setPaletteQuery('') } },
+      { id: 'workbench.action.showAllSymbols', label: 'Go: Go to Symbol in Workspace', detail: 'Search symbols across the workspace', icon: Braces, action: () => { setPalette({ open: true, mode: 'symbols' }); setPaletteQuery('') } },
+
+      // Editor actions, delegated to Monaco.
+      { id: 'editor.action.formatDocument', label: 'Editor: Format Document', detail: 'Run the registered formatter', icon: Braces, when: 'editorIsOpen', action: () => runEditorAction('editor.action.formatDocument') },
+      { id: 'editor.action.commentLine', label: 'Editor: Toggle Line Comment', detail: 'Comment or uncomment the selection', icon: Braces, when: 'editorIsOpen', action: () => runEditorAction('editor.action.commentLine') },
+      { id: 'editor.action.blockComment', label: 'Editor: Toggle Block Comment', detail: 'Wrap the selection in a block comment', icon: Braces, when: 'editorIsOpen', action: () => runEditorAction('editor.action.blockComment') },
+      { id: 'editor.action.rename', label: 'Editor: Rename Symbol', detail: 'Rename across the workspace via LSP', icon: FileCode2, when: 'editorIsOpen', action: () => runEditorAction('editor.action.rename') },
+      { id: 'editor.action.revealDefinition', label: 'Go: Go to Definition', detail: 'Jump to the symbol definition', icon: CornerDownRight, when: 'editorIsOpen', action: () => runEditorAction('editor.action.revealDefinition') },
+      { id: 'editor.action.goToReferences', label: 'Go: Go to References', detail: 'List every reference to the symbol', icon: CornerDownRight, when: 'editorIsOpen', action: () => runEditorAction('editor.action.goToReferences') },
+      { id: 'editor.action.quickFix', label: 'Editor: Quick Fix', detail: 'Show code actions at the cursor', icon: Zap, when: 'editorIsOpen', action: () => runEditorAction('editor.action.quickFix') },
+      { id: 'editor.action.triggerSuggest', label: 'Editor: Trigger Suggest', detail: 'Open the completion widget', icon: Zap, when: 'editorIsOpen', action: () => runEditorAction('editor.action.triggerSuggest') },
+      { id: 'editor.action.startFindReplaceAction', label: 'Edit: Replace in File', detail: 'Find and replace in the active file', icon: Search, when: 'editorIsOpen', action: () => runEditorAction('editor.action.startFindReplaceAction') },
+      { id: 'editor.action.copyLinesDownAction', label: 'Edit: Copy Line Down', detail: 'Duplicate the current line', icon: Copy, when: 'editorIsOpen', action: () => runEditorAction('editor.action.copyLinesDownAction') },
+      { id: 'editor.action.moveLinesDownAction', label: 'Edit: Move Line Down', detail: 'Move the current line down', icon: ChevronDown, when: 'editorIsOpen', action: () => runEditorAction('editor.action.moveLinesDownAction') },
+      { id: 'editor.action.moveLinesUpAction', label: 'Edit: Move Line Up', detail: 'Move the current line up', icon: ChevronDown, when: 'editorIsOpen', action: () => runEditorAction('editor.action.moveLinesUpAction') },
+      { id: 'editor.action.deleteLines', label: 'Edit: Delete Line', detail: 'Remove the current line', icon: Trash2, when: 'editorIsOpen', action: () => runEditorAction('editor.action.deleteLines') },
+      { id: 'editor.action.insertCursorBelow', label: 'Selection: Add Cursor Below', detail: 'Multi-cursor downward', icon: Plus, when: 'editorIsOpen', action: () => runEditorAction('editor.action.insertCursorBelow') },
+      { id: 'editor.action.insertCursorAbove', label: 'Selection: Add Cursor Above', detail: 'Multi-cursor upward', icon: Plus, when: 'editorIsOpen', action: () => runEditorAction('editor.action.insertCursorAbove') },
+      { id: 'editor.action.addSelectionToNextFindMatch', label: 'Selection: Add Next Occurrence', detail: 'Select the next matching token', icon: Plus, when: 'editorIsOpen', action: () => runEditorAction('editor.action.addSelectionToNextFindMatch') },
+      { id: 'editor.action.selectHighlights', label: 'Selection: Select All Occurrences', detail: 'Select every matching token', icon: Plus, when: 'editorIsOpen', action: () => runEditorAction('editor.action.selectHighlights') },
+      { id: 'editor.action.smartSelect.expand', label: 'Selection: Expand Selection', detail: 'Grow the selection by scope', icon: Maximize2, when: 'editorIsOpen', action: () => runEditorAction('editor.action.smartSelect.expand') },
+      { id: 'editor.action.smartSelect.shrink', label: 'Selection: Shrink Selection', detail: 'Shrink the selection by scope', icon: Minus, when: 'editorIsOpen', action: () => runEditorAction('editor.action.smartSelect.shrink') },
+      { id: 'editor.action.indentLines', label: 'Edit: Indent Line', detail: 'Indent the selection', icon: ChevronRight, when: 'editorIsOpen', action: () => runEditorAction('editor.action.indentLines') },
+      { id: 'editor.action.outdentLines', label: 'Edit: Outdent Line', detail: 'Outdent the selection', icon: ChevronRight, when: 'editorIsOpen', action: () => runEditorAction('editor.action.outdentLines') },
+      { id: 'editor.fold', label: 'View: Fold', detail: 'Collapse the region at the cursor', icon: ChevronsDownUp, when: 'editorIsOpen', action: () => runEditorAction('editor.fold') },
+      { id: 'editor.unfold', label: 'View: Unfold', detail: 'Expand the region at the cursor', icon: ChevronsDownUp, when: 'editorIsOpen', action: () => runEditorAction('editor.unfold') },
+      { id: 'editor.foldAll', label: 'View: Fold All', detail: 'Collapse every region', icon: ChevronsDownUp, when: 'editorIsOpen', action: () => runEditorAction('editor.foldAll') },
+      { id: 'editor.unfoldAll', label: 'View: Unfold All', detail: 'Expand every region', icon: ChevronsDownUp, when: 'editorIsOpen', action: () => runEditorAction('editor.unfoldAll') },
+      { id: 'editor.action.toggleWordWrap', label: 'View: Toggle Word Wrap', detail: settings.wordWrap ? 'Word wrap is on' : 'Word wrap is off', icon: ChevronsDownUp, action: () => setSettings((current) => ({ ...current, wordWrap: !current.wordWrap })) },
+      { id: 'editor.action.toggleMinimap', label: 'View: Toggle Minimap', detail: settings.minimap ? 'Minimap is on' : 'Minimap is off', icon: Layers, action: () => setSettings((current) => ({ ...current, minimap: !current.minimap })) },
+
+      // Views.
+      { id: 'workbench.view.explorer', label: 'View: Show Explorer', detail: 'Files and folders', icon: Files, action: () => { setActivity('explorer'); setSidebarVisible(true) } },
+      { id: 'workbench.view.search', label: 'View: Show Search', detail: 'Search across the workspace', icon: Search, action: () => { setActivity('search'); setSidebarVisible(true) } },
+      { id: 'workbench.view.scm', label: 'View: Show Source Control', detail: gitInfo.isRepository ? `${sourceChanges.length} changes on ${gitInfo.branch}` : 'No repository detected', icon: GitBranch, action: () => { setActivity('source'); setSidebarVisible(true); void refreshGit() } },
+      { id: 'workbench.view.debug', label: 'View: Show Run and Debug', detail: 'Breakpoints, call stack and variables', icon: BugPlay, action: () => { setActivity('debug'); setSidebarVisible(true) } },
+      { id: 'workbench.view.testing', label: 'View: Show Testing', detail: `${discoveredTests.length} tests detected`, icon: FlaskConical, action: () => { setActivity('tests'); setSidebarVisible(true) } },
+      { id: 'workbench.view.extensions', label: 'View: Show Extensions', detail: `${extensions.length} installed`, icon: Blocks, action: () => { setActivity('extensions'); setSidebarVisible(true) } },
+      { id: 'workbench.actions.view.problems', label: 'View: Show Problems', detail: `${problems.length} diagnostics`, icon: CircleAlert, action: () => { setPanelOpen(true); setPanelTab('PROBLEMS') } },
+      { id: 'workbench.action.output.toggleOutput', label: 'View: Toggle Output', detail: 'Workbench output channels', icon: ListChecks, action: () => { setPanelOpen(true); setPanelTab('OUTPUT') } },
+      { id: 'workbench.debug.action.toggleRepl', label: 'View: Toggle Debug Console', detail: 'Inspect debug output', icon: Bot, action: () => { setPanelOpen(true); setPanelTab('DEBUG CONSOLE') } },
+
+      // Layout.
+      { id: 'workbench.action.toggleSidebarVisibility', label: 'View: Toggle Primary Side Bar', detail: sidebarVisible ? 'Hide the side bar' : 'Show the side bar', icon: PanelLeftClose, action: () => setSidebarVisible((value) => !value) },
+      { id: 'workbench.action.togglePanel', label: 'View: Toggle Panel', detail: panelOpen ? 'Hide the bottom panel' : 'Show the bottom panel', icon: PanelBottomOpen, action: () => setPanelOpen((value) => !value) },
+      { id: 'workbench.action.toggleZenMode', label: 'View: Toggle Zen Mode', detail: zenMode ? 'Leave distraction-free editing' : 'Distraction-free editing', icon: Maximize2, action: () => setZenMode((value) => !value) },
+      { id: 'workbench.action.toggleActivityBarVisibility', label: 'View: Toggle Activity Bar', detail: activityBarVisible ? 'Hide the activity bar' : 'Show the activity bar', icon: PanelLeftClose, action: () => setActivityBarVisible((value) => !value) },
+      { id: 'workbench.action.toggleCenteredLayout', label: 'View: Toggle Centered Layout', detail: centeredLayout ? 'Use the full width' : 'Centre the editor', icon: Columns2, action: () => setCenteredLayout((value) => !value) },
+      { id: 'workbench.action.splitEditor', label: 'View: Split Editor', detail: sidePreview ? 'Close the side pane' : 'Open a side pane', icon: SplitSquareHorizontal, action: () => setSidePreview((value) => !value) },
+      { id: 'workbench.action.closeEditorsInGroup', label: 'View: Close All Editors in Group', detail: `${openTabs.length} open`, icon: X, when: 'editorIsOpen', action: () => { openTabs.forEach((path) => closeTab(path)) } },
+      // Tungsten uses a single editor group plus an optional side pane rather
+      // than VS Code's arbitrary group tree, so the "focus group N" commands
+      // map onto the main editor and that side pane.
+      { id: 'workbench.action.focusFirstEditorGroup', label: 'View: Focus First Editor Group', detail: 'Focus the main editor', icon: Columns2, action: () => { editorInstance?.focus() } },
+      { id: 'workbench.action.focusSecondEditorGroup', label: 'View: Focus Second Editor Group', detail: sidePreview ? 'Focus the side pane' : 'Open and focus the side pane', icon: SplitSquareHorizontal, when: 'editorIsOpen', action: () => { setSidePreview(true) } },
+      { id: 'workbench.action.toggleFullScreen', label: 'View: Toggle Full Screen', detail: 'Enter or leave full screen', icon: Maximize2, action: toggleFullScreen },
+      { id: 'workbench.action.zoomIn', label: 'View: Zoom In', detail: `Editor font ${settings.fontSize}px`, icon: Plus, action: () => setSettings((current) => ({ ...current, fontSize: Math.min(28, current.fontSize + 1) })) },
+      { id: 'workbench.action.zoomOut', label: 'View: Zoom Out', detail: `Editor font ${settings.fontSize}px`, icon: Minus, action: () => setSettings((current) => ({ ...current, fontSize: Math.max(8, current.fontSize - 1) })) },
+      { id: 'workbench.action.zoomReset', label: 'View: Reset Zoom', detail: 'Restore the default font size', icon: RotateCcw, action: () => setSettings((current) => ({ ...current, fontSize: defaultSettings.fontSize })) },
+
+      // Terminal.
+      { id: 'workbench.action.terminal.toggleTerminal', label: 'Terminal: Toggle Terminal', detail: 'Show or hide the integrated terminal', icon: TerminalSquare, action: () => { if (panelTab === 'TERMINAL' && panelOpen) setPanelOpen(false); else { setPanelTab('TERMINAL'); setPanelOpen(true) } } },
+      { id: 'workbench.action.terminal.new', label: 'Terminal: Create New Terminal', detail: 'Start another shell', icon: Plus, action: () => { if (window.tungsten) newTerminal(); else { setPanelTab('TERMINAL'); setPanelOpen(true) } } },
+      { id: 'workbench.action.terminal.split', label: 'Terminal: Split Terminal', detail: terminalSplit ? 'Return to a single pane' : 'Show two terminals side by side', icon: Columns2, action: () => { if (terminalTabs.length < 2) newTerminal(); setTerminalSplit((value) => !value) } },
+      { id: 'workbench.action.terminal.kill', label: 'Terminal: Kill Active Terminal', detail: 'Close the focused terminal', icon: Trash2, when: 'isDesktop', action: () => closeTerminal(activeTerminalId) },
+      { id: 'workbench.action.terminal.clear', label: 'Terminal: Clear', detail: 'Clear the terminal buffer', icon: Trash2, action: () => { if (window.tungsten) setTerminalTabs((tabs) => tabs.map((terminal) => terminal.id === activeTerminalId ? { ...terminal, generation: terminal.generation + 1 } : terminal)); else setTerminalLines([]) } },
+      { id: 'workbench.action.terminal.focusNext', label: 'Terminal: Focus Next Terminal', detail: `${terminalTabs.length} terminals open`, icon: ChevronRight, when: 'isDesktop', action: () => focusTerminalByOffset(1) },
+      { id: 'workbench.action.terminal.focusPrevious', label: 'Terminal: Focus Previous Terminal', detail: `${terminalTabs.length} terminals open`, icon: ChevronRight, when: 'isDesktop', action: () => focusTerminalByOffset(-1) },
+
+      // Run, debug and tasks.
+      { id: 'workbench.action.tungsten.runProject', label: 'Run: Open Live Preview', detail: 'Build and run the current workspace', icon: Play, action: runProject },
+      { id: 'workbench.action.debug.start', label: 'Debug: Start Debugging', detail: 'Start from .tungsten/launch.json', icon: BugPlay, when: '!debugState', action: () => { void startDebugging() } },
+      { id: 'workbench.action.debug.stop', label: 'Debug: Stop Debugging', detail: 'Terminate the active session', icon: CircleStop, when: 'debugState', action: () => { void stopDebugging() } },
+      { id: 'workbench.action.debug.continue', label: 'Debug: Continue', detail: 'Resume execution', icon: Play, when: 'debugState', action: () => { void debugControl('continue') } },
+      { id: 'workbench.action.debug.pause', label: 'Debug: Pause', detail: 'Pause the running program', icon: Pause, when: 'debugState', action: () => { void debugControl('pause') } },
+      { id: 'workbench.action.debug.stepOver', label: 'Debug: Step Over', detail: 'Run the next statement', icon: StepForward, when: 'debugState', action: () => { void debugControl('next') } },
+      { id: 'workbench.action.debug.stepInto', label: 'Debug: Step Into', detail: 'Step into the call', icon: CornerDownRight, when: 'debugState', action: () => { void debugControl('stepIn') } },
+      { id: 'workbench.action.debug.stepOut', label: 'Debug: Step Out', detail: 'Finish the current frame', icon: Undo2, when: 'debugState', action: () => { void debugControl('stepOut') } },
+      { id: 'workbench.action.debug.restart', label: 'Debug: Restart', detail: 'Restart the debug session', icon: RotateCcw, when: 'debugState', action: () => { void stopDebugging().then(() => startDebugging()) } },
+      { id: 'editor.debug.action.toggleBreakpoint', label: 'Debug: Toggle Breakpoint', detail: activeFile ? `Line ${cursor.line} of ${fileName(activeFile.path)}` : 'No active file', icon: CircleAlert, when: 'editorIsOpen', action: () => { if (activeFile) void toggleBreakpoint(activeFile.path, cursor.line) } },
+      { id: 'workbench.action.tasks.runTask', label: 'Task: Run Task', detail: `${projectInfo.tasks.length} tasks detected`, icon: ListChecks, action: () => { setActivity('tests'); setSidebarVisible(true) } },
+
+      // Source control.
+      { id: 'tungsten.git.refresh', label: 'Git: Refresh', detail: 'Reload status, branches and history', icon: RefreshCw, action: () => { void refreshGit() } },
+      { id: 'tungsten.git.commitStaged', label: 'Git: Commit Staged', detail: commitMessage ? commitMessage : 'Enter a commit message first', icon: GitCommitHorizontal, when: 'gitRepository', action: () => { void commitChanges() } },
+      { id: 'tungsten.git.blame', label: 'Git: Show Blame for Active File', detail: activeFile?.path || 'No active file', icon: GitCommitHorizontal, when: 'editorIsOpen && gitRepository', action: openGitBlame },
+      { id: 'tungsten.git.stash', label: 'Git: Stash Changes', detail: `${sourceChanges.length} changes`, icon: Archive, when: 'gitRepository', action: () => { void window.tungsten?.gitStashPush().then(setGitInfo).then(() => refreshGit()) } },
+
+      // Preferences.
+      { id: 'workbench.action.openSettings', label: 'Preferences: Open Settings', detail: 'Editor and workspace preferences', icon: Settings, action: () => setSettingsOpen(true) },
+      { id: 'workbench.action.openGlobalKeybindings', label: 'Preferences: Open Keyboard Shortcuts', detail: `${keybindingRules.length} bindings`, icon: Keyboard, action: () => setKeybindingsOpen(true) },
+      { id: 'workbench.action.selectTheme', label: 'Preferences: Color Theme', detail: activeTheme.label, icon: Eye, action: () => { setThemePickerOpen(true); setPaletteQuery('') } },
+
+      // Workspace, remote, extensions.
+      { id: 'workbench.action.tungsten.newProject', label: 'Project: New From Template', detail: 'Web, Node.js, Python, Rust or Go', icon: Rocket, action: () => setProjectModal(true) },
+      { id: 'workbench.action.addRootFolder', label: 'Workspace: Add Folder to Workspace', detail: `${workspaceRoots.length} roots currently open`, icon: FolderPlus, action: () => { void addWorkspaceFolder() } },
+      { id: 'workbench.action.tungsten.refreshWorkspace', label: 'Workspace: Refresh From Disk', detail: 'Reload files changed by other programs', icon: RefreshCw, action: refreshWorkspace },
+      { id: 'workbench.action.tungsten.resetWorkspace', label: 'Workspace: Reset Starter', detail: 'Restore all starter files', icon: RotateCcw, action: resetWorkspace },
+      { id: 'workbench.action.tungsten.welcome', label: 'Help: Welcome', detail: 'Open the welcome dashboard', icon: Hammer, action: () => setActivePath('') },
+      { id: 'workbench.action.remote.connect', label: 'Remote: Connect over SSH', detail: 'Open the remote development dashboard', icon: SquareCode, action: () => { setRemoteModal(true); void window.tungsten?.remoteProfiles().then(setRemoteProfiles) } },
+      { id: 'workbench.action.collaboration.open', label: 'Collaboration: Open Live Share', detail: collaborationActive ? `${participants.length} participants connected` : 'Host or join a Yjs room', icon: UsersRound, action: () => setCollaborationOpen(true) },
+      { id: 'workbench.extensions.action.installFromFolder', label: 'Extensions: Install From Folder', detail: 'Install a declarative Tungsten extension', icon: PackagePlus, action: () => { void installExtension() } },
+      { id: 'update.checkForUpdate', label: 'Update: Check for Updates', detail: updateState, icon: Download, action: () => { void window.tungsten?.checkForUpdates().then((result) => notify(result.message || (result.available ? 'Update available' : 'Tungsten is up to date'))) } },
+    ]
+
+    // Detected project tasks and enabled extension contributions join the palette.
+    for (const task of projectInfo.tasks.slice(0, 20)) {
+      list.push({ id: `tungsten.task.${task.label}`, label: `Task: ${task.label}`, detail: task.command, icon: ListChecks, action: () => runIntegratedCommand(task.command) })
+    }
+    list.push(...extensionCommands)
+
+    // Every theme is directly runnable from the palette, as in VS Code.
+    for (const theme of themes) {
+      list.push({
+        id: `workbench.action.selectTheme.${theme.id}`,
+        label: `Preferences: Color Theme — ${theme.label}`,
+        detail: `${theme.kind === 'hc-dark' || theme.kind === 'hc-light' ? 'High contrast' : theme.kind === 'light' ? 'Light' : 'Dark'} · from Visual Studio Code`,
+        icon: Eye,
+        action: () => { setThemeId(theme.id); notify(`Color theme: ${theme.label}`) },
+      })
+    }
+
+    return list
+  }, [activeFile, activePath, activeTerminalId, activeTheme.label, activityBarVisible, centeredLayout, closedTabs, collaborationActive, commitMessage, cursor.line, debugControl, dirty.size, editorInstance, discoveredTests.length, extensionCommands, extensions.length, gitInfo.branch, gitInfo.isRepository, keybindingRules.length, notify, openDesktopFolder, openTabs.length, panelOpen, panelTab, participants.length, problems.length, projectInfo.tasks, refreshWorkspace, runEditorAction, runProject, settings.fontSize, settings.minimap, settings.wordWrap, sidebarVisible, sidePreview, sourceChanges.length, symbols.length, terminalSplit, terminalTabs.length, updateState, workspaceRoots.length, zenMode])
+
+  /** Command lookup by id, used by keystroke dispatch and the menu bar. */
+  const commandsById = useMemo(() => new Map(commands.map((command) => [command.id, command])), [commands])
+
+  /**
+   * Run a command by id, honouring its `when` clause so a keybinding can never
+   * fire a command the palette would have hidden.
+   */
+  const runCommandById = useCallback(async (id: string) => {
+    const command = commandsById.get(id)
+    if (!command) return false
+    if (command.when && !parseWhenClause(command.when).evaluate(whenContext)) return false
+    await command.action()
+    return true
+  }, [commandsById, whenContext])
+
+  // Keystroke dispatch reads through a ref so the listener never goes stale.
+  useEffect(() => { runCommandRef.current = runCommandById }, [runCommandById])
+
+  /**
+   * Quick access, scored with VS Code's fuzzy algorithm.
+   *
+   * The leading character of the query selects the mode the way VS Code's
+   * quick-open prefixes do: `>` commands, `@` symbols, `:` go-to-line, `#`
+   * workspace symbols. Results carry highlight ranges so matched characters can
+   * be emphasised in the list.
+   */
+  const { paletteMode, paletteSearch } = useMemo(() => {
+    const raw = paletteQuery
+    if (raw.startsWith('>')) return { paletteMode: 'commands' as PaletteMode, paletteSearch: raw.slice(1) }
+    if (raw.startsWith('@') || raw.startsWith('#')) return { paletteMode: 'symbols' as PaletteMode, paletteSearch: raw.slice(1) }
+    if (raw.startsWith(':')) return { paletteMode: 'line' as PaletteMode, paletteSearch: raw.slice(1) }
+    return { paletteMode: palette.mode, paletteSearch: raw }
+  }, [palette.mode, paletteQuery])
+
+  const paletteItems: PaletteEntry[] = useMemo(() => {
+    const query = prepareQuery(paletteSearch)
+
+    if (paletteMode === 'line') {
+      const line = Number.parseInt(paletteSearch, 10)
+      const maxLine = activeFile ? activeFile.content.split('\n').length : 0
+      if (!Number.isFinite(line) || line < 1) {
+        return [{ id: 'goto.line.hint', label: 'Go to line', detail: `Type a line number between 1 and ${maxLine || 1}`, icon: CornerDownRight, action: () => undefined, labelMatch: [], detailMatch: [] }]
+      }
+      const target = Math.min(Math.max(1, line), Math.max(1, maxLine))
+      return [{
+        id: `goto.line.${target}`,
+        label: `Go to line ${target}`,
+        detail: activeFile ? fileName(activeFile.path) : '',
+        icon: CornerDownRight,
+        labelMatch: [],
+        detailMatch: [],
+        action: () => {
+          editorInstance?.setPosition({ lineNumber: target, column: 1 })
+          editorInstance?.revealLineInCenter(target)
+          editorInstance?.focus()
+        },
+      }]
+    }
+
+    if (paletteMode === 'symbols') {
+      const entries = symbols.map((symbol, index) => ({
+        id: `symbol.${index}.${symbol.label}`,
+        label: symbol.label,
+        detail: activeFile ? fileName(activeFile.path) : '',
+        icon: Braces,
+        line: symbol.line,
       }))
-    : commands.filter((command) => `${command.label} ${command.detail}`.toLowerCase().includes(paletteQuery.toLowerCase()))
+      if (!query.normalized) {
+        return entries.map((entry) => ({ ...entry, labelMatch: [], detailMatch: [], action: () => revealLine(entry.line) }))
+      }
+      return entries
+        .map((entry) => ({ entry, score: scoreItem(entry.label, entry.detail, query) }))
+        .filter(({ score }) => score.score > 0)
+        .sort((a, b) => b.score.score - a.score.score)
+        .slice(0, 300)
+        .map(({ entry, score }) => ({ ...entry, labelMatch: score.labelMatch, detailMatch: score.descriptionMatch, action: () => revealLine(entry.line) }))
+    }
 
-  const executePaletteItem = (action: CommandItem['action']) => {
-    action()
-    setPalette({ ...palette, open: false })
+    if (paletteMode === 'files') {
+      const candidates = files.filter((file) => file.language !== 'diff')
+      if (!query.normalized) {
+        // With no query, show the most recently opened editors first.
+        const recent = [...openTabs].reverse()
+        const ordered = [...candidates].sort((a, b) => {
+          const indexA = recent.indexOf(a.path)
+          const indexB = recent.indexOf(b.path)
+          return (indexA < 0 ? Number.MAX_SAFE_INTEGER : indexA) - (indexB < 0 ? Number.MAX_SAFE_INTEGER : indexB)
+        })
+        return ordered.slice(0, 200).map((file) => ({
+          id: `file.${file.path}`, label: fileName(file.path), detail: file.path, icon: FileCode2,
+          labelMatch: [], detailMatch: [], action: () => openFile(file.path),
+        }))
+      }
+      return candidates
+        .map((file) => {
+          const directory = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : ''
+          return { file, directory, score: scoreItem(fileName(file.path), directory, query) }
+        })
+        .filter(({ score }) => score.score > 0)
+        .sort((a, b) => b.score.score - a.score.score || fileName(a.file.path).length - fileName(b.file.path).length)
+        .slice(0, 300)
+        .map(({ file, score }) => ({
+          id: `file.${file.path}`, label: fileName(file.path), detail: file.path, icon: FileCode2,
+          labelMatch: score.labelMatch, detailMatch: [], action: () => openFile(file.path),
+        }))
+    }
+
+    // Commands: hide any whose `when` clause currently fails.
+    const available = commands.filter((command) => !command.when || parseWhenClause(command.when).evaluate(whenContext))
+    if (!query.normalized) {
+      return available.slice(0, 200).map((command) => ({
+        ...command, labelMatch: [], detailMatch: [], keybinding: shortcutFor(command.id),
+      }))
+    }
+    return available
+      .map((command) => ({ command, score: scoreItem(command.label, command.detail, query) }))
+      .filter(({ score }) => score.score > 0)
+      .sort((a, b) => b.score.score - a.score.score || a.command.label.length - b.command.label.length)
+      .slice(0, 300)
+      .map(({ command, score }) => ({
+        ...command, labelMatch: score.labelMatch, detailMatch: score.descriptionMatch, keybinding: shortcutFor(command.id),
+      }))
+  }, [activeFile, commands, editorInstance, files, openFile, openTabs, paletteMode, paletteSearch, revealLine, shortcutFor, symbols, whenContext])
+
+  // Keep the highlighted row in range whenever the result set changes.
+  useEffect(() => {
+    setPaletteIndex((index) => (index >= paletteItems.length ? 0 : index))
+  }, [paletteItems.length])
+
+  /** Rows for the keybinding editor: every command with its current binding. */
+  const filteredKeybindings = useMemo(() => {
+    const query = keybindingFilter.trim().toLowerCase()
+    return commands
+      .map((command) => ({ command, binding: keybindingResolver.lookupCommand(command.id)[0] }))
+      .filter(({ command, binding }) => !query
+        || command.label.toLowerCase().includes(query)
+        || command.id.toLowerCase().includes(query)
+        || (binding ? keybindingLabel(binding.chords).toLowerCase().includes(query) : false))
+      .sort((a, b) => a.command.label.localeCompare(b.command.label))
+  }, [commands, keybindingFilter, keybindingResolver])
+
+  /** Themes matching the picker's filter box. */
+  const filteredThemes = useMemo(() => {
+    const query = paletteQuery.trim().toLowerCase()
+    return query ? themes.filter((theme) => theme.label.toLowerCase().includes(query) || theme.kind.includes(query)) : themes
+  }, [paletteQuery])
+
+  const paletteModeLabel = paletteMode === 'files' ? 'FILES' : paletteMode === 'symbols' ? 'SYMBOLS' : paletteMode === 'line' ? 'GO TO LINE' : 'COMMANDS'
+  const paletteModePlaceholder = paletteMode === 'files'
+    ? 'Search files by name (append : to go to a line)…'
+    : paletteMode === 'symbols' ? 'Search symbols in the active file…'
+    : paletteMode === 'line' ? 'Enter a line number…'
+    : 'Type a command…'
+
+  const executePaletteItem = useCallback((item: PaletteEntry) => {
+    setPalette((current) => ({ ...current, open: false }))
     setPaletteQuery('')
-  }
+    setPaletteIndex(0)
+    void item.action()
+  }, [])
 
   useEffect(() => {
     if (!window.tungsten || restoredWorkspaceRef.current) return
@@ -1433,8 +1867,8 @@ export default function App() {
   }, [settings])
 
   useEffect(() => {
-    localStorage.setItem(KEYBINDINGS_KEY, JSON.stringify(keybindings))
-  }, [keybindings])
+    localStorage.setItem(KEYBINDINGS_KEY, JSON.stringify(userKeybindings))
+  }, [userKeybindings])
 
   useEffect(() => {
     if (!collaborationActive || !activePath || activePath === PREVIEW_PATH) return
@@ -1480,35 +1914,61 @@ export default function App() {
     if (newFileOpen) window.setTimeout(() => newFileInputRef.current?.focus(), 20)
   }, [newFileOpen])
 
+  /**
+   * Keystroke dispatch through the VS Code-style resolver.
+   *
+   * A keypress is appended to any chords already pending. The resolver either
+   * matches a command, reports that more chords are needed (the status bar then
+   * shows the pending prefix), or reports no match, which clears the sequence.
+   */
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
-        setPalette((current) => ({ ...current, open: false })); setSettingsOpen(false); setKeybindingsOpen(false); setNewFileOpen(false); setRenameTarget(null); setMenuOpen(null); setContextMenu(null)
+        if (pendingChords.length) { setPendingChords([]); return }
+        setPalette((current) => ({ ...current, open: false })); setSettingsOpen(false); setKeybindingsOpen(false)
+        setNewFileOpen(false); setRenameTarget(null); setMenuOpen(null); setContextMenu(null); setThemePickerOpen(false)
         return
       }
-      const shortcut = shortcutFromEvent(event)
-      const command = Object.keys(keybindings).find((id) => keybindings[id] === shortcut)
-      if (!command) return
-      event.preventDefault()
-      const actions: Record<string, () => void> = {
-        formatDocument: () => runEditorAction('editor.action.formatDocument'),
-        commandPalette: () => { setPalette({ open: true, mode: 'commands' }); setPaletteQuery('') },
-        quickOpen: () => { setPalette({ open: true, mode: 'files' }); setPaletteQuery('') },
-        refreshWorkspace: () => { void refreshWorkspace() },
-        openFolder: () => { void openDesktopFolder() },
-        save: () => { if (activePath && activePath !== PREVIEW_PATH) void save(activePath).catch(() => undefined) },
-        toggleSidebar: () => setSidebarVisible((value) => !value),
-        togglePanel: () => setPanelOpen((value) => !value),
-        toggleTerminal: () => { if (panelTab === 'TERMINAL' && panelOpen) setPanelOpen(false); else { setPanelTab('TERMINAL'); setPanelOpen(true) } },
-        runProject,
-        settings: () => setSettingsOpen(true),
-        debug: () => { if (debugState.running) void stopDebugging(); else void startDebugging() },
+
+      // The keybinding editor captures raw keystrokes while recording.
+      if (recordingCommand) return
+
+      const chord = chordFromEvent(event)
+      if (!chord) return
+
+      // While typing in a text field, only allow chords that carry a modifier so
+      // ordinary typing is never swallowed.
+      const target = event.target as HTMLElement | null
+      const isTextEntry = !!target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)
+      const hasModifier = event.ctrlKey || event.metaKey || event.altKey
+      if (isTextEntry && !hasModifier && !pendingChords.length) return
+
+      const result = keybindingResolver.resolve(whenContext, pendingChords, chord)
+      if (result.kind === 'more-chords-needed') {
+        event.preventDefault()
+        setPendingChords((current) => [...current, chord])
+        return
       }
-      actions[command]?.()
+      if (result.kind === 'no-match') {
+        if (pendingChords.length) { event.preventDefault(); setPendingChords([]) }
+        return
+      }
+
+      event.preventDefault()
+      setPendingChords([])
+      void runCommandRef.current(result.command)
     }
+
     window.addEventListener('keydown', keydown)
     return () => window.removeEventListener('keydown', keydown)
-  }, [activePath, debugState.running, keybindings, openDesktopFolder, panelOpen, panelTab, refreshWorkspace, runEditorAction, runProject, save, startDebugging, stopDebugging])
+  }, [keybindingResolver, pendingChords, recordingCommand, whenContext])
+
+  // A pending chord prefix times out, matching VS Code's behaviour.
+  useEffect(() => {
+    if (!pendingChords.length) return
+    const timer = window.setTimeout(() => setPendingChords([]), 5000)
+    return () => window.clearTimeout(timer)
+  }, [pendingChords])
 
   const startSidebarResize = (event: React.MouseEvent) => {
     event.preventDefault()
@@ -1551,6 +2011,16 @@ export default function App() {
     if (activeTerminalId === id) setActiveTerminalId(remaining[0].id)
   }
 
+  /** Move focus between terminal tabs, wrapping at both ends. */
+  const focusTerminalByOffset = (offset: number) => {
+    if (terminalTabs.length < 2) return
+    const index = terminalTabs.findIndex((terminal) => terminal.id === activeTerminalId)
+    const next = ((index + offset) % terminalTabs.length + terminalTabs.length) % terminalTabs.length
+    setActiveTerminalId(terminalTabs[next].id)
+    setPanelTab('TERMINAL')
+    setPanelOpen(true)
+  }
+
   const panelContent = () => {
     if (panelTab === 'PROBLEMS') return problems.length ? (
       <div className="problems-list">{problems.map((problem, index) => <button key={`${problem.path}-${problem.line}-${index}`} onClick={() => { openFile(problem.path); editorInstance?.setPosition({ lineNumber: problem.line, column: 1 }); editorInstance?.revealLineInCenter(problem.line) }}><CircleAlert size={13} className={problem.severity === 1 ? 'error' : 'warning'} /><span>{problem.message}</span><small>{problem.path}:{problem.line}</small></button>)}</div>
@@ -1569,7 +2039,7 @@ export default function App() {
       return <div className="terminal-workspace">
         <div className="terminal-tab-strip">{terminalTabs.map((terminal) => <button key={terminal.id} className={terminal.id === activeTerminalId ? 'active' : ''} onClick={() => setActiveTerminalId(terminal.id)}><TerminalSquare size={11} /><span>{terminal.label}</span><X size={10} onClick={(event) => { event.stopPropagation(); closeTerminal(terminal.id) }} /></button>)}<button className="terminal-add" title="New local terminal" onClick={() => newTerminal()}><Plus size={12} /></button><select title="Terminal profile" defaultValue="" onChange={(event) => { const [kind, id] = event.target.value.split(':'); if (kind === 'wsl') newTerminal({ kind, id, label: `WSL · ${id}` }); if (kind === 'container') { const container = remoteProfiles.containers.find((item) => item.id === id); newTerminal({ kind, id, label: `Docker · ${container?.name || id}` }); } event.target.value = '' }}><option value="">Profiles…</option>{remoteProfiles.wsl.map((name) => <option key={`wsl:${name}`} value={`wsl:${name}`}>WSL · {name}</option>)}{remoteProfiles.containers.map((container) => <option key={`container:${container.id}`} value={`container:${container.id}`}>Docker · {container.name}</option>)}</select></div>
         {terminalSearchOpen && <form className="terminal-search" onSubmit={(event) => { event.preventDefault(); if (terminalSearchQuery) setTerminalSearchRequest({ id: Date.now(), query: terminalSearchQuery }) }}><Search size={12} /><input autoFocus value={terminalSearchQuery} onChange={(event) => setTerminalSearchQuery(event.target.value)} placeholder="Find in terminal" /><button type="submit">Next</button><button type="button" onClick={() => setTerminalSearchOpen(false)}><X size={12} /></button></form>}
-        <div className={`terminal-grid ${terminalSplit && visible.length > 1 ? 'split' : ''}`}>{visible.map((terminal) => <div key={`${terminal.id}-${terminal.generation}`} className="terminal-cell"><Suspense fallback={<div className="terminal-loading">Starting PTY…</div>}><DesktopTerminal sessionKey={terminal.id * 1000 + terminal.generation} command={terminal.id === (terminalCommand?.terminalId || activeTerminalId) ? terminalCommand : null} profile={terminal.profile} searchRequest={terminal.id === activeTerminalId ? terminalSearchRequest : null} /></Suspense></div>)}</div>
+        <div className={`terminal-grid ${terminalSplit && visible.length > 1 ? 'split' : ''}`} onFocus={() => setFocusedSurface('terminal')} onBlur={() => setFocusedSurface((current) => current === 'terminal' ? 'none' : current)}>{visible.map((terminal) => <div key={`${terminal.id}-${terminal.generation}`} className="terminal-cell"><Suspense fallback={<div className="terminal-loading">Starting PTY…</div>}><DesktopTerminal sessionKey={terminal.id * 1000 + terminal.generation} command={terminal.id === (terminalCommand?.terminalId || activeTerminalId) ? terminalCommand : null} profile={terminal.profile} searchRequest={terminal.id === activeTerminalId ? terminalSearchRequest : null} themeId={activeTheme.id} fontSize={Math.max(9, settings.fontSize - 1)} /></Suspense></div>)}</div>
       </div>
     }
     return (
@@ -1617,13 +2087,6 @@ export default function App() {
     const query = searchQuery.toLowerCase()
     return files.flatMap((file) => file.content.split('\n').map((line, index) => ({ file, line, index, column: line.toLowerCase().indexOf(query) + 1 })).filter((result) => result.column > 0)).slice(0, 500)
   }, [files, nativeSearchResults, searchQuery, workspaceRoot])
-
-  const sourceChanges = useMemo(() => {
-    const changes = new Map<string, { path: string; status: string; staged?: boolean; workingTree?: boolean }>()
-    if (gitInfo.isRepository) gitInfo.changes.forEach((change) => changes.set(change.path, change))
-    dirty.forEach((path) => changes.set(path, { ...(changes.get(path) || { path, status: 'M' }), workingTree: true }))
-    return [...changes.values()]
-  }, [dirty, gitInfo])
 
   const sidebarContent = () => {
     if (activity === 'search') return (
@@ -1680,7 +2143,13 @@ export default function App() {
           <button className={debugState.running ? 'stop' : ''} onClick={() => { if (debugState.running) void stopDebugging(); else void startDebugging() }}>{debugState.running ? <CircleStop size={15} /> : <BugPlay size={15} />}{debugState.running ? 'Stop session' : 'Start debugging'}<kbd>F5</kbd></button>
           <p>{files.some((file) => file.path === '.tungsten/launch.json') ? 'Using .tungsten/launch.json' : 'Add .tungsten/launch.json with your DAP adapter configuration.'}</p>
         </div>
-        {debugState.running && debugState.id && <div className="debug-controls"><button title="Continue" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'continue', arguments: { threadId: debugState.threadId || 1 } }) }}><Play size={13} /></button><button title="Pause" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'pause', arguments: { threadId: debugState.threadId || 1 } }) }}><Pause size={13} /></button><button title="Step over" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'next', arguments: { threadId: debugState.threadId || 1 } }) }}><StepForward size={13} /></button><button title="Step into" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'stepIn', arguments: { threadId: debugState.threadId || 1 } }) }}><CornerDownRight size={13} /></button><button title="Step out" onClick={() => { void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'stepOut', arguments: { threadId: debugState.threadId || 1 } }) }}><Undo2 size={13} /></button><span>DAP SESSION</span></div>}
+        {debugState.running && debugState.id && <div className="debug-controls">{([
+          ['Continue', 'continue', Play],
+          ['Pause', 'pause', Pause],
+          ['Step over', 'next', StepForward],
+          ['Step into', 'stepIn', CornerDownRight],
+          ['Step out', 'stepOut', Undo2],
+        ] as const).map(([label, command, Icon]) => <button key={command} title={`${label} (${shortcutFor(`workbench.action.debug.${command === 'next' ? 'stepOver' : command === 'stepIn' ? 'stepInto' : command === 'stepOut' ? 'stepOut' : command}`) || '—'})`} onClick={() => { void debugControl(command) }}><Icon size={13} /></button>)}<span>DAP SESSION</span></div>}
         {debugState.running && <>
           <div className="section-heading"><ChevronDown size={13} /><span>THREADS</span><span className="count-pill">{debugThreads.length}</span></div>
           <div className="debug-data-list">{debugThreads.map((thread) => <button key={thread.id} onClick={() => { setDebugState((state) => ({ ...state, threadId: thread.id })); void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'stackTrace', arguments: { threadId: thread.id, startFrame: 0, levels: 50 } }) }}><Cpu size={12} /><strong>{thread.name}</strong><small>#{thread.id}</small></button>)}</div>
@@ -1743,49 +2212,94 @@ export default function App() {
     )
   }
 
-  const menus: Record<string, Array<{ label: string; shortcut?: string; action: () => void; divider?: boolean }>> = {
+  /**
+   * Menu bar.
+   *
+   * Entries reference command ids, so their labels, shortcuts and `when` clauses
+   * come from the single command table and can never drift out of sync with the
+   * keybindings the user has actually configured. `divider` starts a new group.
+   */
+  const menus: Record<string, Array<{ command?: string; label?: string; action?: () => void; divider?: boolean }>> = {
     File: [
-      { label: 'New Project…', shortcut: 'Ctrl+Shift+N', action: () => setProjectModal(true) },
-      { label: 'Open Folder…', shortcut: 'Ctrl+O', action: openDesktopFolder },
-      { label: 'New File…', shortcut: 'Ctrl+N', action: openNewFileDialog },
-      { label: 'Open File…', shortcut: 'Ctrl+P', action: () => setPalette({ open: true, mode: 'files' }) },
-      { label: 'Rename Active File…', shortcut: 'F2', action: () => { if (activeFile) renameFile(activeFile.path) } },
-      { label: 'Delete Active File…', action: () => { if (activeFile) void deleteFile(activeFile.path) } },
-      { label: 'Save', shortcut: 'Ctrl+S', action: () => { if (activePath) void save(activePath).catch(() => undefined) }, divider: true },
-      { label: 'Save All', shortcut: 'Ctrl+K S', action: () => { void save().catch(() => undefined) } },
+      { command: 'workbench.action.tungsten.newProject' },
+      { command: 'workbench.action.files.openFolder' },
+      { command: 'workbench.action.addRootFolder' },
+      { command: 'workbench.action.files.newUntitledFile', divider: true },
+      { command: 'workbench.action.quickOpen' },
+      { command: 'workbench.action.files.rename' },
+      { command: 'workbench.action.files.delete' },
+      { command: 'workbench.action.files.save', divider: true },
+      { command: 'workbench.action.files.saveAll' },
+      { command: 'workbench.action.closeActiveEditor' },
     ],
     Edit: [
-      { label: 'Command Palette…', shortcut: 'Ctrl+Shift+P', action: () => setPalette({ open: true, mode: 'commands' }) },
-      { label: 'Find in Files', shortcut: 'Ctrl+Shift+F', action: () => { setActivity('search'); setSidebarVisible(true) } },
-      { label: 'Format Document', shortcut: 'Shift+Alt+F', action: () => runEditorAction('editor.action.formatDocument') },
+      { command: 'workbench.action.showCommands' },
+      { command: 'editor.action.startFindReplaceAction' },
+      { command: 'workbench.view.search' },
+      { command: 'editor.action.formatDocument', divider: true },
+      { command: 'editor.action.commentLine' },
+      { command: 'editor.action.blockComment' },
+      { command: 'editor.action.copyLinesDownAction', divider: true },
+      { command: 'editor.action.moveLinesUpAction' },
+      { command: 'editor.action.moveLinesDownAction' },
+      { command: 'editor.action.deleteLines' },
     ],
     Selection: [
-      { label: 'Select All', shortcut: 'Ctrl+A', action: () => runEditorAction('editor.action.selectAll') },
-      { label: 'Expand Selection', shortcut: 'Shift+Alt+→', action: () => runEditorAction('editor.action.smartSelect.expand') },
+      { label: 'Select All', action: () => runEditorAction('editor.action.selectAll') },
+      { command: 'editor.action.smartSelect.expand' },
+      { command: 'editor.action.smartSelect.shrink' },
+      { command: 'editor.action.insertCursorAbove', divider: true },
+      { command: 'editor.action.insertCursorBelow' },
+      { command: 'editor.action.addSelectionToNextFindMatch' },
+      { command: 'editor.action.selectHighlights' },
     ],
     Go: [
-      { label: 'Go to File…', shortcut: 'Ctrl+P', action: () => setPalette({ open: true, mode: 'files' }) },
-      { label: 'Go to Symbol…', shortcut: 'Ctrl+Shift+O', action: () => runEditorAction('editor.action.quickOutline') },
-      { label: 'Go to Line…', shortcut: 'Ctrl+G', action: () => runEditorAction('editor.action.gotoLine') },
+      { command: 'workbench.action.quickOpen' },
+      { command: 'workbench.action.gotoSymbol' },
+      { command: 'workbench.action.gotoLine' },
+      { command: 'editor.action.revealDefinition', divider: true },
+      { command: 'editor.action.goToReferences' },
+      { command: 'workbench.action.nextEditor', divider: true },
+      { command: 'workbench.action.previousEditor' },
+      { command: 'workbench.action.reopenClosedEditor' },
     ],
     View: [
-      { label: 'Primary Side Bar', shortcut: 'Ctrl+B', action: () => setSidebarVisible((value) => !value) },
-      { label: 'Bottom Panel', shortcut: 'Ctrl+J', action: () => setPanelOpen((value) => !value) },
-      { label: 'Side Preview', action: () => setSidePreview((value) => !value) },
-      { label: 'Refresh Workspace', shortcut: 'Ctrl+Shift+R', action: refreshWorkspace, divider: true },
-      { label: 'Settings', shortcut: 'Ctrl+,', action: () => setSettingsOpen(true) },
+      { command: 'workbench.action.selectTheme' },
+      { command: 'workbench.action.toggleSidebarVisibility', divider: true },
+      { command: 'workbench.action.togglePanel' },
+      { command: 'workbench.action.toggleActivityBarVisibility' },
+      { command: 'workbench.action.toggleZenMode' },
+      { command: 'workbench.action.toggleCenteredLayout' },
+      { command: 'workbench.action.splitEditor' },
+      { command: 'workbench.action.toggleFullScreen' },
+      { command: 'workbench.action.zoomIn', divider: true },
+      { command: 'workbench.action.zoomOut' },
+      { command: 'workbench.action.zoomReset' },
+      { command: 'workbench.action.tungsten.refreshWorkspace', divider: true },
+      { command: 'workbench.action.openSettings' },
     ],
     Run: [
-      { label: 'Run Project', shortcut: 'Ctrl+Enter', action: runProject },
-      { label: debugState.running ? 'Stop Debugging' : 'Start Debugging', shortcut: 'F5', action: () => { if (debugState.running) void stopDebugging(); else void startDebugging() } },
+      { command: 'workbench.action.tungsten.runProject' },
+      { command: debugState.running ? 'workbench.action.debug.stop' : 'workbench.action.debug.start' },
+      { command: 'workbench.action.debug.continue', divider: true },
+      { command: 'workbench.action.debug.stepOver' },
+      { command: 'workbench.action.debug.stepInto' },
+      { command: 'workbench.action.debug.stepOut' },
+      { command: 'editor.debug.action.toggleBreakpoint', divider: true },
+      { command: 'workbench.action.tasks.runTask' },
     ],
     Terminal: [
-      { label: 'New Terminal', shortcut: 'Ctrl+Shift+`', action: () => { setPanelOpen(true); setPanelTab('TERMINAL') } },
-      { label: 'Clear Terminal', action: () => setTerminalLines([]) },
+      { command: 'workbench.action.terminal.new' },
+      { command: 'workbench.action.terminal.split' },
+      { command: 'workbench.action.terminal.toggleTerminal' },
+      { command: 'workbench.action.terminal.clear', divider: true },
+      { command: 'workbench.action.terminal.kill' },
     ],
     Help: [
-      { label: 'Keyboard Shortcuts', action: () => setKeybindingsOpen(true) },
-      { label: 'About Tungsten', action: () => notify('Tungsten IDE · forged for focused work') },
+      { command: 'workbench.action.tungsten.welcome' },
+      { command: 'workbench.action.openGlobalKeybindings' },
+      { command: 'update.checkForUpdate', divider: true },
+      { label: 'About Tungsten', action: () => notify(`Tungsten IDE ${APP_VERSION} · ${themes.length} Visual Studio Code themes · ${commands.length} commands`) },
     ],
   }
 
@@ -1799,7 +2313,27 @@ export default function App() {
             <div className="menu-wrap" key={name}>
               <button onClick={(event) => { event.stopPropagation(); if (menus[name]) setMenuOpen(menuOpen === name ? null : name) }}>{name}</button>
               {menuOpen === name && menus[name] && <div className="menu-dropdown" onClick={(event) => event.stopPropagation()}>
-                {menus[name].map((item, index) => <button key={item.label} className={item.divider && index ? 'with-divider' : ''} onClick={() => { item.action(); setMenuOpen(null) }}><span>{item.label}</span><kbd>{item.shortcut}</kbd></button>)}
+                {menus[name].map((item, index) => {
+                  const command = item.command ? commandsById.get(item.command) : undefined
+                  const label = item.label || command?.label.replace(/^[^:]+:\s*/, '') || item.command || ''
+                  const enabled = !command?.when || parseWhenClause(command.when).evaluate(whenContext)
+                  return (
+                    <button
+                      key={item.command || item.label}
+                      className={`${item.divider && index ? 'with-divider' : ''} ${enabled ? '' : 'disabled'}`}
+                      disabled={!enabled}
+                      title={command?.detail}
+                      onClick={() => {
+                        setMenuOpen(null)
+                        if (item.action) item.action()
+                        else if (item.command) void runCommandById(item.command)
+                      }}
+                    >
+                      <span>{label}</span>
+                      <kbd>{item.command ? shortcutFor(item.command) : ''}</kbd>
+                    </button>
+                  )
+                })}
               </div>}
             </div>
           ))}
@@ -1869,7 +2403,7 @@ export default function App() {
               {activePath === PREVIEW_PATH ? <Preview html={buildPreview()} onReload={() => notify('Preview refreshed')} /> : gitComparison && activePath === gitComparison.virtualPath ? (
                 <div className="git-compare-editor">
                   <div className="git-compare-toolbar"><span><GitCompareArrows size={13} /> {gitComparison.path}</span><strong>{gitComparison.conflict ? 'CURRENT ↔ INCOMING' : gitComparison.staged ? 'INDEX ↔ HEAD' : 'WORKTREE ↔ INDEX'}</strong><div>{gitComparison.conflict ? <><button onClick={() => { void resolveGitConflict('ours') }}><Check size={11} />Accept current</button><button onClick={() => { void resolveGitConflict('theirs') }}><Check size={11} />Accept incoming</button><button onClick={() => { void resolveGitConflict('both') }}><Copy size={11} />Accept both</button><button title="Open the marker file for manual editing" onClick={() => openFile(gitComparison.path)}><FileCode2 size={11} />Edit manually</button><button title="Stage the manually edited working file" onClick={() => { void resolveGitConflict('mark') }}><GitCommitHorizontal size={11} />Mark resolved</button></> : gitComparison.hunks.map((hunk, index) => <button key={hunk.id} title={hunk.header} onClick={() => { void stageGitHunk(hunk.patch) }}>{gitComparison.staged ? <Minus size={11} /> : <Plus size={11} />}{gitComparison.staged ? 'Unstage' : 'Stage'} hunk {index + 1}</button>)}</div></div>
-                  <DiffEditor height="100%" original={gitComparison.before} modified={gitComparison.after} language={files.find((file) => file.path === gitComparison.path)?.language || 'plaintext'} theme="vs-dark" options={{ readOnly: true, renderSideBySide: true, automaticLayout: true, minimap: { enabled: false }, fontSize: settings.fontSize, fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace", originalEditable: false, scrollBeyondLastLine: false }} />
+                  <DiffEditor height="100%" original={gitComparison.before} modified={gitComparison.after} language={files.find((file) => file.path === gitComparison.path)?.language || 'plaintext'} theme={monacoThemeName(activeTheme)} options={{ readOnly: true, renderSideBySide: true, automaticLayout: true, minimap: { enabled: false }, fontSize: settings.fontSize, fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace", originalEditable: false, scrollBeyondLastLine: false }} />
                 </div>
               ) : activeFile ? (
                 <Editor
@@ -1877,44 +2411,28 @@ export default function App() {
                   path={`file:///${activeFile.path}`}
                   language={activeFile.language}
                   value={activeFile.content}
-                  theme="tungsten-dark"
+                  theme={monacoThemeName(activeTheme)}
                   beforeMount={(monaco) => {
                     monacoApi = monaco
                     registerLanguageProviders(monaco)
-                    monaco.editor.defineTheme('tungsten-dark', {
-                      base: 'vs-dark',
-                      inherit: true,
-                      rules: [
-                        { token: 'comment', foreground: '727A73', fontStyle: 'italic' },
-                        { token: 'keyword', foreground: 'D2FF72' },
-                        { token: 'string', foreground: 'D7BA7D' },
-                        { token: 'number', foreground: 'B8A9E8' },
-                        { token: 'type.identifier', foreground: '82CED1' },
-                        { token: 'delimiter', foreground: '9AA09A' },
-                      ],
-                      colors: {
-                        'editor.background': '#111311',
-                        'editor.foreground': '#D5D9D4',
-                        'editorLineNumber.foreground': '#474C48',
-                        'editorLineNumber.activeForeground': '#A8B0A9',
-                        'editor.lineHighlightBackground': '#191C19',
-                        'editor.selectionBackground': '#3C4A2C',
-                        'editor.inactiveSelectionBackground': '#2A3323',
-                        'editorCursor.foreground': '#D2FF72',
-                        'editorIndentGuide.background1': '#252925',
-                        'editorIndentGuide.activeBackground1': '#454B45',
-                        'editorWhitespace.foreground': '#2B2E2B',
-                        'editorGutter.background': '#111311',
-                        'minimap.background': '#101210',
-                        'scrollbarSlider.background': '#565B5642',
-                        'scrollbarSlider.hoverBackground': '#6D736D66',
-                      },
-                    })
+                    // Register every imported VS Code theme so switching is instant.
+                    for (const theme of themes) {
+                      monaco.editor.defineTheme(monacoThemeName(theme), {
+                        base: theme.base,
+                        inherit: true,
+                        rules: theme.rules,
+                        colors: theme.editor,
+                      })
+                    }
+                    applyMonacoTheme(monaco, activeTheme)
                   }}
                   onChange={updateFile}
                   onMount={(editor) => {
                     setEditorInstance(editor)
                     editor.onDidChangeCursorPosition((event) => setCursor({ line: event.position.lineNumber, column: event.position.column }))
+                    // Track focus so `when` clauses like `editorFocus` resolve correctly.
+                    editor.onDidFocusEditorText(() => setFocusedSurface('editor'))
+                    editor.onDidBlurEditorText(() => setFocusedSurface((current) => current === 'editor' ? 'none' : current))
                     editor.onMouseDown((event: any) => {
                       const breakpointPath = decodeURIComponent(editor.getModel()?.uri.path || '').replace(/^\/+/, '')
                       if (event.target.type === monacoApi.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && event.target.position && breakpointPath) toggleBreakpointRef.current(breakpointPath, event.target.position.lineNumber)
@@ -1980,12 +2498,13 @@ export default function App() {
           <button title="Current branch" onClick={() => { setActivity('source'); setSidebarVisible(true); void refreshGit() }}><GitBranch size={13} /><span>{gitInfo.branch || 'main'}{sourceChanges.length ? '*' : ''}</span></button>
           <button title="Refresh source control" onClick={refreshGit}><RefreshCw size={11} /><span>{sourceChanges.length}</span></button>
           <button title={`${problems.length} language diagnostics`} onClick={() => { setPanelOpen(true); setPanelTab('PROBLEMS') }}><X size={12} /><span>{problems.filter((problem) => problem.severity === 1).length}</span><CircleAlert size={12} /><span>{problems.filter((problem) => problem.severity !== 1).length}</span></button>
+          {pendingChords.length > 0 && <button className="chord-indicator" title="Waiting for the next key in the sequence"><Keyboard size={12} /><span>({keybindingLabel(pendingChords)}) was pressed. Waiting for second key…</span></button>}
         </div>
         <div>
           <button title={workspaceRoot || 'Tungsten demo workspace'}><Radio size={11} /><span>{workspaceName}</span></button>
           <button title={window.tungsten ? `Desktop app · ${window.tungsten.platform}` : 'Browser workspace'}><Box size={11} /><span>{window.tungsten ? 'Desktop' : 'Web'}</span></button>
-          {activePath !== PREVIEW_PATH && <><button title="Go to line">Ln {cursor.line}, Col {cursor.column}</button><button>Spaces: 2</button><button>UTF-8</button><button>LF</button><button>{activeFile?.language || 'Plain Text'}</button></>}
-          <button title="Formatter"><CircleCheck size={12} /><span>Prettier</span></button>
+          {activePath !== PREVIEW_PATH && <><button title={`Go to line (${shortcutFor('workbench.action.gotoLine')})`} onClick={() => { setPalette({ open: true, mode: 'line' }); setPaletteQuery(':') }}>Ln {cursor.line}, Col {cursor.column}</button><button>Spaces: 2</button><button>UTF-8</button><button>LF</button><button>{activeFile?.language || 'Plain Text'}</button></>}
+          <button title={`Color theme: ${activeTheme.label} — click to change`} onClick={() => { setThemePickerOpen(true); setPaletteQuery('') }}><Eye size={12} /><span>{activeTheme.label}</span></button>
           <button title={lspState.message} className={lspState.running ? 'service-running' : ''}><Zap size={12} /><span>{lspState.running ? `${lspState.language} LSP` : 'Syntax'}</span></button>
           <button title={updateState} onClick={() => { if (updateState === 'Restart to update') void window.tungsten?.installUpdate(); else void window.tungsten?.checkForUpdates() }}><Download size={12} /><span>{updateState}</span></button>
           <button title="Notifications"><Bell size={13} /></button>
@@ -1994,13 +2513,105 @@ export default function App() {
 
       {palette.open && <div className="overlay palette-overlay" onMouseDown={() => setPalette((current) => ({ ...current, open: false }))}>
         <div className="command-palette" onMouseDown={(event) => event.stopPropagation()}>
-          <div className="palette-input"><Command size={17} /><input ref={paletteInputRef} value={paletteQuery} onChange={(event) => setPaletteQuery(event.target.value)} placeholder={palette.mode === 'files' ? 'Search files by name…' : 'Type a command…'} onKeyDown={(event) => { if (event.key === 'Enter' && paletteItems[0]) executePaletteItem(paletteItems[0].action) }} /><kbd>ESC</kbd></div>
-          <div className="palette-label">{palette.mode === 'files' ? 'FILES' : 'COMMANDS'}</div>
-          <div className="palette-list">
-            {paletteItems.map((item, index) => { const Icon = item.icon; return <button key={item.label + item.detail} className={index === 0 ? 'selected' : ''} onClick={() => executePaletteItem(item.action)}><Icon size={16} /><div><strong>{item.label}</strong><span>{item.detail}</span></div>{item.keys?.length ? <div className="shortcut-keys">{item.keys.map((key) => <kbd key={key}>{key}</kbd>)}</div> : null}</button> })}
-            {!paletteItems.length && <div className="no-results">No matching {palette.mode === 'files' ? 'files' : 'commands'}</div>}
+          <div className="palette-input">
+            <Command size={17} />
+            <input
+              ref={paletteInputRef}
+              value={paletteQuery}
+              onChange={(event) => { setPaletteQuery(event.target.value); setPaletteIndex(0) }}
+              placeholder={paletteModePlaceholder}
+              aria-label="Quick access"
+              aria-activedescendant={paletteItems[paletteIndex] ? `palette-item-${paletteIndex}` : undefined}
+              onKeyDown={(event) => {
+                if (event.key === 'ArrowDown') { event.preventDefault(); setPaletteIndex((index) => paletteItems.length ? (index + 1) % paletteItems.length : 0) }
+                else if (event.key === 'ArrowUp') { event.preventDefault(); setPaletteIndex((index) => paletteItems.length ? (index - 1 + paletteItems.length) % paletteItems.length : 0) }
+                else if (event.key === 'Home') { event.preventDefault(); setPaletteIndex(0) }
+                else if (event.key === 'End') { event.preventDefault(); setPaletteIndex(Math.max(0, paletteItems.length - 1)) }
+                else if (event.key === 'Enter') { event.preventDefault(); const item = paletteItems[paletteIndex]; if (item) executePaletteItem(item) }
+              }}
+            />
+            <kbd>ESC</kbd>
           </div>
-          <footer><span><kbd>↑↓</kbd> navigate</span><span><kbd>↵</kbd> select</span><span><kbd>esc</kbd> close</span></footer>
+          <div className="palette-label">{paletteModeLabel} · {paletteItems.length} result{paletteItems.length === 1 ? '' : 's'}</div>
+          <div className="palette-list" role="listbox">
+            {paletteItems.slice(0, 100).map((item, index) => {
+              const Icon = item.icon
+              return (
+                <button
+                  key={item.id}
+                  id={`palette-item-${index}`}
+                  role="option"
+                  aria-selected={index === paletteIndex}
+                  ref={index === paletteIndex ? (node) => node?.scrollIntoView({ block: 'nearest' }) : undefined}
+                  className={index === paletteIndex ? 'selected' : ''}
+                  onMouseMove={() => setPaletteIndex(index)}
+                  onClick={() => executePaletteItem(item)}
+                >
+                  <Icon size={16} />
+                  <div>
+                    <strong><Highlight text={item.label} matches={item.labelMatch} /></strong>
+                    <span><Highlight text={item.detail} matches={item.detailMatch} /></span>
+                  </div>
+                  {item.keybinding ? <div className="shortcut-keys"><kbd>{item.keybinding}</kbd></div> : null}
+                </button>
+              )
+            })}
+            {!paletteItems.length && <div className="no-results">No matching {paletteModeLabel.toLowerCase()}</div>}
+          </div>
+          <footer>
+            <span><kbd>↑↓</kbd> navigate</span><span><kbd>↵</kbd> select</span><span><kbd>esc</kbd> close</span>
+            <span className="palette-hints"><kbd>&gt;</kbd> commands <kbd>@</kbd> symbols <kbd>:</kbd> line</span>
+          </footer>
+        </div>
+      </div>}
+
+      {themePickerOpen && <div className="overlay palette-overlay" onMouseDown={() => { setThemePickerOpen(false); setThemeId(themeId) }}>
+        <div className="command-palette theme-picker" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="palette-input">
+            <Eye size={17} />
+            <input
+              autoFocus
+              value={paletteQuery}
+              onChange={(event) => setPaletteQuery(event.target.value)}
+              placeholder="Select a color theme (arrow keys preview instantly)"
+              aria-label="Select color theme"
+              onKeyDown={(event) => {
+                const list = filteredThemes
+                if (!list.length) return
+                const index = Math.max(0, list.findIndex((theme) => theme.id === themeId))
+                if (event.key === 'ArrowDown') { event.preventDefault(); setThemeId(list[(index + 1) % list.length].id) }
+                else if (event.key === 'ArrowUp') { event.preventDefault(); setThemeId(list[(index - 1 + list.length) % list.length].id) }
+                else if (event.key === 'Enter') { event.preventDefault(); setThemePickerOpen(false); notify(`Color theme: ${getTheme(themeId).label}`) }
+              }}
+            />
+            <kbd>ESC</kbd>
+          </div>
+          <div className="palette-label">COLOR THEMES · imported from Visual Studio Code</div>
+          <div className="palette-list" role="listbox">
+            {filteredThemes.map((theme) => (
+              <button
+                key={theme.id}
+                role="option"
+                aria-selected={theme.id === themeId}
+                className={theme.id === themeId ? 'selected' : ''}
+                onMouseEnter={() => setThemeId(theme.id)}
+                onClick={() => { setThemeId(theme.id); setThemePickerOpen(false); notify(`Color theme: ${theme.label}`) }}
+              >
+                <span className="theme-swatch" style={{ background: theme.workbench.background, borderColor: theme.workbench.border }}>
+                  <i style={{ background: theme.workbench.accent }} />
+                  <i style={{ background: theme.workbench.added }} />
+                  <i style={{ background: theme.workbench.error }} />
+                </span>
+                <div>
+                  <strong>{theme.label}</strong>
+                  <span>{theme.kind === 'hc-dark' || theme.kind === 'hc-light' ? 'High contrast' : theme.kind === 'light' ? 'Light' : 'Dark'} · {theme.rules.length} token rules</span>
+                </div>
+                {theme.id === themeId && <Check size={14} />}
+              </button>
+            ))}
+            {!filteredThemes.length && <div className="no-results">No themes match “{paletteQuery}”</div>}
+          </div>
+          <footer><span><kbd>↑↓</kbd> preview</span><span><kbd>↵</kbd> apply</span><span><kbd>esc</kbd> close</span></footer>
         </div>
       </div>}
 
@@ -2060,7 +2671,7 @@ export default function App() {
               ['Product telemetry', 'Share anonymous feature usage; disabled by default.', 'telemetry'],
               ['Crash reports', 'Allow packaged builds to create local crash diagnostics.', 'crashReports'],
             ].map(([title, description, key]) => <label className="toggle-setting" key={key}><div><strong>{title}</strong><span>{description}</span></div><input type="checkbox" checked={settings[key as keyof SettingsState] as boolean} onChange={(event) => setSettings({ ...settings, [key]: event.target.checked })} /><span className="toggle-track"><i /></span></label>)}
-            <div className="keybinding-editor"><div><strong>Keyboard shortcuts</strong><span>Search and execute all commands from the palette.</span></div><button onClick={() => { setSettingsOpen(false); setKeybindingsOpen(true) }}>Open keybinding editor <kbd>{formatShortcut(keybindings.commandPalette)}</kbd></button></div>
+            <div className="keybinding-editor"><div><strong>Keyboard shortcuts</strong><span>Search and execute all commands from the palette.</span></div><button onClick={() => { setSettingsOpen(false); setKeybindingsOpen(true) }}>Open keybinding editor <kbd>{shortcutFor('workbench.action.openGlobalKeybindings')}</kbd></button></div>
           </div>
           <footer><button onClick={() => setSettings(defaultSettings)}>Reset defaults</button><button className="primary" onClick={() => setSettingsOpen(false)}>Done</button></footer>
         </section>
@@ -2068,9 +2679,59 @@ export default function App() {
 
       {keybindingsOpen && <div className="overlay" onMouseDown={() => setKeybindingsOpen(false)}>
         <section className="keybindings-modal" onMouseDown={(event) => event.stopPropagation()}>
-          <header><div><span className="modal-icon"><Keyboard size={17} /></span><div><h2>Keyboard shortcuts</h2><p>Select a binding and press a new combination. Backspace clears it.</p></div></div><button onClick={() => setKeybindingsOpen(false)}><X size={17} /></button></header>
-          <div className="keybindings-list">{Object.entries(keybindingLabels).map(([id, label]) => <label key={id}><span>{label}</span><input readOnly value={formatShortcut(keybindings[id])} onKeyDown={(event) => { event.preventDefault(); event.stopPropagation(); if (event.key === 'Escape') { setKeybindingsOpen(false); return } if ((event.key === 'Backspace' || event.key === 'Delete') && !event.ctrlKey && !event.metaKey && !event.altKey) { setKeybindings((current) => ({ ...current, [id]: '' })); return } const shortcut = shortcutFromEvent(event); if (!shortcut) return; const duplicate = Object.entries(keybindings).find(([otherId, value]) => otherId !== id && value === shortcut); if (duplicate) { notify(`${formatShortcut(shortcut)} was reassigned from ${keybindingLabels[duplicate[0]]}`); setKeybindings((current) => ({ ...current, [duplicate[0]]: '', [id]: shortcut })) } else setKeybindings((current) => ({ ...current, [id]: shortcut })) }} onFocus={(event) => event.currentTarget.select()} /></label>)}</div>
-          <footer><button onClick={() => setKeybindings({ ...defaultKeybindings })}>Reset defaults</button><button className="primary" onClick={() => setKeybindingsOpen(false)}>Done</button></footer>
+          <header>
+            <div><span className="modal-icon"><Keyboard size={17} /></span><div><h2>Keyboard shortcuts</h2><p>Select a command, then press the keys you want. Backspace removes a binding; Escape cancels.</p></div></div>
+            <button onClick={() => { setKeybindingsOpen(false); setRecordingCommand(null) }}><X size={17} /></button>
+          </header>
+          <div className="search-box-wrap keybinding-filter"><Search size={13} /><input autoFocus value={keybindingFilter} onChange={(event) => setKeybindingFilter(event.target.value)} placeholder="Search commands and keybindings" /></div>
+          <div className="keybindings-table" role="table">
+            <div className="keybindings-head" role="row"><span>Command</span><span>Keybinding</span><span>When</span><span /></div>
+            {filteredKeybindings.map(({ command, binding }) => {
+              const isRecording = recordingCommand === command.id
+              const custom = Object.prototype.hasOwnProperty.call(userKeybindings, command.id)
+              return (
+                <div className={`keybindings-row ${custom ? 'custom' : ''}`} role="row" key={command.id}>
+                  <span className="keybinding-command" title={command.id}>{command.label}</span>
+                  <button
+                    className={`keybinding-input ${isRecording ? 'recording' : ''}`}
+                    onClick={() => setRecordingCommand(isRecording ? null : command.id)}
+                    onKeyDown={(event) => {
+                      if (!isRecording) return
+                      event.preventDefault()
+                      event.stopPropagation()
+                      if (event.key === 'Escape') { setRecordingCommand(null); return }
+                      if (event.key === 'Backspace' || event.key === 'Delete') {
+                        setUserKeybindings((current) => ({ ...current, [command.id]: '' }))
+                        setRecordingCommand(null)
+                        notify(`${command.label} unbound`)
+                        return
+                      }
+                      const chord = chordFromEvent(event)
+                      if (!chord) return
+                      const conflicting = keybindingResolver.conflicts(parseKeybinding(chord), whenContext, command.id)
+                      setUserKeybindings((current) => ({ ...current, [command.id]: chord }))
+                      setRecordingCommand(null)
+                      notify(conflicting.length
+                        ? `${keybindingLabel(chord)} also runs ${conflicting.length} other command${conflicting.length === 1 ? '' : 's'}`
+                        : `${command.label} bound to ${keybindingLabel(chord)}`)
+                    }}
+                  >
+                    {isRecording ? 'Press keys…' : binding ? <kbd>{keybindingLabel(binding.chords)}</kbd> : <em>Unassigned</em>}
+                  </button>
+                  <span className="keybinding-when">{binding?.when || '—'}</span>
+                  <span className="keybinding-actions">
+                    {custom && <button title="Restore the default binding" onClick={() => { setUserKeybindings((current) => { const next = { ...current }; delete next[command.id]; return next }); notify(`${command.label} reset`) }}><RotateCcw size={12} /></button>}
+                  </span>
+                </div>
+              )
+            })}
+            {!filteredKeybindings.length && <div className="no-results">No commands match “{keybindingFilter}”</div>}
+          </div>
+          <footer>
+            <span className="keybinding-count">{Object.keys(userKeybindings).length} customised · {keybindingRules.length} active bindings</span>
+            <button onClick={() => { setUserKeybindings({}); notify('Keyboard shortcuts reset to defaults') }}>Reset all</button>
+            <button className="primary" onClick={() => { setKeybindingsOpen(false); setRecordingCommand(null) }}>Done</button>
+          </footer>
         </section>
       </div>}
 
