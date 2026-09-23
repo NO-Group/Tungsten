@@ -84,6 +84,28 @@ describe('desktop bridge contract', () => {
     expect(renderer).toContain('parseWhenClause')
   })
 
+  it('wires snippets, search, markers, and configuration into the workbench', () => {
+    // Each engine must actually be consumed by the UI, not merely exist.
+    expect(renderer).toContain('registerSnippetProvider')
+    expect(renderer).toContain('searchFiles(')
+    expect(renderer).toContain('groupMarkersByResource')
+    expect(renderer).toContain('configurationByCategory')
+  })
+
+  it('keeps the native ripgrep path for files outside the in-memory index', () => {
+    // The client-side matcher only sees indexed files, so dropping ripgrep
+    // would silently lose results on large desktop workspaces.
+    expect(renderer).toContain('searchWorkspace')
+    expect(renderer).toContain('nativeSearchUsable')
+  })
+
+  it('exposes the search options VS Code offers', () => {
+    for (const option of ['matchCase', 'wholeWord', 'isRegex']) {
+      expect(renderer, option).toContain(option)
+    }
+    expect(renderer).toContain('Replace All')
+  })
+
   it('scores quick access with the fuzzy scorer rather than substring matching', () => {
     expect(renderer).toContain('scoreItem(')
     expect(renderer).toContain('prepareQuery(')

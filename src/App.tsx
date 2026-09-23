@@ -54,6 +54,9 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
+  Filter,
+  Code,
+  Replace,
   Settings,
   ShieldCheck,
   SquareCode,
@@ -78,6 +81,11 @@ import {
   themes,
 } from './theme/themeService'
 import { prepareQuery, scoreItem, type Match } from './quickopen/fuzzyScorer'
+import { buildSearchRegex, replaceInFile, searchFiles } from './search/textSearch'
+import { MarkerSeverity, MarkerService, filterMarkers, groupMarkersByResource, severityLabel } from './markers/markerService'
+import { builtinSnippets, parseSnippetFile, resolveSnippet, snippetsForLanguage, type Snippet } from './snippets/snippetService'
+import type { SnippetVariableContext } from './snippets/snippetVariables'
+import { configurationByCategory, configurationSchema, searchConfiguration } from './configuration/configurationRegistry'
 import { chordFromEvent, createResolver, keybindingLabel, parseKeybinding, type KeybindingRule } from './keybinding/keybindings'
 import defaultKeybindingRules from './keybinding/defaults'
 import { parseWhenClause, type Context as WhenContext } from './keybinding/contextkey'
@@ -142,6 +150,19 @@ const TERMINAL_LAYOUT_KEY = 'tungsten.terminals.v2'
 const WORKBENCH_LAYOUT_KEY = 'tungsten.workbench.v2'
 /** User keybinding overrides, keyed by command id. */
 const KEYBINDINGS_KEY = 'tungsten.keybindings.v2'
+const SNIPPETS_KEY = 'tungsten.snippets.v1'
+
+/** User-authored snippets, persisted as a VS Code-style snippets file per language. */
+function loadUserSnippets(): Snippet[] {
+  try {
+    const raw = window.localStorage.getItem(SNIPPETS_KEY)
+    if (!raw) return []
+    const byLanguage = JSON.parse(raw) as Record<string, string>
+    return Object.entries(byLanguage).flatMap(([languageId, source]) => parseSnippetFile(source, languageId))
+  } catch {
+    return []
+  }
+}
 const APP_VERSION = '3.0'
 const PREVIEW_PATH = '$preview'
 const lspLanguages = new Set(['javascript', 'typescript', 'python', 'rust', 'go', 'c', 'cpp', 'java', 'csharp', 'ruby', 'php', 'kotlin', 'lua'])
@@ -166,6 +187,46 @@ async function prepareLanguageDocument(language: string, model: any) {
     openedLspDocuments.add(key)
   }
   return { api, uri }
+}
+
+let snippetProviderRegistered = false
+
+/**
+ * Registers snippet completions for every supported language.
+ *
+ * This is separate from the LSP providers because snippets work with no
+ * language server running — including in the browser build, where
+ * `window.tungsten` is undefined.
+ */
+function registerSnippetProvider(monaco: any, getSnippets: () => Snippet[], getContext: () => SnippetVariableContext) {
+  if (snippetProviderRegistered) return
+  snippetProviderRegistered = true
+  for (const language of supportedLanguages) {
+    monaco.languages.registerCompletionItemProvider(language, {
+      provideCompletionItems: (model: any, position: any) => {
+        const word = model.getWordUntilPosition(position)
+        const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn)
+        const available = snippetsForLanguage(getSnippets(), language)
+        return {
+          suggestions: available.map((snippet) => {
+            // Hand Monaco the raw TextMate body so its own snippet controller
+            // drives the tabstops, but resolve our variables first.
+            const { text } = resolveSnippet(snippet.body, { ...getContext(), languageId: language })
+            return {
+              label: snippet.prefix,
+              kind: monaco.languages.CompletionItemKind.Snippet,
+              detail: snippet.name,
+              documentation: { value: `${snippet.description ?? snippet.name}\n\n\`\`\`${language}\n${text}\n\`\`\`` },
+              insertText: snippet.body,
+              insertTextRules: monaco.languages.CompletionItemInsertTextRule.InsertAsSnippet,
+              range,
+              sortText: `0${snippet.prefix}`,
+            }
+          }),
+        }
+      },
+    })
+  }
 }
 
 function registerLanguageProviders(monaco: any) {
@@ -592,6 +653,18 @@ export default function App() {
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; path: string } | null>(null)
   const [sidePreview, setSidePreview] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [searchReplace, setSearchReplace] = useState('')
+  const [searchShowReplace, setSearchShowReplace] = useState(false)
+  const [searchShowDetails, setSearchShowDetails] = useState(false)
+  const [searchIncludes, setSearchIncludes] = useState('')
+  const [searchExcludes, setSearchExcludes] = useState('')
+  const [searchOptions, setSearchOptions] = useState({ matchCase: false, wholeWord: false, isRegex: false })
+  const [userSnippets, setUserSnippets] = useState<Snippet[]>(() => loadUserSnippets())
+  const [snippetsOpen, setSnippetsOpen] = useState(false)
+  const [settingsEditorOpen, setSettingsEditorOpen] = useState(false)
+  const [settingsEditorQuery, setSettingsEditorQuery] = useState('')
+  const [problemFilter, setProblemFilter] = useState('')
+  const [problemSeverities, setProblemSeverities] = useState(MarkerSeverity.Error | MarkerSeverity.Warning | MarkerSeverity.Info)
   const [nativeSearchResults, setNativeSearchResults] = useState<Array<{ path: string; line: number; column: number; preview: string }>>([])
   const [searching, setSearching] = useState(false)
   const [externalChange, setExternalChange] = useState<string | null>(null)
@@ -663,6 +736,9 @@ export default function App() {
   const restoredWorkspaceRef = useRef(false)
   const watchEvaluationQueueRef = useRef<string[]>([])
   const toggleBreakpointRef = useRef<(path: string, line: number) => void>(() => undefined)
+  // Monaco providers are registered once, so they read live state through refs.
+  const snippetsRef = useRef<Snippet[]>(builtinSnippets)
+  const snippetContextRef = useRef<SnippetVariableContext>({})
   /** Indirection so the global key listener always calls the latest dispatcher. */
   const runCommandRef = useRef<(id: string) => Promise<boolean>>(async () => false)
 
@@ -1470,6 +1546,14 @@ export default function App() {
       { id: 'workbench.action.focusFirstEditorGroup', label: 'View: Focus First Editor Group', detail: 'Focus the main editor', icon: Columns2, action: () => { editorInstance?.focus() } },
       { id: 'workbench.action.focusSecondEditorGroup', label: 'View: Focus Second Editor Group', detail: sidePreview ? 'Focus the side pane' : 'Open and focus the side pane', icon: SplitSquareHorizontal, when: 'editorIsOpen', action: () => { setSidePreview(true) } },
       { id: 'workbench.action.toggleFullScreen', label: 'View: Toggle Full Screen', detail: 'Enter or leave full screen', icon: Maximize2, action: toggleFullScreen },
+      { id: 'workbench.action.openSettings', label: 'Preferences: Open Settings', detail: `${Object.keys(configurationSchema).length} settings`, icon: Settings, action: () => { setSettingsEditorQuery(''); setSettingsEditorOpen(true) } },
+      { id: 'workbench.action.openSnippets', label: 'Snippets: Browse Snippets', detail: `${activeSnippets.length} for ${activeFile?.language ?? 'this language'}`, icon: Code, action: () => setSnippetsOpen(true) },
+      { id: 'workbench.action.insertSnippet', label: 'Snippets: Insert Snippet', detail: 'Pick a snippet to insert', icon: Code, when: 'editorIsOpen', action: () => setSnippetsOpen(true) },
+      { id: 'workbench.action.replaceInFiles', label: 'Search: Replace in Files', detail: 'Search and replace across the workspace', icon: Replace, action: () => { setActivity('search'); setSidebarVisible(true); setSearchShowReplace(true) } },
+      { id: 'workbench.action.findInFiles', label: 'Search: Find in Files', detail: 'Full-text search with regex and globs', icon: Search, action: () => { setActivity('search'); setSidebarVisible(true) } },
+      { id: 'workbench.action.toggleSearchRegex', label: 'Search: Toggle Regular Expression', detail: searchOptions.isRegex ? 'Currently on' : 'Currently off', icon: Search, action: () => setSearchOptions((value) => ({ ...value, isRegex: !value.isRegex })) },
+      { id: 'workbench.action.toggleSearchCaseSensitive', label: 'Search: Toggle Match Case', detail: searchOptions.matchCase ? 'Currently on' : 'Currently off', icon: Search, action: () => setSearchOptions((value) => ({ ...value, matchCase: !value.matchCase })) },
+      { id: 'workbench.action.toggleSearchWholeWord', label: 'Search: Toggle Whole Word', detail: searchOptions.wholeWord ? 'Currently on' : 'Currently off', icon: Search, action: () => setSearchOptions((value) => ({ ...value, wholeWord: !value.wholeWord })) },
       { id: 'workbench.action.zoomIn', label: 'View: Zoom In', detail: `Editor font ${settings.fontSize}px`, icon: Plus, action: () => setSettings((current) => ({ ...current, fontSize: Math.min(28, current.fontSize + 1) })) },
       { id: 'workbench.action.zoomOut', label: 'View: Zoom Out', detail: `Editor font ${settings.fontSize}px`, icon: Minus, action: () => setSettings((current) => ({ ...current, fontSize: Math.max(8, current.fontSize - 1) })) },
       { id: 'workbench.action.zoomReset', label: 'View: Reset Zoom', detail: 'Restore the default font size', icon: RotateCcw, action: () => setSettings((current) => ({ ...current, fontSize: defaultSettings.fontSize })) },
@@ -1503,7 +1587,7 @@ export default function App() {
       { id: 'tungsten.git.stash', label: 'Git: Stash Changes', detail: `${sourceChanges.length} changes`, icon: Archive, when: 'gitRepository', action: () => { void window.tungsten?.gitStashPush().then(setGitInfo).then(() => refreshGit()) } },
 
       // Preferences.
-      { id: 'workbench.action.openSettings', label: 'Preferences: Open Settings', detail: 'Editor and workspace preferences', icon: Settings, action: () => setSettingsOpen(true) },
+      { id: 'tungsten.action.openQuickSettings', label: 'Preferences: Open Quick Settings', detail: 'Editor and workspace toggles', icon: Settings, action: () => setSettingsOpen(true) },
       { id: 'workbench.action.openGlobalKeybindings', label: 'Preferences: Open Keyboard Shortcuts', detail: `${keybindingRules.length} bindings`, icon: Keyboard, action: () => setKeybindingsOpen(true) },
       { id: 'workbench.action.selectTheme', label: 'Preferences: Color Theme', detail: activeTheme.label, icon: Eye, action: () => { setThemePickerOpen(true); setPaletteQuery('') } },
 
@@ -1740,6 +1824,16 @@ export default function App() {
 
   useEffect(() => {
     toggleBreakpointRef.current = (path, line) => { void toggleBreakpoint(path, line) }
+    snippetsRef.current = allSnippets
+    snippetContextRef.current = {
+      filePath: activePath,
+      languageId: activeFile?.language,
+      lineNumber: cursor.line,
+      currentLine: activeFile?.content.split('\n')[cursor.line - 1] ?? '',
+      indent: ' '.repeat(2),
+      workspaceName: workspaceName,
+      workspacePath: workspaceRoot ?? '',
+    }
   })
 
   useEffect(() => {
@@ -1846,8 +1940,25 @@ export default function App() {
     return () => window.clearTimeout(timer)
   }, [activeFile, collaborationActive])
 
+  /**
+   * Desktop-only ripgrep pass.
+   *
+   * The in-memory index is capped, so on a large repository some files are
+   * never loaded and the client-side matcher cannot see them. ripgrep covers
+   * the whole tree, so its hits are merged in for files outside the index.
+   * It only runs for plain literal queries: the native search does not
+   * understand our regex/whole-word options, so trusting it there would report
+   * matches that do not agree with the chosen options.
+   */
+  const nativeSearchUsable = Boolean(window.tungsten) && Boolean(workspaceRoot)
+    && !searchOptions.isRegex && !searchOptions.wholeWord && !searchOptions.matchCase
+
   useEffect(() => {
-    if (!window.tungsten || !workspaceRoot || !searchQuery.trim()) return
+    if (!nativeSearchUsable || !searchQuery.trim()) {
+      setNativeSearchResults([])
+      setSearching(false)
+      return
+    }
     let canceled = false
     const timer = window.setTimeout(() => {
       setSearching(true)
@@ -1860,7 +1971,7 @@ export default function App() {
       })
     }, 180)
     return () => { canceled = true; window.clearTimeout(timer) }
-  }, [searchQuery, workspaceRoot])
+  }, [nativeSearchUsable, searchQuery])
 
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
@@ -2021,11 +2132,142 @@ export default function App() {
     setPanelOpen(true)
   }
 
+  /** Every snippet available: builtins plus anything the user has authored. */
+  const allSnippets = useMemo(() => [...builtinSnippets, ...userSnippets], [userSnippets])
+
+  /** Settings matching the settings-editor search box, grouped by category. */
+  const settingsEditorGroups = useMemo(() => {
+    const matches = new Set(searchConfiguration(settingsEditorQuery))
+    return configurationByCategory()
+      .map((group) => ({ ...group, keys: group.keys.filter((key) => matches.has(key)) }))
+      .filter((group) => group.keys.length > 0)
+  }, [settingsEditorQuery])
+
+  const settingsEditorCount = useMemo(
+    () => settingsEditorGroups.reduce((sum, group) => sum + group.keys.length, 0),
+    [settingsEditorGroups],
+  )
+
+  /**
+   * Imports a VS Code `*.code-snippets` / `<language>.json` snippet file.
+   * The language is taken from the filename, matching VS Code's convention.
+   */
+  const importSnippetsFile = useCallback(() => {
+    const input = document.createElement('input')
+    input.type = 'file'
+    input.accept = '.json,.code-snippets'
+    input.onchange = async () => {
+      const file = input.files?.[0]
+      if (!file) return
+      const source = await file.text()
+      const languageId = file.name.replace(/\.(code-snippets|json)$/, '')
+      const parsed = parseSnippetFile(source, languageId === 'global' ? '*' : languageId)
+      if (parsed.length === 0) {
+        notify('No snippets found in that file')
+        return
+      }
+      setUserSnippets((current) => {
+        // Re-importing the same language replaces its previous snippets.
+        const next = [...current.filter((snippet) => snippet.languageId !== parsed[0].languageId), ...parsed]
+        try {
+          const byLanguage: Record<string, string> = JSON.parse(window.localStorage.getItem(SNIPPETS_KEY) ?? '{}')
+          byLanguage[parsed[0].languageId] = source
+          window.localStorage.setItem(SNIPPETS_KEY, JSON.stringify(byLanguage))
+        } catch {
+          // Persistence is best-effort; the session still gets the snippets.
+        }
+        return next
+      })
+      notify(`Imported ${parsed.length} snippet${parsed.length === 1 ? '' : 's'} for ${parsed[0].languageId}`)
+    }
+    input.click()
+  }, [notify])
+
+  /** Snippets applicable to the file currently open. */
+  const activeSnippets = useMemo(
+    () => snippetsForLanguage(allSnippets, activeFile?.language ?? 'typescript'),
+    [allSnippets, activeFile?.language],
+  )
+
+  /**
+   * Problems are projected into the marker model so the panel gets VS Code's
+   * filtering, severity toggles, and per-file grouping.
+   */
+  const problemMarkers = useMemo(() => {
+    const service = new MarkerService()
+    const byPath = new Map<string, typeof problems>()
+    for (const problem of problems) {
+      byPath.set(problem.path, [...(byPath.get(problem.path) ?? []), problem])
+    }
+    for (const [path, items] of byPath) {
+      service.changeOne('tungsten', path, items.map((problem) => ({
+        // LSP severity: 1=error, 2=warning, 3=info, 4=hint.
+        severity: problem.severity === 1 ? MarkerSeverity.Error
+          : problem.severity === 2 ? MarkerSeverity.Warning
+            : problem.severity === 4 ? MarkerSeverity.Hint : MarkerSeverity.Info,
+        message: problem.message,
+        startLineNumber: problem.line,
+        startColumn: 1,
+        endLineNumber: problem.line,
+        endColumn: 1,
+      })))
+    }
+    return service.read()
+  }, [problems])
+
+  const filteredProblemGroups = useMemo(
+    () => groupMarkersByResource(filterMarkers(problemMarkers, problemFilter, problemSeverities)),
+    [problemMarkers, problemFilter, problemSeverities],
+  )
+
   const panelContent = () => {
-    if (panelTab === 'PROBLEMS') return problems.length ? (
-      <div className="problems-list">{problems.map((problem, index) => <button key={`${problem.path}-${problem.line}-${index}`} onClick={() => { openFile(problem.path); editorInstance?.setPosition({ lineNumber: problem.line, column: 1 }); editorInstance?.revealLineInCenter(problem.line) }}><CircleAlert size={13} className={problem.severity === 1 ? 'error' : 'warning'} /><span>{problem.message}</span><small>{problem.path}:{problem.line}</small></button>)}</div>
-    ) : (
-      <div className="empty-panel"><CircleCheck size={24} /><strong>No problems detected</strong><span>Workspace validation passed.</span></div>
+    if (panelTab === 'PROBLEMS') return (
+      <div className="problems-panel">
+        <div className="problems-toolbar">
+          <div className="problems-filter">
+            <Filter size={12} />
+            <input value={problemFilter} onChange={(event) => setProblemFilter(event.target.value)} placeholder="Filter (e.g. text, !exclude)" aria-label="Filter problems" />
+          </div>
+          <div className="problems-severities">
+            {([['Errors', MarkerSeverity.Error], ['Warnings', MarkerSeverity.Warning], ['Infos', MarkerSeverity.Info]] as const).map(([label, severity]) => (
+              <button
+                key={label}
+                className={(problemSeverities & severity) !== 0 ? 'active' : ''}
+                aria-pressed={(problemSeverities & severity) !== 0}
+                title={`Toggle ${label.toLowerCase()}`}
+                onClick={() => setProblemSeverities((current) => current ^ severity)}
+              >{label}</button>
+            ))}
+          </div>
+        </div>
+        {filteredProblemGroups.length === 0 ? (
+          <div className="empty-panel"><CircleCheck size={24} /><strong>{problems.length ? 'No matching problems' : 'No problems detected'}</strong><span>{problems.length ? 'Adjust the filter to see more.' : 'Workspace validation passed.'}</span></div>
+        ) : (
+          <div className="problems-list">
+            {filteredProblemGroups.map((group) => (
+              <div className="problems-group" key={group.resource}>
+                <button className="problems-group-head" onClick={() => openFile(group.resource)}>
+                  <FileGlyph path={group.resource} />
+                  <strong>{fileName(group.resource)}</strong>
+                  <span className="problems-group-path">{group.resource}</span>
+                  <span className="count-pill">{group.markers.length}</span>
+                </button>
+                {group.markers.map((marker, index) => (
+                  <button
+                    className="problems-row"
+                    key={`${marker.resource}-${marker.startLineNumber}-${index}`}
+                    onClick={() => { openFile(marker.resource); editorInstance?.setPosition({ lineNumber: marker.startLineNumber, column: marker.startColumn }); editorInstance?.revealLineInCenter(marker.startLineNumber) }}
+                  >
+                    <CircleAlert size={13} className={marker.severity === MarkerSeverity.Error ? 'error' : marker.severity === MarkerSeverity.Warning ? 'warning' : 'info'} />
+                    <span>{marker.message}</span>
+                    <small>{severityLabel(marker.severity)} · {marker.startLineNumber}:{marker.startColumn}</small>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     )
     if (panelTab === 'OUTPUT') return (
       <div className="output-panel"><span>[Tungsten]</span> Workspace index ready · {files.length} files<br /><span>[Project]</span> {projectInfo.frameworks.join(', ') || 'No framework detected'}<br /><span>[Language]</span> {lspState.message}<br /><span>[Git]</span> {gitInfo.isRepository ? `Watching ${gitInfo.branch}` : 'No repository detected'}</div>
@@ -2076,28 +2318,132 @@ export default function App() {
     )
   }
 
+  /**
+   * Full-text search across the workspace, with the option set VS Code's
+   * search view exposes. Runs against the in-memory files so regex, whole-word
+   * and glob filters all behave identically on web and desktop.
+   */
+  const searchResultSet = useMemo(() => searchFiles(
+    files.map((file) => ({ path: file.path, content: file.content })),
+    {
+      pattern: searchQuery,
+      isRegex: searchOptions.isRegex,
+      matchCase: searchOptions.matchCase,
+      wholeWord: searchOptions.wholeWord,
+      includes: searchIncludes,
+      excludes: searchExcludes,
+      maxResults: 2000,
+    },
+  ), [files, searchQuery, searchOptions, searchIncludes, searchExcludes])
+
+  /** True when the user typed a regex that does not compile yet. */
+  const searchRegexError = useMemo(() => {
+    if (!searchOptions.isRegex || !searchQuery) return null
+    try {
+      buildSearchRegex({ pattern: searchQuery, isRegex: true })
+      return null
+    } catch (error) {
+      return (error as Error).message
+    }
+  }, [searchOptions.isRegex, searchQuery])
+
   const searchResults = useMemo(() => {
-    if (!searchQuery.trim()) return []
-    if (window.tungsten && workspaceRoot) return nativeSearchResults.map((result) => ({
-      file: files.find((file) => file.path === result.path) || { path: result.path, content: '', language: languageForPath(result.path) },
-      line: result.preview,
-      index: result.line - 1,
-      column: result.column,
-    }))
-    const query = searchQuery.toLowerCase()
-    return files.flatMap((file) => file.content.split('\n').map((line, index) => ({ file, line, index, column: line.toLowerCase().indexOf(query) + 1 })).filter((result) => result.column > 0)).slice(0, 500)
-  }, [files, nativeSearchResults, searchQuery, workspaceRoot])
+    const indexed = new Set(files.map((file) => file.path))
+    const local = searchResultSet.results.flatMap((result) => {
+      const file = files.find((item) => item.path === result.path)
+        || { path: result.path, content: '', language: languageForPath(result.path) }
+      return result.matches.map((match) => ({
+        file,
+        line: match.text,
+        index: match.line - 1,
+        column: match.start + 1,
+        match,
+      }))
+    })
+    if (!nativeSearchUsable) return local
+    // Only add ripgrep hits from files the in-memory index never loaded, so
+    // indexed files are not reported twice.
+    const extra = nativeSearchResults
+      .filter((result) => !indexed.has(result.path))
+      .map((result) => {
+        const start = Math.max(0, result.column - 1)
+        return {
+          file: { path: result.path, content: '', language: languageForPath(result.path) },
+          line: result.preview,
+          index: result.line - 1,
+          column: result.column,
+          match: { line: result.line, start, end: start + searchQuery.length, text: result.preview },
+        }
+      })
+    return [...local, ...extra]
+  }, [files, searchResultSet, nativeSearchUsable, nativeSearchResults, searchQuery])
+
+  /** Replaces every current match across the workspace. */
+  const replaceAllMatches = useCallback(async () => {
+    if (!searchQuery || searchResultSet.matchCount === 0) return
+    let changed = 0
+    for (const result of searchResultSet.results) {
+      const file = files.find((item) => item.path === result.path)
+      if (!file) continue
+      const next = replaceInFile(file.content, result.matches, searchReplace, Boolean(searchOptions.isRegex))
+      if (next === file.content) continue
+      changed += 1
+      setFiles((current) => current.map((item) => (item.path === file.path ? { ...item, content: next } : item)))
+      if (window.tungsten && workspaceRoot) {
+        try {
+          await window.tungsten.writeFile(file.path, next)
+        } catch (error) {
+          notify((error as Error).message)
+        }
+      }
+    }
+    notify(`Replaced ${searchResultSet.matchCount} occurrence${searchResultSet.matchCount === 1 ? '' : 's'} in ${changed} file${changed === 1 ? '' : 's'}`)
+  }, [files, notify, searchOptions.isRegex, searchQuery, searchReplace, searchResultSet, workspaceRoot])
 
   const sidebarContent = () => {
     if (activity === 'search') return (
       <>
-        <div className="sidebar-title"><span>SEARCH</span><Ellipsis size={16} /></div>
-        <div className="search-box-wrap"><Search size={13} /><input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search workspace" /></div>
-        <div className="search-meta">{searching ? 'Searching with ripgrep…' : searchQuery ? `${searchResults.length} result${searchResults.length === 1 ? '' : 's'} in ${new Set(searchResults.map((item) => item.file.path)).size} files` : 'Type to search across files'}</div>
+        <div className="sidebar-title"><span>SEARCH</span><TipButton label={searchShowReplace ? 'Hide replace' : 'Show replace'} active={searchShowReplace} onClick={() => setSearchShowReplace((value) => !value)}><Replace size={14} /></TipButton></div>
+        <div className="search-input-row">
+          <div className={`search-box-wrap ${searchRegexError ? 'invalid' : ''}`}>
+            <Search size={13} />
+            <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search" aria-label="Search workspace" />
+            <div className="search-toggles">
+              <button className={searchOptions.matchCase ? 'active' : ''} title="Match Case (Alt+C)" aria-pressed={searchOptions.matchCase} onClick={() => setSearchOptions((value) => ({ ...value, matchCase: !value.matchCase }))}>Aa</button>
+              <button className={searchOptions.wholeWord ? 'active' : ''} title="Match Whole Word (Alt+W)" aria-pressed={searchOptions.wholeWord} onClick={() => setSearchOptions((value) => ({ ...value, wholeWord: !value.wholeWord }))}>ab</button>
+              <button className={searchOptions.isRegex ? 'active' : ''} title="Use Regular Expression (Alt+R)" aria-pressed={searchOptions.isRegex} onClick={() => setSearchOptions((value) => ({ ...value, isRegex: !value.isRegex }))}>.*</button>
+            </div>
+          </div>
+        </div>
+        {searchShowReplace && <div className="search-input-row">
+          <div className="search-box-wrap">
+            <Replace size={13} />
+            <input value={searchReplace} onChange={(event) => setSearchReplace(event.target.value)} placeholder="Replace" aria-label="Replace with" />
+          </div>
+          <button className="search-replace-all" disabled={searchResultSet.matchCount === 0} title="Replace All" onClick={() => { void replaceAllMatches() }}>Replace All</button>
+        </div>}
+        <button className="search-toggle-details" onClick={() => setSearchShowDetails((value) => !value)}>{searchShowDetails ? '▾' : '▸'} files to include / exclude</button>
+        {searchShowDetails && <div className="search-globs">
+          <label>include<input value={searchIncludes} onChange={(event) => setSearchIncludes(event.target.value)} placeholder="e.g. src/**, *.ts" /></label>
+          <label>exclude<input value={searchExcludes} onChange={(event) => setSearchExcludes(event.target.value)} placeholder="e.g. **/*.test.ts" /></label>
+        </div>}
+        <div className="search-meta">
+          {searchRegexError
+            ? <span className="search-error">Invalid regular expression</span>
+            : searching
+              ? 'Searching with ripgrep…'
+              : searchQuery
+                ? `${searchResults.length} result${searchResults.length === 1 ? '' : 's'} in ${new Set(searchResults.map((item) => item.file.path)).size} file${new Set(searchResults.map((item) => item.file.path)).size === 1 ? '' : 's'}${searchResultSet.limitHit ? ' (truncated)' : ''}`
+                : 'Type to search across files'}
+        </div>
         <div className="search-results">
-          {searchResults.map((result, index) => <button key={`${result.file.path}-${result.index}-${index}`} onClick={() => { openFile(result.file.path); setCursor({ line: result.index + 1, column: result.column }); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: result.index + 1, column: result.column }); editorInstance?.revealLineInCenter(result.index + 1) }, 30) }}>
+          {searchResults.map((result, index) => <button key={`${result.file.path}-${result.index}-${result.column}-${index}`} onClick={() => { openFile(result.file.path); setCursor({ line: result.index + 1, column: result.column }); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: result.index + 1, column: result.column }); editorInstance?.revealLineInCenter(result.index + 1) }, 30) }}>
             <div><FileGlyph path={result.file.path} /><strong>{fileName(result.file.path)}</strong><span>:{result.index + 1}</span></div>
-            <p>{result.line.trim()}</p>
+            <p>
+              {result.line.slice(Math.max(0, result.match.start - 24), result.match.start).trimStart()}
+              <mark>{result.line.slice(result.match.start, result.match.end)}</mark>
+              {result.line.slice(result.match.end, result.match.end + 60)}
+            </p>
           </button>)}
         </div>
       </>
@@ -2277,6 +2623,8 @@ export default function App() {
       { command: 'workbench.action.zoomReset' },
       { command: 'workbench.action.tungsten.refreshWorkspace', divider: true },
       { command: 'workbench.action.openSettings' },
+      { command: 'tungsten.action.openQuickSettings' },
+      { command: 'workbench.action.openSnippets' },
     ],
     Run: [
       { command: 'workbench.action.tungsten.runProject' },
@@ -2415,6 +2763,7 @@ export default function App() {
                   beforeMount={(monaco) => {
                     monacoApi = monaco
                     registerLanguageProviders(monaco)
+                    registerSnippetProvider(monaco, () => snippetsRef.current, () => snippetContextRef.current)
                     // Register every imported VS Code theme so switching is instant.
                     for (const theme of themes) {
                       monaco.editor.defineTheme(monacoThemeName(theme), {
@@ -2562,6 +2911,83 @@ export default function App() {
             <span><kbd>↑↓</kbd> navigate</span><span><kbd>↵</kbd> select</span><span><kbd>esc</kbd> close</span>
             <span className="palette-hints"><kbd>&gt;</kbd> commands <kbd>@</kbd> symbols <kbd>:</kbd> line</span>
           </footer>
+        </div>
+      </div>}
+
+      {settingsEditorOpen && <div className="overlay" onMouseDown={() => setSettingsEditorOpen(false)}>
+        <div className="settings-editor" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-label="Settings">
+          <div className="settings-editor-head">
+            <div className="search-box-wrap">
+              <Search size={13} />
+              <input autoFocus value={settingsEditorQuery} onChange={(event) => setSettingsEditorQuery(event.target.value)} placeholder="Search settings" aria-label="Search settings" />
+            </div>
+            <button className="icon-button" onClick={() => setSettingsEditorOpen(false)} aria-label="Close settings"><X size={15} /></button>
+          </div>
+          <div className="settings-editor-body">
+            {settingsEditorGroups.length === 0 && <div className="settings-empty">No settings match “{settingsEditorQuery}”.</div>}
+            {settingsEditorGroups.map((group) => (
+              <section key={group.category}>
+                <h3>{group.category}</h3>
+                {group.keys.map((key) => {
+                  const schema = configurationSchema[key]
+                  return (
+                    <div className="settings-row" key={key}>
+                      <div className="settings-row-label">
+                        <code>{key}</code>
+                        <p>{schema.description}</p>
+                      </div>
+                      <div className="settings-row-control">
+                        {schema.type === 'boolean' && <span className="settings-readonly">{String(schema.default)}</span>}
+                        {schema.type === 'enum' && <span className="settings-readonly">{String(schema.default)}</span>}
+                        {(schema.type === 'number' || schema.type === 'string') && <span className="settings-readonly">{String(schema.default)}</span>}
+                        {(schema.type === 'array' || schema.type === 'object') && <span className="settings-readonly">{JSON.stringify(schema.default)}</span>}
+                      </div>
+                    </div>
+                  )
+                })}
+              </section>
+            ))}
+          </div>
+          <div className="settings-editor-foot">
+            <span>{settingsEditorCount} setting{settingsEditorCount === 1 ? '' : 's'} · defaults shown</span>
+            <span className="settings-hint">Edit live values from the Settings dialog</span>
+          </div>
+        </div>
+      </div>}
+
+      {snippetsOpen && <div className="overlay" onMouseDown={() => setSnippetsOpen(false)}>
+        <div className="snippets-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-label="Snippets">
+          <div className="modal-head">
+            <strong>Snippets</strong>
+            <button className="snippets-import" onClick={() => importSnippetsFile()}>Import snippets file…</button>
+            {userSnippets.length > 0 && <button className="snippets-import" onClick={() => { setUserSnippets([]); window.localStorage.removeItem(SNIPPETS_KEY); notify('Removed user snippets') }}>Clear user snippets</button>}
+            <button className="icon-button" onClick={() => setSnippetsOpen(false)} aria-label="Close snippets"><X size={15} /></button>
+          </div>
+          <div className="snippets-meta">{activeSnippets.length} available for {activeFile?.language ?? 'this language'} · type a prefix in the editor to insert</div>
+          <div className="snippets-list">
+            {activeSnippets.map((snippet) => (
+              <button
+                key={snippet.id}
+                onClick={() => {
+                  if (!editorInstance) return
+                  // Let Monaco's snippet controller run the body so tabstops work.
+                  const contribution = editorInstance.getContribution('snippetController2')
+                  editorInstance.focus()
+                  if (contribution?.insert) contribution.insert(snippet.body)
+                  else editorInstance.trigger('tungsten', 'type', { text: resolveSnippet(snippet.body, snippetContextRef.current).text })
+                  setSnippetsOpen(false)
+                  notify(`Inserted ${snippet.name}`)
+                }}
+              >
+                <div className="snippets-row-head">
+                  <kbd>{snippet.prefix}</kbd>
+                  <strong>{snippet.name}</strong>
+                  <span className={`snippets-source ${snippet.source}`}>{snippet.source}</span>
+                </div>
+                <pre>{resolveSnippet(snippet.body, { ...snippetContextRef.current, languageId: snippet.languageId === '*' ? activeFile?.language : snippet.languageId }).text}</pre>
+              </button>
+            ))}
+          </div>
         </div>
       </div>}
 

@@ -113,6 +113,11 @@ export const defaultKeybindings: KeybindingRule[] = [
   { command: 'workbench.action.zoomIn', key: 'mod+=' },
   { command: 'workbench.action.zoomOut', key: 'mod+-' },
   { command: 'workbench.action.zoomReset', key: 'mod+numpad0' },
+
+  // Search and snippets. `mod+shift+f`, `mod+,` and `mod+shift+m` are already
+  // bound above to the search view, settings, and problems respectively.
+  { command: 'workbench.action.replaceInFiles', key: 'mod+shift+h' },
+  { command: 'workbench.action.insertSnippet', key: 'mod+k mod+i', when: 'editorIsOpen' },
 ]
 
 export default defaultKeybindings
