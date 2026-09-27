@@ -15,7 +15,9 @@ import {
   moveEditorWithinGroup,
   openEditor,
   openPaths,
+  revealPath,
   setActiveEditor,
+  setGroupEditors,
   splitGroup,
   togglePinned,
 } from './editorGroups'
@@ -244,5 +246,102 @@ describe('tab actions', () => {
     layout = splitGroup(layout, 'right')
     layout = openEditor(layout, 'b.ts')
     expect(openPaths(layout).sort()).toEqual(['a.ts', 'b.ts'])
+  })
+})
+
+describe('setGroupEditors', () => {
+  it('replaces a group\'s tabs while preserving pinned and preview flags', () => {
+    let layout = createLayout(['a.ts', 'b.ts', 'c.ts'])
+    layout = togglePinned(layout, 'b.ts')
+    layout = setGroupEditors(layout, 1, ['c.ts', 'b.ts'])
+
+    expect(layout.groups[0].editors.map((editor) => editor.path)).toEqual(['c.ts', 'b.ts'])
+    expect(layout.groups[0].editors.find((editor) => editor.path === 'b.ts')?.pinned).toBe(true)
+  })
+
+  it('keeps the active editor active when it survives', () => {
+    let layout = createLayout(['a.ts', 'b.ts', 'c.ts'])
+    layout = setActiveEditor(layout, 1, 1) // b.ts
+    layout = setGroupEditors(layout, 1, ['c.ts', 'b.ts', 'a.ts'])
+    expect(activeEditor(layout)?.path).toBe('b.ts')
+  })
+
+  it('clamps the active index when the active editor is removed', () => {
+    let layout = createLayout(['a.ts', 'b.ts', 'c.ts'])
+    layout = setActiveEditor(layout, 1, 2) // c.ts
+    layout = setGroupEditors(layout, 1, ['a.ts'])
+    expect(activeEditor(layout)?.path).toBe('a.ts')
+  })
+
+  it('drops duplicate paths', () => {
+    const layout = setGroupEditors(createLayout(['a.ts']), 1, ['a.ts', 'b.ts', 'a.ts'])
+    expect(layout.groups[0].editors.map((editor) => editor.path)).toEqual(['a.ts', 'b.ts'])
+  })
+
+  it('collapses an emptied group into its sibling', () => {
+    let layout = createLayout(['a.ts'])
+    layout = splitGroup(layout, 'right', 'b.ts')
+    expect(layout.groups).toHaveLength(2)
+
+    const emptied = setGroupEditors(layout, layout.activeGroupId, [])
+    expect(emptied.groups).toHaveLength(1)
+    expect(emptied.groups[0].editors.map((editor) => editor.path)).toEqual(['a.ts'])
+  })
+
+  it('never deletes the last group, even when emptied', () => {
+    const layout = setGroupEditors(createLayout(['a.ts', 'b.ts']), 1, [])
+    expect(layout.groups).toHaveLength(1)
+    expect(layout.groups[0].editors).toEqual([])
+    expect(activeEditor(layout)).toBeUndefined()
+  })
+
+  it('renormalises sizes after collapsing', () => {
+    let layout = createLayout(['a.ts'])
+    layout = splitGroup(layout, 'right', 'b.ts')
+    layout = splitGroup(layout, 'right', 'c.ts')
+    const collapsed = setGroupEditors(layout, layout.activeGroupId, [])
+    const total = collapsed.groups.reduce((sum, group) => sum + group.size, 0)
+    expect(total).toBeCloseTo(1)
+  })
+})
+
+describe('revealPath', () => {
+  it('focuses an existing editor rather than opening a second copy', () => {
+    let layout = createLayout(['a.ts'])
+    layout = splitGroup(layout, 'right', 'b.ts')
+    const rightGroupId = layout.activeGroupId
+
+    layout = revealPath(layout, 'a.ts')
+    expect(layout.activeGroupId).not.toBe(rightGroupId)
+    expect(activeEditor(layout)?.path).toBe('a.ts')
+    expect(openPaths(layout)).toEqual(['a.ts', 'b.ts'])
+  })
+
+  it('prefers the active group when the path is open in more than one', () => {
+    let layout = createLayout(['shared.ts'])
+    layout = splitGroup(layout, 'right', 'shared.ts')
+    const rightGroupId = layout.activeGroupId
+
+    layout = revealPath(layout, 'shared.ts')
+    expect(layout.activeGroupId).toBe(rightGroupId)
+  })
+
+  it('opens the path in the active group when it is nowhere', () => {
+    const layout = revealPath(createLayout(['a.ts']), 'new.ts')
+    expect(activeEditor(layout)?.path).toBe('new.ts')
+    expect(openPaths(layout)).toEqual(['a.ts', 'new.ts'])
+  })
+
+  it('clears the selection without closing anything when given an empty path', () => {
+    let layout = createLayout(['a.ts', 'b.ts'])
+    layout = revealPath(layout, '')
+    expect(activeEditor(layout)).toBeUndefined()
+    expect(openPaths(layout)).toEqual(['a.ts', 'b.ts'])
+  })
+
+  it('can restore a selection after clearing it', () => {
+    let layout = revealPath(createLayout(['a.ts', 'b.ts']), '')
+    layout = revealPath(layout, 'a.ts')
+    expect(activeEditor(layout)?.path).toBe('a.ts')
   })
 })

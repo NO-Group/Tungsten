@@ -6,17 +6,24 @@
  *   2. Monaco, via `editor.defineTheme` + `setTheme`
  *   3. xterm.js, via the terminal palette exposed through `currentTerminalTheme()`
  *
- * Themes are imported from the real VS Code repository (see
- * `scripts/import-vscode-themes.mjs`), so colours match upstream exactly.
+ * Graphene is Tungsten's own design language and ships as the default. It is
+ * generated from `src/theme/tokens.json` by `npm run graphene`, which is the
+ * single source of truth for the product's visual identity.
+ *
+ * The remaining themes are imported from the real VS Code repository (see
+ * `scripts/import-vscode-themes.mjs`), so their colours match upstream exactly.
+ * They sit alongside Graphene as alternatives, never ahead of it.
  */
 
+import { grapheneTheme } from './graphene.generated'
 import { vscodeThemes } from './vscode-themes.generated'
 import type { TerminalPalette, TungstenTheme, WorkbenchPalette } from './types'
 
 export type { TungstenTheme, ThemeKind, TerminalPalette, WorkbenchPalette } from './types'
 
-export const themes: TungstenTheme[] = vscodeThemes
-export const DEFAULT_THEME_ID = 'dark-modern'
+/** Graphene first: it is what the product looks like, and what the picker opens on. */
+export const themes: TungstenTheme[] = [grapheneTheme, ...vscodeThemes]
+export const DEFAULT_THEME_ID = 'graphene-dark'
 const THEME_STORAGE_KEY = 'tungsten.theme.v1'
 
 /** camelCase palette key -> `--tg-kebab-case` custom property. */

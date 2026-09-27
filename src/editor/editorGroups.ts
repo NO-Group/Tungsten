@@ -298,3 +298,64 @@ export function joinGroups(layout: EditorGroupLayout): EditorGroupLayout {
   const activeIndex = Math.max(0, editors.findIndex((editor) => editor.path === active?.path))
   return { groups: [{ id: 1, editors, activeIndex, size: 1 }], activeGroupId: 1, orientation: layout.orientation }
 }
+
+/**
+ * Replaces a group's editor list wholesale, given the paths it should now hold.
+ *
+ * Existing editors keep their pinned/preview flags and their relative order is
+ * taken from `paths`, so this is safe to drive from array-level operations such
+ * as "close all" or "keep only the files that still exist on disk". The active
+ * editor is preserved when it survives, and clamped into range when it does not.
+ */
+export function setGroupEditors(layout: EditorGroupLayout, groupId: number, paths: string[]): EditorGroupLayout {
+  const unique = [...new Set(paths)]
+  let groups = layout.groups.map((group) => {
+    if (group.id !== groupId) return group
+    const previous = new Map(group.editors.map((editor) => [editor.path, editor]))
+    const activePath = group.editors[group.activeIndex]?.path
+    const editors = unique.map((path) => previous.get(path) ?? { path })
+    const kept = editors.findIndex((editor) => editor.path === activePath)
+    const activeIndex = kept >= 0 ? kept : Math.min(group.activeIndex, editors.length - 1)
+    return { ...group, editors, activeIndex: Math.max(editors.length === 0 ? -1 : 0, activeIndex) }
+  })
+
+  // An emptied group collapses into its sibling, exactly as closeEditor does.
+  const emptied = groups.find((group) => group.id === groupId && group.editors.length === 0)
+  let activeGroupId = layout.activeGroupId
+  if (emptied && groups.length > 1) {
+    groups = normalizeSizes(groups.filter((group) => group.id !== groupId))
+    if (activeGroupId === groupId) activeGroupId = groups[0].id
+  }
+
+  return { ...layout, groups, activeGroupId }
+}
+
+/**
+ * Focuses `path` wherever it already is, and only opens it if it is nowhere.
+ *
+ * This is what the explorer, quick open and "go to definition" all want: if a
+ * file is already showing in a split, jump to that split rather than opening a
+ * second copy beside the first. The active group wins ties so that repeatedly
+ * opening the same file does not drag focus across the window.
+ *
+ * Passing an empty path clears the active group's selection, which is how the
+ * welcome screen is shown without closing anything.
+ */
+export function revealPath(layout: EditorGroupLayout, path: string): EditorGroupLayout {
+  if (!path) {
+    const groups = layout.groups.map((group) => (
+      group.id === layout.activeGroupId ? { ...group, activeIndex: -1 } : group
+    ))
+    return { ...layout, groups }
+  }
+
+  const ordered = [
+    ...layout.groups.filter((group) => group.id === layout.activeGroupId),
+    ...layout.groups.filter((group) => group.id !== layout.activeGroupId),
+  ]
+  for (const group of ordered) {
+    const index = group.editors.findIndex((editor) => editor.path === path)
+    if (index >= 0) return setActiveEditor(layout, group.id, index)
+  }
+  return openEditor(layout, path)
+}

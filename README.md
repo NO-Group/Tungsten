@@ -11,6 +11,8 @@ A rugged, installable development environment built with Electron, React, Monaco
 - Editable, persistent keyboard shortcuts with collision handling and platform-aware labels
 - Inline DAP variable values beside the stopped source line
 - Managed extension lifecycle with persisted enable/disable state, user-package uninstall, scope visibility, permission display, and isolated host reactivation
+- **Graphene**, Tungsten's own design language, generated from a single token file and shipped as the default appearance
+- **Real editor groups**: split right or down up to four ways, each group with its own tab strip, breadcrumbs and Monaco instance, with drag-and-drop between splits
 - The Tungsten 2.1 performance, multi-root, terminal, Git hunk, testing, and collaboration improvements remain included
 
 See the [Tungsten 2.2 release notes](docs/RELEASE_2.2.md) and [2.1 performance notes](docs/RELEASE_2.1.md).
@@ -20,6 +22,7 @@ See the [Tungsten 2.2 release notes](docs/RELEASE_2.2.md) and [2.1 performance n
 ### Editing and workspace engine
 
 - Monaco editing for more than 40 languages and formats, with tabs, minimap, sticky scopes, formatting, autosave, accessible editor modes, and side-by-side preview
+- Editor groups modelled on VS Code's group service: split horizontally or vertically (four groups maximum), preview and pinned tabs, close-others/close-to-the-right, move editors between groups by dragging, join all groups, and focus-follows-caret so the pane you type in becomes the active one
 - Native Chokidar workspace watching with external-change indication across persisted multi-root local workspaces
 - Ripgrep-backed asynchronous content search across every local root, with bounded in-process and remote fallbacks
 - Bounded, lazy folder rendering; ignored dependency/build trees; 2 MB per-file and 4,000-file desktop safety limits
@@ -83,6 +86,30 @@ See [remote development and collaboration](docs/REMOTE_AND_COLLABORATION.md).
 - Automatic packaged-app updates and Windows NSIS/portable, macOS DMG/ZIP, and Linux AppImage/DEB targets
 - GitHub Actions cross-platform installer builds with optional signing/notarization secrets and generated release notes
 
+## Graphene, the design language
+
+`src/theme/tokens.json` is the single source of truth for how Tungsten looks: the
+neutral ramp, the one lime accent, the signal hues, the syntax palette, the type
+scale and the geometry. Nothing else hard-codes a colour.
+
+```bash
+npm run graphene            # regenerate the theme and the stylesheet variables
+npm run graphene -- --check # fail if either output is stale (runs inside `npm run check`)
+```
+
+Two artefacts are derived from it and must never be hand-edited:
+
+- `src/theme/graphene.generated.ts` — a `TungstenTheme` the runtime service applies
+  to the workbench, Monaco and xterm in one pass.
+- the `:root` token block in `src/styles.css` — the first-paint fallbacks, which
+  have to equal the runtime values or the window flashes on launch.
+
+The ten imported VS Code themes remain available in the picker; Graphene is simply
+the one the product ships as. Tests in `src/theme/graphene.test.ts` enforce the
+invariants that make it a design system rather than a palette: WCAG contrast floors
+computed with the app's own implementation, a monotonic neutral ramp, a single
+accent across every primary affordance, and the absence of any stock VS Code blue.
+
 ## Run the desktop app
 
 ```bash
@@ -117,4 +144,4 @@ npm run bench:workspace
 npm audit
 ```
 
-`check` runs ESLint, Vitest, TypeScript, and the production Vite build. The E2E smoke boots the production server and validates its shell and application bundle. The benchmark reports indexed files, bytes, throughput, elapsed time, and heap use.
+`check` verifies the Graphene outputs are current, then runs ESLint, Vitest, TypeScript, and the production Vite build. The E2E smoke boots the production server and validates its shell and application bundle. The benchmark reports indexed files, bytes, throughput, elapsed time, and heap use.
