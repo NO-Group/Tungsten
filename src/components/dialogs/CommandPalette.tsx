@@ -9,25 +9,18 @@
  */
 
 import { useEffect, useRef } from 'react'
-import { Command, type File } from 'lucide-react'
+import { Command } from 'lucide-react'
 import { Modal } from '../Modal'
 import { Highlight } from '../Highlight'
-import type { Match } from '../../quickopen/fuzzyScorer'
+import type { PaletteItem } from '../../quickopen/paletteItems'
 
-/** Quick-access modes, mirroring VS Code's quick-open prefixes. */
-export type PaletteMode = 'commands' | 'files' | 'symbols' | 'line'
-
-/** A scored row in quick access, carrying fuzzy highlight ranges. */
-export type PaletteEntry = {
-  id: string
-  label: string
-  detail: string
-  icon: typeof File
-  action: () => void | Promise<void>
-  labelMatch: Match[]
-  detailMatch: Match[]
-  keybinding?: string
-}
+/**
+ * The rows and the modes are defined where they are built, in
+ * `src/quickopen/paletteItems.ts`; re-exported here so callers of this dialog
+ * have one import.
+ */
+export type { PaletteMode } from '../../quickopen/paletteItems'
+export type PaletteEntry = PaletteItem
 
 export type CommandPaletteProps = {
   query: string

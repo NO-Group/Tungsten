@@ -107,7 +107,7 @@ import {
   saveThemeId,
   themes,
 } from './theme/themeService'
-import { prepareQuery, scoreItem } from './quickopen/fuzzyScorer'
+import { buildPaletteItems, parsePaletteQuery } from './quickopen/paletteItems'
 import { useWorkspaceSearch } from './search/useWorkspaceSearch'
 import { MarkerSeverity, MarkerService, filterMarkers, groupMarkersByResource } from './markers/markerService'
 import { builtinSnippets, parseSnippetFile, resolveSnippet, snippetsForLanguage, type Snippet } from './snippets/snippetService'
@@ -1205,103 +1205,24 @@ export default function App() {
    * workspace symbols. Results carry highlight ranges so matched characters can
    * be emphasised in the list.
    */
-  const { paletteMode, paletteSearch } = useMemo(() => {
-    const raw = paletteQuery
-    if (raw.startsWith('>')) return { paletteMode: 'commands' as PaletteMode, paletteSearch: raw.slice(1) }
-    if (raw.startsWith('@') || raw.startsWith('#')) return { paletteMode: 'symbols' as PaletteMode, paletteSearch: raw.slice(1) }
-    if (raw.startsWith(':')) return { paletteMode: 'line' as PaletteMode, paletteSearch: raw.slice(1) }
-    return { paletteMode: palette.mode, paletteSearch: raw }
-  }, [palette.mode, paletteQuery])
+  const { mode: paletteMode, search: paletteSearch } = useMemo(
+    () => parsePaletteQuery(paletteQuery, palette.mode),
+    [palette.mode, paletteQuery],
+  )
 
-  const paletteItems: PaletteEntry[] = useMemo(() => {
-    const query = prepareQuery(paletteSearch)
-
-    if (paletteMode === 'line') {
-      const line = Number.parseInt(paletteSearch, 10)
-      const maxLine = activeFile ? activeFile.content.split('\n').length : 0
-      if (!Number.isFinite(line) || line < 1) {
-        return [{ id: 'goto.line.hint', label: 'Go to line', detail: `Type a line number between 1 and ${maxLine || 1}`, icon: CornerDownRight, action: () => undefined, labelMatch: [], detailMatch: [] }]
-      }
-      const target = Math.min(Math.max(1, line), Math.max(1, maxLine))
-      return [{
-        id: `goto.line.${target}`,
-        label: `Go to line ${target}`,
-        detail: activeFile ? fileName(activeFile.path) : '',
-        icon: CornerDownRight,
-        labelMatch: [],
-        detailMatch: [],
-        action: () => {
-          editorInstance?.setPosition({ lineNumber: target, column: 1 })
-          editorInstance?.revealLineInCenter(target)
-          editorInstance?.focus()
-        },
-      }]
-    }
-
-    if (paletteMode === 'symbols') {
-      const entries = symbols.map((symbol, index) => ({
-        id: `symbol.${index}.${symbol.label}`,
-        label: symbol.label,
-        detail: activeFile ? fileName(activeFile.path) : '',
-        icon: Braces,
-        line: symbol.line,
-      }))
-      if (!query.normalized) {
-        return entries.map((entry) => ({ ...entry, labelMatch: [], detailMatch: [], action: () => revealLine(entry.line) }))
-      }
-      return entries
-        .map((entry) => ({ entry, score: scoreItem(entry.label, entry.detail, query) }))
-        .filter(({ score }) => score.score > 0)
-        .sort((a, b) => b.score.score - a.score.score)
-        .slice(0, 300)
-        .map(({ entry, score }) => ({ ...entry, labelMatch: score.labelMatch, detailMatch: score.descriptionMatch, action: () => revealLine(entry.line) }))
-    }
-
-    if (paletteMode === 'files') {
-      const candidates = files.filter((file) => file.language !== 'diff')
-      if (!query.normalized) {
-        // With no query, show the most recently opened editors first.
-        const recent = [...openTabs].reverse()
-        const ordered = [...candidates].sort((a, b) => {
-          const indexA = recent.indexOf(a.path)
-          const indexB = recent.indexOf(b.path)
-          return (indexA < 0 ? Number.MAX_SAFE_INTEGER : indexA) - (indexB < 0 ? Number.MAX_SAFE_INTEGER : indexB)
-        })
-        return ordered.slice(0, 200).map((file) => ({
-          id: `file.${file.path}`, label: fileName(file.path), detail: file.path, icon: FileCode2,
-          labelMatch: [], detailMatch: [], action: () => openFile(file.path),
-        }))
-      }
-      return candidates
-        .map((file) => {
-          const directory = file.path.includes('/') ? file.path.slice(0, file.path.lastIndexOf('/')) : ''
-          return { file, directory, score: scoreItem(fileName(file.path), directory, query) }
-        })
-        .filter(({ score }) => score.score > 0)
-        .sort((a, b) => b.score.score - a.score.score || fileName(a.file.path).length - fileName(b.file.path).length)
-        .slice(0, 300)
-        .map(({ file, score }) => ({
-          id: `file.${file.path}`, label: fileName(file.path), detail: file.path, icon: FileCode2,
-          labelMatch: score.labelMatch, detailMatch: [], action: () => openFile(file.path),
-        }))
-    }
-
-    // Commands: hide any whose `when` clause currently fails.
-    const available = commands.filter((command) => !command.when || parseWhenClause(command.when).evaluate(whenContext))
-    if (!query.normalized) {
-      return available.slice(0, 200).map((command) => ({
-        ...command, labelMatch: [], detailMatch: [], keybinding: shortcutFor(command.id),
-      }))
-    }
-    return available
-      .map((command) => ({ command, score: scoreItem(command.label, command.detail, query) }))
-      .filter(({ score }) => score.score > 0)
-      .sort((a, b) => b.score.score - a.score.score || a.command.label.length - b.command.label.length)
-      .slice(0, 300)
-      .map(({ command, score }) => ({
-        ...command, labelMatch: score.labelMatch, detailMatch: score.descriptionMatch, keybinding: shortcutFor(command.id),
-      }))
-  }, [activeFile, commands, editorInstance, files, openFile, openTabs, paletteMode, paletteSearch, revealLine, shortcutFor, symbols, whenContext])
+  const paletteItems: PaletteEntry[] = useMemo(() => buildPaletteItems(paletteMode, paletteSearch, {
+    commands, files, openTabs, symbols, activeFile, whenContext, shortcutFor,
+    icons: { file: FileCode2, symbol: Braces, line: CornerDownRight },
+    actions: {
+      openFile,
+      revealLine,
+      gotoLine: (line) => {
+        editorInstance?.setPosition({ lineNumber: line, column: 1 })
+        editorInstance?.revealLineInCenter(line)
+        editorInstance?.focus()
+      },
+    },
+  }), [activeFile, commands, editorInstance, files, openFile, openTabs, paletteMode, paletteSearch, revealLine, shortcutFor, symbols, whenContext])
 
   // The highlighted row is clamped rather than corrected after the fact, so a
   // shrinking result set can never render a selection that is out of range.

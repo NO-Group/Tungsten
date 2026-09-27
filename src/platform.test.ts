@@ -246,6 +246,15 @@ describe('desktop bridge contract', () => {
     expect(code(model)).not.toContain('useState')
   })
 
+  it('builds quick-open rows outside the component', () => {
+    expect(renderer).toContain("from './quickopen/paletteItems'")
+    expect(renderer).toContain('buildPaletteItems(paletteMode, paletteSearch, {')
+    // Scoring and mode prefixes belong to the module, not the workbench.
+    for (const call of ['scoreItem(', 'prepareQuery(', "startsWith('>')"]) {
+      expect(code(renderer), call).not.toContain(call)
+    }
+  })
+
   it('reads the project and its extensions through one service', () => {
     const service = readFileSync(new URL('./project/useProjectService.ts', import.meta.url), 'utf8')
     expect(renderer).toContain('const project = useProjectService({')
@@ -306,8 +315,9 @@ describe('desktop bridge contract', () => {
   })
 
   it('scores quick access with the fuzzy scorer rather than substring matching', () => {
-    expect(renderer).toContain('scoreItem(')
-    expect(renderer).toContain('prepareQuery(')
-    expect(renderer).not.toContain('files.filter((file) => file.path.toLowerCase().includes(')
+    const builder = readFileSync(new URL('./quickopen/paletteItems.ts', import.meta.url), 'utf8')
+    expect(builder).toContain('scoreItem(')
+    expect(builder).toContain('prepareQuery(')
+    expect(builder).not.toContain('files.filter((file) => file.path.toLowerCase().includes(')
   })
 })
