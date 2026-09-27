@@ -22,7 +22,13 @@
     "themes:import": "node scripts/import-vscode-themes.mjs",
     "bench:workspace": "node scripts/workspace-benchmark.mjs",
     "check": "npm run lint && npm run test && npm run build",
-    "preview": "vite preview --host 0.0.0.0"
+    "preview": "vite preview --host 0.0.0.0",
+    "graphene:theme": "node fork/graphene/buildTheme.mjs",
+    "graphene:css": "node fork/graphene/buildWorkbenchCss.mjs",
+    "graphene:build": "npm run graphene:theme && npm run graphene:css",
+    "fork": "node scripts/fork-vscode.mjs",
+    "fork:full": "node scripts/fork-vscode.mjs --full",
+    "fork:verify": "node scripts/fork-vscode.mjs --stage verify"
   },
   "keywords": [
     "ide",
