@@ -116,6 +116,8 @@ import { configurationByCategory, configurationSchema, searchConfiguration } fro
 import { chordFromEvent, createResolver, keybindingLabel, parseKeybinding, type KeybindingRule } from './keybinding/keybindings'
 import defaultKeybindingRules from './keybinding/defaults'
 import { parseWhenClause, type Context as WhenContext } from './keybinding/contextkey'
+import { useProjectService } from './project/useProjectService'
+import { useRemoteWorkspace } from './remote/useRemoteWorkspace'
 import { useCollaboration } from './collaboration/useCollaboration'
 import { cursorsInFile } from './collaboration/collaborationModel'
 import { useDebugSession } from './debug/useDebugSession'
@@ -495,17 +497,8 @@ export default function App() {
   const [problemFilter, setProblemFilter] = useState('')
   const [problemSeverities, setProblemSeverities] = useState(MarkerSeverity.Error | MarkerSeverity.Warning | MarkerSeverity.Info)
   const [externalChange, setExternalChange] = useState<string | null>(null)
-  const [projectInfo, setProjectInfo] = useState<ProjectInfo>({ tasks: [{ label: 'npm: dev', command: 'npm run dev' }, { label: 'npm: build', command: 'npm run build' }], tests: [], frameworks: ['Vite'] })
-  const [discoveredTests, setDiscoveredTests] = useState<Array<{ id: string; name: string; path: string; line: number; command: string }>>([])
-  const [testResults, setTestResults] = useState<Record<string, { status: 'running' | 'passed' | 'failed'; durationMs?: number; output?: string; failures?: string[]; snapshots?: string[] }>>({})
-  const [activeTestResult, setActiveTestResult] = useState<string | null>(null)
-  const [coverage, setCoverage] = useState<Record<string, Array<{ line: number; hits: number }>>>({})
-  const [extensions, setExtensions] = useState<ExtensionManifest[]>([])
   const [projectModal, setProjectModal] = useState(false)
-  const [remoteModal, setRemoteModal] = useState(false)
   const [remoteConnected, setRemoteConnected] = useState(false)
-  const [sshConfig, setSshConfig] = useState({ host: '', port: '22', username: '', root: '/', password: '', privateKeyPath: '' })
-  const [remoteProfiles, setRemoteProfiles] = useState<{ wsl: string[]; containers: Array<{ id: string; name: string; image: string }>; devcontainer: boolean }>({ wsl: [], containers: [], devcontainer: false })
   const [projectTemplate, setProjectTemplate] = useState('web')
   const [projectName, setProjectName] = useState('my-tungsten-app')
   const [watchInput, setWatchInput] = useState('')
@@ -549,6 +542,15 @@ export default function App() {
   const runTerminalCommand = terminal.run
   const runIntegratedCommand = terminal.runTask
   const appendTerminalLine = terminal.appendLine
+
+  /** Every snippet available: builtins plus anything the user has authored. */
+  const allSnippets = useMemo(() => [...builtinSnippets, ...userSnippets], [userSnippets])
+
+  /** Snippets applicable to the file currently open. */
+  const activeSnippets = useMemo(
+    () => snippetsForLanguage(allSnippets, activeFile?.language ?? 'typescript'),
+    [allSnippets, activeFile?.language],
+  )
 
   const symbols = useMemo(() => symbolsFor(activeFile), [activeFile])
   const runEditorAction = useCallback((action: string) => {
@@ -638,10 +640,6 @@ export default function App() {
     }
     setDirty(new Set())
     bumpWorkingTree()
-    window.tungsten?.detectProject().then(setProjectInfo).catch(() => undefined)
-    window.tungsten?.discoverTests().then(setDiscoveredTests).catch(() => setDiscoveredTests([]))
-    window.tungsten?.readCoverage().then(setCoverage).catch(() => setCoverage({}))
-    window.tungsten?.scanExtensions().then(setExtensions).catch(() => undefined)
     window.tungsten?.loadRecovery().then((snapshot) => {
       if (!snapshot?.files?.length || snapshot.workspaceRoot !== result.path) return
       if (window.confirm(`Tungsten found ${snapshot.files.length} recovered file${snapshot.files.length === 1 ? '' : 's'} from an interrupted session. Restore them?`)) {
@@ -668,6 +666,27 @@ export default function App() {
       notify(`Could not open folder: ${(error as Error).message}`)
     }
   }, [applyDesktopWorkspace, notify])
+
+  const project = useProjectService({
+    workspaceRoot,
+    revision: workingTreeRevision,
+    notify,
+    runInTerminal: runIntegratedCommand,
+  })
+  const { info: projectInfo, tests: discoveredTests, coverage, extensions } = project
+
+  const remote = useRemoteWorkspace({
+    notify,
+    applyWorkspace: applyDesktopWorkspace,
+    clearWorkspace: () => {
+      setRemoteConnected(false)
+      setWorkspaceRoot('')
+      setWorkspaceRoots([])
+      setFiles([])
+      setOpenTabs([])
+      setActivePath('')
+    },
+  })
 
   const addWorkspaceFolder = async () => {
     if (!window.tungsten || !workspaceRoot || remoteConnected) return notify('Additional roots are available for local desktop workspaces')
@@ -932,24 +951,6 @@ export default function App() {
     quickOpenOpen: palette.open,
   }), [activeFile, activePath, activity, debugRunning, debugThreadId, dirty.size, focusedSurface, gitInfo.isRepository, gitOperation.operation, layout.groups.length, openTabs.length, palette.open, panelOpen, panelTab, remoteConnected, sidebarVisible, workspaceRoot, zenMode])
 
-  const runStructuredTest = async (testId: string) => {
-    if (!window.tungsten) {
-      const test = discoveredTests.find((candidate) => candidate.id === testId)
-      if (test) runIntegratedCommand(test.command)
-      return
-    }
-    setActiveTestResult(testId)
-    setTestResults((current) => ({ ...current, [testId]: { status: 'running' } }))
-    try {
-      const result = await window.tungsten.runTest(testId)
-      setTestResults((current) => ({ ...current, [testId]: result }))
-      setCoverage(result.coverage)
-      notify(`Test ${result.status} in ${result.durationMs} ms`)
-    } catch (error) {
-      setTestResults((current) => ({ ...current, [testId]: { status: 'failed', output: (error as Error).message, failures: [(error as Error).message] } }))
-    }
-  }
-
   const createProjectFromTemplate = async () => {
     if (!window.tungsten) {
       notify('Project templates are available in the desktop app')
@@ -966,33 +967,8 @@ export default function App() {
     }
   }
 
-  const connectRemote = async () => {
-    if (!window.tungsten) return notify('Remote workspaces require the desktop app')
-    try {
-      const result = await window.tungsten.connectSsh({ host: sshConfig.host, port: Number(sshConfig.port), username: sshConfig.username, root: sshConfig.root, password: sshConfig.password || undefined, privateKeyPath: sshConfig.privateKeyPath || undefined })
-      applyDesktopWorkspace(result)
-      setRemoteConnected(true)
-      setRemoteModal(false)
-      setSshConfig((config) => ({ ...config, password: '' }))
-      notify(`Connected to ${sshConfig.host}`)
-    } catch (error) {
-      notify(`SSH connection failed: ${(error as Error).message}`)
-    }
-  }
-
-  const disconnectRemoteWorkspace = async () => {
-    await window.tungsten?.disconnectRemote().catch(() => undefined)
-    setRemoteConnected(false)
-    setWorkspaceRoot('')
-    setWorkspaceRoots([])
-    setFiles([])
-    setOpenTabs([])
-    setActivePath('')
-    setProjectInfo({ tasks: [], tests: [], frameworks: [] })
-    setDiscoveredTests([])
-    setRemoteModal(false)
-    notify('Remote workspace disconnected')
-  }
+  // Stable, so the editor action table below does not change every render.
+  const { setOpen: setRemoteOpen } = remote
 
   const search = useWorkspaceSearch({
     files,
@@ -1013,20 +989,6 @@ export default function App() {
   const { active: collaborationActive, cursors: collaboratorCursors, displayName: collaborationName } = collaboration
   // Stable, so the desktop subscriptions below are not rebuilt as the room changes.
   const { handleEvent: handleRoomEvent, handleDocument: handleRoomDocument, setOpen: setCollaborationOpen } = collaboration
-
-  const installExtension = async () => {
-    if (!window.tungsten) {
-      notify('Local extensions are available in the desktop app')
-      return
-    }
-    try {
-      const result = await window.tungsten.installExtensionFolder()
-      setExtensions(result.extensions)
-      if (!result.canceled) notify('Extension installed')
-    } catch (error) {
-      notify(`Extension install failed: ${(error as Error).message}`)
-    }
-  }
 
   const extensionCommands: CommandItem[] = extensions.flatMap((extension) => {
     if (extension.enabled === false) return []
@@ -1191,9 +1153,9 @@ export default function App() {
       { id: 'workbench.action.tungsten.refreshWorkspace', label: 'Workspace: Refresh From Disk', detail: 'Reload files changed by other programs', icon: RefreshCw, action: refreshWorkspace },
       { id: 'workbench.action.tungsten.resetWorkspace', label: 'Workspace: Reset Starter', detail: 'Restore all starter files', icon: RotateCcw, action: resetWorkspace },
       { id: 'workbench.action.tungsten.welcome', label: 'Help: Welcome', detail: 'Open the welcome dashboard', icon: Hammer, action: () => setActivePath('') },
-      { id: 'workbench.action.remote.connect', label: 'Remote: Connect over SSH', detail: 'Open the remote development dashboard', icon: SquareCode, action: () => { setRemoteModal(true); void window.tungsten?.remoteProfiles().then(setRemoteProfiles) } },
+      { id: 'workbench.action.remote.connect', label: 'Remote: Connect over SSH', detail: 'Open the remote development dashboard', icon: SquareCode, action: () => { remote.setOpen(true); remote.refreshProfiles() } },
       { id: 'workbench.action.collaboration.open', label: 'Collaboration: Open Live Share', detail: collaborationActive ? `${collaboration.participants.length} participants connected` : 'Host or join a Yjs room', icon: UsersRound, action: () => setCollaborationOpen(true) },
-      { id: 'workbench.extensions.action.installFromFolder', label: 'Extensions: Install From Folder', detail: 'Install a declarative Tungsten extension', icon: PackagePlus, action: () => { void installExtension() } },
+      { id: 'workbench.extensions.action.installFromFolder', label: 'Extensions: Install From Folder', detail: 'Install a declarative Tungsten extension', icon: PackagePlus, action: () => { void project.installExtension() } },
       { id: 'update.checkForUpdate', label: 'Update: Check for Updates', detail: updateState, icon: Download, action: () => { void window.tungsten?.checkForUpdates().then((result) => notify(result.message || (result.available ? 'Update available' : 'Tungsten is up to date'))) } },
     ]
 
@@ -1341,10 +1303,9 @@ export default function App() {
       }))
   }, [activeFile, commands, editorInstance, files, openFile, openTabs, paletteMode, paletteSearch, revealLine, shortcutFor, symbols, whenContext])
 
-  // Keep the highlighted row in range whenever the result set changes.
-  useEffect(() => {
-    setPaletteIndex((index) => (index >= paletteItems.length ? 0 : index))
-  }, [paletteItems.length])
+  // The highlighted row is clamped rather than corrected after the fact, so a
+  // shrinking result set can never render a selection that is out of range.
+  const selectedPaletteIndex = paletteIndex < paletteItems.length ? paletteIndex : 0
 
   /** Rows for the keybinding editor: every command with its current binding. */
   const filteredKeybindings = useMemo(() => {
@@ -1384,7 +1345,6 @@ export default function App() {
     window.tungsten.restoreWorkspace()
       .then((result) => applyDesktopWorkspace(result, true))
       .catch(() => undefined)
-    window.tungsten.remoteProfiles().then(setRemoteProfiles).catch(() => undefined)
   }, [applyDesktopWorkspace])
 
   useEffect(() => {
@@ -1594,9 +1554,6 @@ export default function App() {
     window.addEventListener('mouseup', up)
   }
 
-  /** Every snippet available: builtins plus anything the user has authored. */
-  const allSnippets = useMemo(() => [...builtinSnippets, ...userSnippets], [userSnippets])
-
   /** Settings matching the settings-editor search box, grouped by category. */
   const settingsEditorGroups = useMemo(() => {
     const matches = new Set(searchConfiguration(settingsEditorQuery))
@@ -1639,12 +1596,6 @@ export default function App() {
     }
     input.click()
   }, [notify])
-
-  /** Snippets applicable to the file currently open. */
-  const activeSnippets = useMemo(
-    () => snippetsForLanguage(allSnippets, activeFile?.language ?? 'typescript'),
-    [allSnippets, activeFile?.language],
-  )
 
   /**
    * Problems are projected into the marker model so the panel gets VS Code's
@@ -1709,7 +1660,7 @@ export default function App() {
         tabs={terminalTabs}
         activeId={activeTerminalId}
         split={terminalSplit}
-        profiles={remoteProfiles}
+        profiles={remote.profiles}
         command={terminalCommand}
         searchOpen={terminalSearchOpen}
         searchQuery={terminalSearchQuery}
@@ -1872,24 +1823,20 @@ export default function App() {
         testProfiles={projectInfo.tests}
         tasks={projectInfo.tasks}
         discovered={discoveredTests}
-        results={testResults}
-        activeResult={activeTestResult}
+        results={project.results}
+        activeResult={project.activeResult}
         coverageFileCount={Object.keys(coverage).length}
-        onRefresh={() => {
-          void window.tungsten?.detectProject().then(setProjectInfo)
-          void window.tungsten?.discoverTests().then(setDiscoveredTests)
-          void window.tungsten?.readCoverage().then(setCoverage)
-        }}
+        onRefresh={project.refresh}
         onRunTask={runIntegratedCommand}
         onOpenTest={(test) => {
-          setActiveTestResult(test.id)
+          project.setActiveResult(test.id)
           openFile(test.path)
           window.setTimeout(() => {
             editorInstance?.setPosition({ lineNumber: test.line, column: 1 })
             editorInstance?.revealLineInCenter(test.line)
           }, 30)
         }}
-        onRunTest={(id) => { void runStructuredTest(id) }}
+        onRunTest={(id) => { void project.runTest(id) }}
         onDebugTest={(test) => {
           runIntegratedCommand(test.command)
           notify('Test command started in a dedicated terminal; attach a launch configuration to debug')
@@ -1900,17 +1847,9 @@ export default function App() {
       <ExtensionsView
         extensions={extensions}
         languageCount={supportedLanguages.length}
-        onInstall={() => { void installExtension() }}
-        onToggleEnabled={(extension) => {
-          void window.tungsten?.setExtensionEnabled(extension.id, extension.enabled === false)
-            .then(setExtensions)
-            .catch((error: Error) => notify(error.message))
-        }}
-        onUninstall={(id) => {
-          void window.tungsten?.uninstallExtension(id)
-            .then(setExtensions)
-            .catch((error: Error) => notify(error.message))
-        }}
+        onInstall={() => { void project.installExtension() }}
+        onToggleEnabled={(extension) => project.setExtensionEnabled(extension.id, extension.enabled === false)}
+        onUninstall={project.uninstallExtension}
       />
     )
     return (
@@ -2117,10 +2056,10 @@ export default function App() {
     stageGitHunk,
     openDesktopFolder,
     openNewFileDialog,
-    openRemoteDialog: () => setRemoteModal(true),
+    openRemoteDialog: () => setRemoteOpen(true),
     openCollaborationDialog: () => setCollaborationOpen(true),
     openProjectDialog: () => setProjectModal(true),
-  }), [buildPreview, closeTabIn, notify, openDesktopFolder, openFile, openNewFileDialog, resolveGitConflict, runProject, setCollaborationOpen, stageGitHunk, updateFileAt])
+  }), [buildPreview, closeTabIn, notify, openDesktopFolder, openFile, openNewFileDialog, resolveGitConflict, runProject, setCollaborationOpen, setRemoteOpen, stageGitHunk, updateFileAt])
 
 
   return (
@@ -2214,10 +2153,7 @@ export default function App() {
 
       <StatusBar
         remoteConnected={remoteConnected}
-        onOpenRemote={() => {
-          setRemoteModal(true)
-          void window.tungsten?.remoteProfiles().then(setRemoteProfiles)
-        }}
+        onOpenRemote={() => { remote.setOpen(true); remote.refreshProfiles() }}
         branch={gitInfo.branch}
         changeCount={sourceChanges.length}
         onOpenSourceControl={() => { setActivity('source'); setSidebarVisible(true); void refreshGit() }}
@@ -2249,7 +2185,7 @@ export default function App() {
           query={paletteQuery}
           onQueryChange={setPaletteQuery}
           items={paletteItems}
-          index={paletteIndex}
+          index={selectedPaletteIndex}
           onIndexChange={setPaletteIndex}
           modeLabel={paletteModeLabel}
           placeholder={paletteModePlaceholder}
@@ -2333,23 +2269,23 @@ export default function App() {
         />
       )}
 
-      {remoteModal && (
+      {remote.open && (
         <RemoteDialog
-          config={sshConfig}
-          onConfigChange={setSshConfig}
-          profiles={remoteProfiles}
+          config={remote.config}
+          onConfigChange={remote.setConfig}
+          profiles={remote.profiles}
           connected={remoteConnected}
-          onConnect={() => { void connectRemote() }}
-          onDisconnect={() => { void disconnectRemoteWorkspace() }}
+          onConnect={() => { void remote.connect() }}
+          onDisconnect={() => { void remote.disconnect() }}
           onOpenWsl={(distribution) => {
             terminal.open({ kind: 'wsl', id: distribution, label: `WSL: ${distribution}` })
-            setRemoteModal(false)
+            remote.setOpen(false)
           }}
           onOpenContainer={(container) => {
             terminal.open({ kind: 'container', id: container.id, label: container.name })
-            setRemoteModal(false)
+            remote.setOpen(false)
           }}
-          onClose={() => setRemoteModal(false)}
+          onClose={() => remote.setOpen(false)}
         />
       )}
 

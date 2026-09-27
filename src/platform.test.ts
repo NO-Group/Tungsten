@@ -246,6 +246,28 @@ describe('desktop bridge contract', () => {
     expect(code(model)).not.toContain('useState')
   })
 
+  it('reads the project and its extensions through one service', () => {
+    const service = readFileSync(new URL('./project/useProjectService.ts', import.meta.url), 'utf8')
+    expect(renderer).toContain('const project = useProjectService({')
+    // Detection follows the workspace, so no caller has to remember to refresh.
+    expect(code(service)).toContain('api.detectProject()')
+    expect(code(service)).toContain('api.discoverTests()')
+    for (const call of ['detectProject', 'discoverTests', 'readCoverage', 'scanExtensions', 'tungsten.runTest', 'installExtensionFolder']) {
+      expect(code(renderer), call).not.toContain(call)
+    }
+  })
+
+  it('keeps SSH, WSL and container connections in the remote service', () => {
+    const service = readFileSync(new URL('./remote/useRemoteWorkspace.ts', import.meta.url), 'utf8')
+    expect(renderer).toContain('const remote = useRemoteWorkspace({')
+    expect(code(service)).toContain('connectSsh(')
+    // A password is used once and never kept.
+    expect(code(service)).toContain("password: ''")
+    for (const call of ['connectSsh', 'disconnectRemote', 'remoteProfiles']) {
+      expect(code(renderer), call).not.toContain(call)
+    }
+  })
+
   it('draws the activity bar and panel header from components', () => {
     expect(renderer).toContain('<ActivityBar')
     expect(renderer).toContain('<PanelHeader')
