@@ -199,13 +199,35 @@ describe('desktop bridge contract', () => {
     expect(code(renderer)).not.toContain(".tungsten/diffs/")
   })
 
-  it('emulates the browser shell outside the workbench component', () => {
+  it('runs terminals through one service, on either platform', () => {
     const shell = readFileSync(new URL('./terminal/sandboxShell.ts', import.meta.url), 'utf8')
-    expect(renderer).toContain('runSandboxCommand(command, { workspaceName, files, dirty })')
-    expect(code(shell)).not.toContain('window.tungsten')
-    expect(code(shell)).not.toContain('useState')
-    // The desktop path stays in the workbench: it is a real child process.
-    expect(code(renderer)).toContain('window.tungsten.runCommand(command)')
+    const sessions = readFileSync(new URL('./terminal/useTerminalSessions.ts', import.meta.url), 'utf8')
+    const model = readFileSync(new URL('./terminal/terminalSessions.ts', import.meta.url), 'utf8')
+    expect(renderer).toContain('const terminal = useTerminalSessions({')
+    // One place decides between a real child process and the emulated shell.
+    expect(code(sessions)).toContain('window.tungsten.runCommand(entry)')
+    expect(code(sessions)).toContain('runSandboxCommand(entry')
+    expect(code(renderer)).not.toContain('runCommand(')
+    expect(code(renderer)).not.toContain('runSandboxCommand')
+    // Tab bookkeeping and the emulated shell are pure, and tested as such.
+    for (const source of [shell, model]) {
+      expect(code(source)).not.toContain('window.tungsten')
+      expect(code(source)).not.toContain('useState')
+    }
+    expect(code(renderer)).not.toContain('localStorage.setItem(TERMINAL_LAYOUT_KEY')
+  })
+
+  it('keeps the debug adapter conversation in the debug service', () => {
+    const model = readFileSync(new URL('./debug/debugModel.ts', import.meta.url), 'utf8')
+    const session = readFileSync(new URL('./debug/useDebugSession.ts', import.meta.url), 'utf8')
+    expect(renderer).toContain('const debug = useDebugSession({')
+    // The protocol state machine is pure: message in, next session and the
+    // requests it implies out.
+    expect(code(model)).not.toContain('window.tungsten')
+    expect(code(model)).not.toContain('useState')
+    expect(code(session)).toContain('reduceDebugMessage(sessionRef.current')
+    expect(code(renderer)).not.toContain('sendDebug')
+    expect(code(renderer)).not.toContain('startDebug(')
   })
 
   it('draws the activity bar and panel header from components', () => {

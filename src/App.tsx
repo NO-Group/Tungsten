@@ -116,15 +116,15 @@ import { configurationByCategory, configurationSchema, searchConfiguration } fro
 import { chordFromEvent, createResolver, keybindingLabel, parseKeybinding, type KeybindingRule } from './keybinding/keybindings'
 import defaultKeybindingRules from './keybinding/defaults'
 import { parseWhenClause, type Context as WhenContext } from './keybinding/contextkey'
+import { useDebugSession } from './debug/useDebugSession'
+import { workspacePathForSource } from './debug/debugModel'
 import { useGitService } from './git/useGitService'
-import { runSandboxCommand } from './terminal/sandboxShell'
+import { useTerminalSessions } from './terminal/useTerminalSessions'
 import './styles.css'
 
 /** Menu bar order, as read left to right. */
 const MENU_ORDER = ['File', 'Edit', 'Selection', 'View', 'Go', 'Run', 'Terminal', 'Help']
 
-type TerminalProfile = { kind: 'wsl' | 'container'; id: string; label?: string }
-type TerminalTab = { id: number; label: string; generation: number; profile?: Omit<TerminalProfile, 'label'> }
 type CommandItem = {
   /** Stable VS Code-compatible command id, e.g. `workbench.action.files.save`. */
   id: string
@@ -139,7 +139,6 @@ type CommandItem = {
 
 const WORKSPACE_KEY = 'tungsten.workspace.v1'
 const SETTINGS_KEY = 'tungsten.settings.v1'
-const TERMINAL_LAYOUT_KEY = 'tungsten.terminals.v2'
 const WORKBENCH_LAYOUT_KEY = 'tungsten.workbench.v2'
 /** User keybinding overrides, keyed by command id. */
 const KEYBINDINGS_KEY = 'tungsten.keybindings.v2'
@@ -380,15 +379,6 @@ function loadSettings() {
   }
 }
 
-function loadTerminalLayout(): { tabs: TerminalTab[]; activeId: number; split: boolean } {
-  try {
-    const stored = JSON.parse(localStorage.getItem(TERMINAL_LAYOUT_KEY) || '{}')
-    const tabs = Array.isArray(stored.tabs) ? stored.tabs.filter((tab: TerminalTab) => Number.isInteger(tab.id) && typeof tab.label === 'string').slice(0, 12) : []
-    if (tabs.length) return { tabs: tabs.map((tab: TerminalTab) => ({ ...tab, generation: 0 })), activeId: tabs.some((tab: TerminalTab) => tab.id === stored.activeId) ? stored.activeId : tabs[0].id, split: Boolean(stored.split) }
-  } catch { /* Use the default terminal layout. */ }
-  return { tabs: [{ id: 1, label: 'shell 1', generation: 0 }], activeId: 1, split: false }
-}
-
 function loadWorkbenchLayout() {
   try { return JSON.parse(localStorage.getItem(WORKBENCH_LAYOUT_KEY) || '{}') as { sidebarWidth?: number; panelHeight?: number; sidebarVisible?: boolean; panelOpen?: boolean } }
   catch { return {} }
@@ -414,7 +404,6 @@ function mergeKeybindings(overrides: Record<string, string>): KeybindingRule[] {
 }
 
 export default function App() {
-  const [initialTerminalLayout] = useState(loadTerminalLayout)
   const [initialWorkbenchLayout] = useState(loadWorkbenchLayout)
   const [files, setFiles] = useState<WorkspaceFile[]>(loadFiles)
   const [workspaceName, setWorkspaceName] = useState('forge')
@@ -519,14 +508,6 @@ export default function App() {
   const [activeTestResult, setActiveTestResult] = useState<string | null>(null)
   const [coverage, setCoverage] = useState<Record<string, Array<{ line: number; hits: number }>>>({})
   const [extensions, setExtensions] = useState<ExtensionManifest[]>([])
-  const [terminalTabs, setTerminalTabs] = useState<TerminalTab[]>(initialTerminalLayout.tabs)
-  const nextTerminalIdRef = useRef(Math.max(0, ...initialTerminalLayout.tabs.map((terminal) => terminal.id)) + 1)
-  const [activeTerminalId, setActiveTerminalId] = useState(initialTerminalLayout.activeId)
-  const [terminalSplit, setTerminalSplit] = useState(initialTerminalLayout.split)
-  const [terminalSearchOpen, setTerminalSearchOpen] = useState(false)
-  const [terminalSearchQuery, setTerminalSearchQuery] = useState('')
-  const [terminalSearchRequest, setTerminalSearchRequest] = useState<{ id: number; query: string } | null>(null)
-  const [terminalCommand, setTerminalCommand] = useState<{ id: number; command: string; terminalId?: number } | null>(null)
   const [projectModal, setProjectModal] = useState(false)
   const [remoteModal, setRemoteModal] = useState(false)
   const [remoteConnected, setRemoteConnected] = useState(false)
@@ -542,33 +523,16 @@ export default function App() {
   const [commentInput, setCommentInput] = useState('')
   const [projectTemplate, setProjectTemplate] = useState('web')
   const [projectName, setProjectName] = useState('my-tungsten-app')
-  const [debugState, setDebugState] = useState<{ running: boolean; output: string[]; id?: string; threadId?: number }>({ running: false, output: [] })
-  const [breakpoints, setBreakpoints] = useState<Array<{ path: string; line: number; condition?: string }>>([])
-  const [debugThreads, setDebugThreads] = useState<Array<{ id: number; name: string }>>([])
-  const [debugFrames, setDebugFrames] = useState<Array<{ id: number; name: string; line: number; source?: { path?: string; name?: string } }>>([])
-  const [debugScopes, setDebugScopes] = useState<Array<{ name: string; variablesReference: number }>>([])
-  const [debugVariables, setDebugVariables] = useState<Array<{ name: string; value: string; type?: string; variablesReference?: number }>>([])
-  const [watches, setWatches] = useState<string[]>([])
   const [watchInput, setWatchInput] = useState('')
-  const [watchValues, setWatchValues] = useState<Record<string, string>>({})
   const [lspState, setLspState] = useState<{ language: string; running: boolean; message: string }>({ language: '', running: false, message: 'Built-in syntax engine' })
   const [problems, setProblems] = useState<Array<{ message: string; path: string; line: number; severity: number }>>([])
   const [updateState, setUpdateState] = useState('Up to date')
   const [editorInstance, setEditorInstance] = useState<any>(null)
   const [toast, setToast] = useState('')
   const [menuOpen, setMenuOpen] = useState<string | null>(null)
-  const [terminalLines, setTerminalLines] = useState<Array<{ text: string; kind?: string }>>([
-    { text: `Tungsten Shell 2.2.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
-    { text: `${supportedLanguages.length} language grammars loaded. Type “help” for available commands.`, kind: 'success' },
-  ])
-  const [terminalInput, setTerminalInput] = useState('')
-  const [history, setHistory] = useState<string[]>([])
-  const [historyIndex, setHistoryIndex] = useState(-1)
   const terminalEndRef = useRef<HTMLDivElement>(null)
-  const terminalInputRef = useRef<HTMLInputElement>(null)
   const newFileInputRef = useRef<HTMLInputElement>(null)
   const restoredWorkspaceRef = useRef(false)
-  const watchEvaluationQueueRef = useRef<string[]>([])
   const toggleBreakpointRef = useRef<(path: string, line: number) => void>(() => undefined)
   // Monaco providers are registered once, so they read live state through refs.
   const snippetsRef = useRef<Snippet[]>(builtinSnippets)
@@ -584,6 +548,23 @@ export default function App() {
   const [workingTreeRevision, bumpWorkingTree] = useReducer((revision: number) => revision + 1, 0)
 
   const activeFile = files.find((file) => file.path === activePath)
+
+  const terminal = useTerminalSessions({
+    workspaceRoot,
+    workspaceName,
+    files,
+    dirty,
+    revealTerminal: () => { setPanelTab('TERMINAL'); setPanelOpen(true) },
+  })
+  const {
+    tabs: terminalTabs, activeId: activeTerminalId, split: terminalSplit,
+    searchOpen: terminalSearchOpen, searchQuery: terminalSearchQuery, searchRequest: terminalSearchRequest,
+    command: terminalCommand, lines: terminalLines, input: terminalInput, history, historyIndex,
+  } = terminal
+  const runTerminalCommand = terminal.run
+  const runIntegratedCommand = terminal.runTask
+  const appendTerminalLine = terminal.appendLine
+
   const symbols = useMemo(() => symbolsFor(activeFile), [activeFile])
   const runEditorAction = useCallback((action: string) => {
     void editorInstance?.getAction(action)?.run()
@@ -686,9 +667,9 @@ export default function App() {
         void window.tungsten?.clearRecovery()
       }
     }).catch(() => undefined)
-    setTerminalLines((lines) => [...lines, { text: `${restored ? 'Restored' : 'Opened'} ${result.path} · ${result.files!.length} text files indexed`, kind: 'success' }])
+    appendTerminalLine({ text: `${restored ? 'Restored' : 'Opened'} ${result.path} · ${result.files!.length} text files indexed`, kind: 'success' })
     notify(result.truncated ? 'Workspace opened; 4,000-file index limit reached' : `${result.name} ${restored ? 'restored' : 'opened'}`)
-  }, [notify, setActivePath, setOpenTabs])
+  }, [appendTerminalLine, notify, setActivePath, setOpenTabs])
 
   const openDesktopFolder = useCallback(async () => {
     if (!window.tungsten) {
@@ -760,14 +741,20 @@ export default function App() {
   }, [editorInstance])
 
   /** Send a DAP execution-control request for the stopped thread. */
-  const debugControl = useCallback(async (command: 'continue' | 'pause' | 'next' | 'stepIn' | 'stepOut') => {
-    if (!window.tungsten || !debugState.id) return
-    await window.tungsten.sendDebug(debugState.id, {
-      type: 'request',
-      command,
-      arguments: { threadId: debugState.threadId || 1 },
-    }).catch((error: Error) => notify(`Debug ${command} failed: ${error.message}`))
-  }, [debugState.id, debugState.threadId, notify])
+  const debug = useDebugSession({
+    workspaceRoot,
+    launchConfig: files.find((file) => file.path === '.tungsten/launch.json')?.content,
+    notify,
+    revealDebugView: () => { setActivity('debug'); setSidebarVisible(true) },
+  })
+  const { breakpoints, watches } = debug
+  // Stable across renders, so the adapter subscription below is not torn down
+  // and rebuilt every time the session state changes.
+  const { handleMessage: handleDebugMessage, handleOutput: handleDebugOutput, handleExit: handleDebugExit } = debug
+  const {
+    running: debugRunning, output: debugOutput, id: debugSessionId, threadId: debugThreadId,
+    threads: debugThreads, frames: debugFrames, scopes: debugScopes, variables: debugVariables, watchValues,
+  } = debug.session
 
   /**
    * Write an edit back to a specific path.
@@ -798,12 +785,11 @@ export default function App() {
     if (!openTabs.includes(PREVIEW_PATH)) setOpenTabs((tabs) => [...tabs, PREVIEW_PATH])
     setActivePath(PREVIEW_PATH)
     notify('Preview rebuilt successfully')
-    setTerminalLines((lines) => [
-      ...lines,
+    appendTerminalLine(
       { text: '$ npm run dev', kind: 'command' },
       { text: 'VITE ready in 287 ms  →  tungsten://preview/forge', kind: 'success' },
-    ])
-  }, [notify, openTabs, setActivePath, setOpenTabs])
+    )
+  }, [appendTerminalLine, notify, openTabs, setActivePath, setOpenTabs])
 
   const openNewFileDialog = useCallback(() => {
     setRenameTarget(null)
@@ -922,7 +908,7 @@ export default function App() {
       setOpenTabs((tabs) => tabs.filter((tab) => tab !== virtualPath))
       setActivePath(focusPath)
     },
-    reportOutput: (text) => setTerminalLines((lines) => [...lines, { text, kind: 'success' }]),
+    reportOutput: (text) => appendTerminalLine({ text, kind: 'success' }),
     clearDirty: () => setDirty(new Set()),
   })
   const {
@@ -957,51 +943,9 @@ export default function App() {
     remoteConnected,
     gitRepository: gitInfo.isRepository,
     gitOperation: gitOperation.operation || '',
-    debugState: debugState.running ? (debugState.threadId ? 'stopped' : 'running') : '',
+    debugState: debugRunning ? (debugThreadId ? 'stopped' : 'running') : '',
     quickOpenOpen: palette.open,
-  }), [activeFile, activePath, activity, debugState.running, debugState.threadId, dirty.size, focusedSurface, gitInfo.isRepository, gitOperation.operation, layout.groups.length, openTabs.length, palette.open, panelOpen, panelTab, remoteConnected, sidebarVisible, workspaceRoot, zenMode])
-
-  /**
-   * Runs a command in the bottom panel's terminal.
-   *
-   * On the desktop this is a real child process. In the browser it falls
-   * through to the emulated shell, which answers from the in-memory
-   * workspace.
-   */
-  const runTerminalCommand = (raw: string) => {
-    const command = raw.trim()
-    if (!command) return
-    setHistory((current) => [...current, command])
-    setHistoryIndex(-1)
-
-    if (window.tungsten && workspaceRoot) {
-      if (command === 'clear') return setTerminalLines([])
-      setTerminalLines((lines) => [...lines, { text: `tungsten@${workspaceName} ~/${workspaceName} $ ${command}`, kind: 'command' }])
-      window.tungsten.runCommand(command).then((result) => {
-        const output: Array<{ text: string; kind?: string }> = []
-        if (result.stdout.trimEnd()) output.push({ text: result.stdout.trimEnd(), kind: result.code === 0 ? undefined : 'warning' })
-        if (result.stderr.trimEnd()) output.push({ text: result.stderr.trimEnd(), kind: 'error' })
-        if (!output.length) output.push({ text: `Process exited with code ${result.code}`, kind: result.code === 0 ? 'success' : 'error' })
-        setTerminalLines((lines) => [...lines, ...output])
-      }).catch((error: Error) => setTerminalLines((lines) => [...lines, { text: error.message, kind: 'error' }]))
-      return
-    }
-
-    const result = runSandboxCommand(command, { workspaceName, files, dirty })
-    if (result.clear) setTerminalLines([])
-    else setTerminalLines((lines) => [...lines, ...result.lines])
-  }
-
-  const runIntegratedCommand = (command: string) => {
-    setPanelOpen(true)
-    setPanelTab('TERMINAL')
-    if (window.tungsten && workspaceRoot) {
-      const terminalId = newTerminal(undefined, `task · ${command.split(/\s+/)[0]}`)
-      setTerminalCommand((current) => ({ id: (current?.id || 0) + 1, command, terminalId }))
-    } else {
-      runTerminalCommand(command)
-    }
-  }
+  }), [activeFile, activePath, activity, debugRunning, debugThreadId, dirty.size, focusedSurface, gitInfo.isRepository, gitOperation.operation, layout.groups.length, openTabs.length, palette.open, panelOpen, panelTab, remoteConnected, sidebarVisible, workspaceRoot, zenMode])
 
   const runStructuredTest = async (testId: string) => {
     if (!window.tungsten) {
@@ -1086,71 +1030,6 @@ export default function App() {
     const comment = { type: 'comment' as const, name: collaborationName, text: commentInput.trim(), path: activeFile?.path, line: cursor.line }
     void window.tungsten.sendCollaborationEvent(comment)
     setCommentInput('')
-  }
-
-  const startDebugging = useCallback(async () => {
-    if (!window.tungsten || !workspaceRoot) {
-      notify('Open a desktop workspace before debugging')
-      return
-    }
-    const launchFile = files.find((file) => file.path === '.tungsten/launch.json')
-    if (!launchFile) {
-      setActivity('debug')
-      setSidebarVisible(true)
-      notify('Create .tungsten/launch.json to configure a debug adapter')
-      return
-    }
-    try {
-      const manifest = JSON.parse(launchFile.content)
-      const configuration = manifest.configurations?.[0]
-      if (!configuration) throw new Error('No launch configuration was found.')
-      const { id } = await window.tungsten.startDebug(configuration)
-      setDebugState({ running: true, id, output: [`Started ${configuration.name || 'debug adapter'}`] })
-      await window.tungsten.sendDebug(id, {
-        type: 'request',
-        command: 'initialize',
-        arguments: { clientID: 'tungsten', clientName: 'Tungsten IDE', adapterID: configuration.type || 'custom', pathFormat: 'path', linesStartAt1: true, columnsStartAt1: true },
-      })
-      setActivity('debug')
-      setSidebarVisible(true)
-    } catch (error) {
-      setDebugState({ running: false, output: [(error as Error).message] })
-      notify(`Debugger failed: ${(error as Error).message}`)
-    }
-  }, [files, notify, workspaceRoot])
-
-  const stopDebugging = useCallback(async () => {
-    if (window.tungsten && debugState.id) await window.tungsten.stopDebug(debugState.id)
-    setDebugState((state) => ({ ...state, running: false, output: [...state.output, 'Debug session stopped'] }))
-  }, [debugState.id])
-
-  const toggleBreakpoint = async (path: string, line: number) => {
-    const exists = breakpoints.some((point) => point.path === path && point.line === line)
-    const next = exists ? breakpoints.filter((point) => point.path !== path || point.line !== line) : [...breakpoints, { path, line }]
-    setBreakpoints(next)
-    if (window.tungsten && debugState.id) {
-      try {
-        const absolutePath = await window.tungsten.absolutePath(path)
-        await window.tungsten.sendDebug(debugState.id, {
-          type: 'request',
-          command: 'setBreakpoints',
-          arguments: { source: { path: absolutePath }, breakpoints: next.filter((point) => point.path === path).map((point) => ({ line: point.line })) },
-        })
-      } catch (error) {
-        notify(`Breakpoint sync failed: ${(error as Error).message}`)
-      }
-    }
-  }
-
-  const editBreakpointCondition = async (path: string, line: number) => {
-    const point = breakpoints.find((breakpoint) => breakpoint.path === path && breakpoint.line === line)
-    const condition = window.prompt('Breakpoint condition (leave empty for unconditional)', point?.condition || '') ?? point?.condition
-    const next = breakpoints.map((breakpoint) => breakpoint.path === path && breakpoint.line === line ? { ...breakpoint, condition: condition || undefined } : breakpoint)
-    setBreakpoints(next)
-    if (window.tungsten && debugState.id) {
-      const absolutePath = await window.tungsten.absolutePath(path)
-      await window.tungsten.sendDebug(debugState.id, { type: 'request', command: 'setBreakpoints', arguments: { source: { path: absolutePath }, breakpoints: next.filter((breakpoint) => breakpoint.path === path).map((breakpoint) => ({ line: breakpoint.line, condition: breakpoint.condition })) } })
-    }
   }
 
   const installExtension = async () => {
@@ -1293,24 +1172,24 @@ export default function App() {
 
       // Terminal.
       { id: 'workbench.action.terminal.toggleTerminal', label: 'Terminal: Toggle Terminal', detail: 'Show or hide the integrated terminal', icon: TerminalSquare, action: () => { if (panelTab === 'TERMINAL' && panelOpen) setPanelOpen(false); else { setPanelTab('TERMINAL'); setPanelOpen(true) } } },
-      { id: 'workbench.action.terminal.new', label: 'Terminal: Create New Terminal', detail: 'Start another shell', icon: Plus, action: () => { if (window.tungsten) newTerminal(); else { setPanelTab('TERMINAL'); setPanelOpen(true) } } },
-      { id: 'workbench.action.terminal.split', label: 'Terminal: Split Terminal', detail: terminalSplit ? 'Return to a single pane' : 'Show two terminals side by side', icon: Columns2, action: () => { if (terminalTabs.length < 2) newTerminal(); setTerminalSplit((value) => !value) } },
-      { id: 'workbench.action.terminal.kill', label: 'Terminal: Kill Active Terminal', detail: 'Close the focused terminal', icon: Trash2, when: 'isDesktop', action: () => closeTerminal(activeTerminalId) },
-      { id: 'workbench.action.terminal.clear', label: 'Terminal: Clear', detail: 'Clear the terminal buffer', icon: Trash2, action: () => { if (window.tungsten) setTerminalTabs((tabs) => tabs.map((terminal) => terminal.id === activeTerminalId ? { ...terminal, generation: terminal.generation + 1 } : terminal)); else setTerminalLines([]) } },
-      { id: 'workbench.action.terminal.focusNext', label: 'Terminal: Focus Next Terminal', detail: `${terminalTabs.length} terminals open`, icon: ChevronRight, when: 'isDesktop', action: () => focusTerminalByOffset(1) },
-      { id: 'workbench.action.terminal.focusPrevious', label: 'Terminal: Focus Previous Terminal', detail: `${terminalTabs.length} terminals open`, icon: ChevronRight, when: 'isDesktop', action: () => focusTerminalByOffset(-1) },
+      { id: 'workbench.action.terminal.new', label: 'Terminal: Create New Terminal', detail: 'Start another shell', icon: Plus, action: () => { if (window.tungsten) terminal.open(); else { setPanelTab('TERMINAL'); setPanelOpen(true) } } },
+      { id: 'workbench.action.terminal.split', label: 'Terminal: Split Terminal', detail: terminalSplit ? 'Return to a single pane' : 'Show two terminals side by side', icon: Columns2, action: terminal.toggleSplit },
+      { id: 'workbench.action.terminal.kill', label: 'Terminal: Kill Active Terminal', detail: 'Close the focused terminal', icon: Trash2, when: 'isDesktop', action: () => terminal.close(activeTerminalId) },
+      { id: 'workbench.action.terminal.clear', label: 'Terminal: Clear', detail: 'Clear the terminal buffer', icon: Trash2, action: terminal.restart },
+      { id: 'workbench.action.terminal.focusNext', label: 'Terminal: Focus Next Terminal', detail: `${terminalTabs.length} terminals open`, icon: ChevronRight, when: 'isDesktop', action: () => terminal.focusByOffset(1) },
+      { id: 'workbench.action.terminal.focusPrevious', label: 'Terminal: Focus Previous Terminal', detail: `${terminalTabs.length} terminals open`, icon: ChevronRight, when: 'isDesktop', action: () => terminal.focusByOffset(-1) },
 
       // Run, debug and tasks.
       { id: 'workbench.action.tungsten.runProject', label: 'Run: Open Live Preview', detail: 'Build and run the current workspace', icon: Play, action: runProject },
-      { id: 'workbench.action.debug.start', label: 'Debug: Start Debugging', detail: 'Start from .tungsten/launch.json', icon: BugPlay, when: '!debugState', action: () => { void startDebugging() } },
-      { id: 'workbench.action.debug.stop', label: 'Debug: Stop Debugging', detail: 'Terminate the active session', icon: CircleStop, when: 'debugState', action: () => { void stopDebugging() } },
-      { id: 'workbench.action.debug.continue', label: 'Debug: Continue', detail: 'Resume execution', icon: Play, when: 'debugState', action: () => { void debugControl('continue') } },
-      { id: 'workbench.action.debug.pause', label: 'Debug: Pause', detail: 'Pause the running program', icon: Pause, when: 'debugState', action: () => { void debugControl('pause') } },
-      { id: 'workbench.action.debug.stepOver', label: 'Debug: Step Over', detail: 'Run the next statement', icon: StepForward, when: 'debugState', action: () => { void debugControl('next') } },
-      { id: 'workbench.action.debug.stepInto', label: 'Debug: Step Into', detail: 'Step into the call', icon: CornerDownRight, when: 'debugState', action: () => { void debugControl('stepIn') } },
-      { id: 'workbench.action.debug.stepOut', label: 'Debug: Step Out', detail: 'Finish the current frame', icon: Undo2, when: 'debugState', action: () => { void debugControl('stepOut') } },
-      { id: 'workbench.action.debug.restart', label: 'Debug: Restart', detail: 'Restart the debug session', icon: RotateCcw, when: 'debugState', action: () => { void stopDebugging().then(() => startDebugging()) } },
-      { id: 'editor.debug.action.toggleBreakpoint', label: 'Debug: Toggle Breakpoint', detail: activeFile ? `Line ${cursor.line} of ${fileName(activeFile.path)}` : 'No active file', icon: CircleAlert, when: 'editorIsOpen', action: () => { if (activeFile) void toggleBreakpoint(activeFile.path, cursor.line) } },
+      { id: 'workbench.action.debug.start', label: 'Debug: Start Debugging', detail: 'Start from .tungsten/launch.json', icon: BugPlay, when: '!debugState', action: () => { void debug.start() } },
+      { id: 'workbench.action.debug.stop', label: 'Debug: Stop Debugging', detail: 'Terminate the active session', icon: CircleStop, when: 'debugState', action: () => { void debug.stop() } },
+      { id: 'workbench.action.debug.continue', label: 'Debug: Continue', detail: 'Resume execution', icon: Play, when: 'debugState', action: () => { void debug.control('continue') } },
+      { id: 'workbench.action.debug.pause', label: 'Debug: Pause', detail: 'Pause the running program', icon: Pause, when: 'debugState', action: () => { void debug.control('pause') } },
+      { id: 'workbench.action.debug.stepOver', label: 'Debug: Step Over', detail: 'Run the next statement', icon: StepForward, when: 'debugState', action: () => { void debug.control('next') } },
+      { id: 'workbench.action.debug.stepInto', label: 'Debug: Step Into', detail: 'Step into the call', icon: CornerDownRight, when: 'debugState', action: () => { void debug.control('stepIn') } },
+      { id: 'workbench.action.debug.stepOut', label: 'Debug: Step Out', detail: 'Finish the current frame', icon: Undo2, when: 'debugState', action: () => { void debug.control('stepOut') } },
+      { id: 'workbench.action.debug.restart', label: 'Debug: Restart', detail: 'Restart the debug session', icon: RotateCcw, when: 'debugState', action: () => { void debug.stop().then(() => debug.start()) } },
+      { id: 'editor.debug.action.toggleBreakpoint', label: 'Debug: Toggle Breakpoint', detail: activeFile ? `Line ${cursor.line} of ${fileName(activeFile.path)}` : 'No active file', icon: CircleAlert, when: 'editorIsOpen', action: () => { if (activeFile) void debug.toggleBreakpoint(activeFile.path, cursor.line) } },
       { id: 'workbench.action.tasks.runTask', label: 'Task: Run Task', detail: `${projectInfo.tasks.length} tasks detected`, icon: ListChecks, action: () => { setActivity('tests'); setSidebarVisible(true) } },
 
       // Source control.
@@ -1354,7 +1233,7 @@ export default function App() {
     }
 
     return list
-  }, [activeFile, activePath, activeTerminalId, activeTheme.label, activityBarVisible, centeredLayout, closedTabs, collaborationActive, commitMessage, cursor.line, debugControl, dirty.size, editorInstance, discoveredTests.length, extensionCommands, extensions.length, gitInfo.branch, gitInfo.isRepository, keybindingRules.length, notify, openDesktopFolder, openTabs.length, panelOpen, panelTab, participants.length, problems.length, projectInfo.tasks, refreshWorkspace, runEditorAction, runProject, settings.fontSize, settings.minimap, settings.wordWrap, sidebarVisible, sidePreview, sourceChanges.length, symbols.length, terminalSplit, terminalTabs.length, updateState, workspaceRoots.length, zenMode])
+  }, [activeFile, activePath, activeTerminalId, activeTheme.label, activityBarVisible, centeredLayout, closedTabs, collaborationActive, commitMessage, cursor.line, debug, dirty.size, editorInstance, discoveredTests.length, extensionCommands, extensions.length, gitInfo.branch, gitInfo.isRepository, keybindingRules.length, notify, openDesktopFolder, openTabs.length, panelOpen, panelTab, participants.length, problems.length, projectInfo.tasks, refreshWorkspace, runEditorAction, runProject, settings.fontSize, settings.minimap, settings.wordWrap, sidebarVisible, sidePreview, sourceChanges.length, symbols.length, terminalSplit, terminalTabs.length, updateState, workspaceRoots.length, zenMode])
 
   /** Command lookup by id, used by keystroke dispatch and the menu bar. */
   const commandsById = useMemo(() => new Map(commands.map((command) => [command.id, command])), [commands])
@@ -1556,7 +1435,7 @@ export default function App() {
   }, [activeFile, editorInstance, workspaceRoot])
 
   useEffect(() => {
-    toggleBreakpointRef.current = (path, line) => { void toggleBreakpoint(path, line) }
+    toggleBreakpointRef.current = (path, line) => { void debug.toggleBreakpoint(path, line) }
     snippetsRef.current = allSnippets
     snippetContextRef.current = {
       filePath: activePath,
@@ -1611,52 +1490,16 @@ export default function App() {
       })))
     })
     const unsubscribeStatus = window.tungsten.onLanguageStatus(({ language, running }) => setLspState({ language, running, message: running ? `${language} language server` : `${language} server stopped` }))
-    const unsubscribeDebugMessage = window.tungsten.onDebugMessage(({ id, message }) => {
-      if (message.type === 'event' && message.event === 'initialized') {
-        void (async () => {
-          const grouped = new Map<string, Array<{ path: string; line: number; condition?: string }>>()
-          breakpoints.forEach((point) => grouped.set(point.path, [...(grouped.get(point.path) || []), point]))
-          for (const [path, points] of grouped) {
-            const absolutePath = await window.tungsten!.absolutePath(path)
-            await window.tungsten!.sendDebug(id, { type: 'request', command: 'setBreakpoints', arguments: { source: { path: absolutePath }, breakpoints: points.map((point) => ({ line: point.line, condition: point.condition })) } })
-          }
-          await window.tungsten!.sendDebug(id, { type: 'request', command: 'configurationDone', arguments: {} })
-        })()
-      } else if (message.type === 'event' && message.event === 'output') setDebugState((state) => ({ ...state, output: [...state.output, message.body?.output || ''] }))
-      else if (message.type === 'event' && message.event === 'stopped') {
-        const threadId = message.body?.threadId || 1
-        setDebugState((state) => ({ ...state, threadId, output: [...state.output, `Paused: ${message.body?.reason || 'breakpoint'}`] }))
-        void window.tungsten!.sendDebug(id, { type: 'request', command: 'threads', arguments: {} })
-      } else if (message.type === 'response' && message.success && message.command === 'threads') {
-        const threads = message.body?.threads || []
-        setDebugThreads(threads)
-        const threadId = threads[0]?.id || 1
-        void window.tungsten!.sendDebug(id, { type: 'request', command: 'stackTrace', arguments: { threadId, startFrame: 0, levels: 50 } })
-      } else if (message.type === 'response' && message.success && message.command === 'stackTrace') {
-        const frames = message.body?.stackFrames || []
-        setDebugFrames(frames)
-        if (frames[0]?.id) void window.tungsten!.sendDebug(id, { type: 'request', command: 'scopes', arguments: { frameId: frames[0].id } })
-      } else if (message.type === 'response' && message.success && message.command === 'scopes') {
-        const scopes = message.body?.scopes || []
-        setDebugScopes(scopes)
-        if (scopes[0]?.variablesReference) void window.tungsten!.sendDebug(id, { type: 'request', command: 'variables', arguments: { variablesReference: scopes[0].variablesReference } })
-        watchEvaluationQueueRef.current = [...watches]
-        watches.forEach((expression) => { void window.tungsten!.sendDebug(id, { type: 'request', command: 'evaluate', arguments: { expression, frameId: debugFrames[0]?.id, context: 'watch' } }) })
-      } else if (message.type === 'response' && message.success && message.command === 'variables') setDebugVariables(message.body?.variables || [])
-      else if (message.type === 'response' && message.success && message.command === 'evaluate') {
-        const expression = watchEvaluationQueueRef.current.shift()
-        if (expression) setWatchValues((values) => ({ ...values, [expression]: message.body?.result || 'undefined' }))
-      } else if (message.type === 'response' && message.success === false) setDebugState((state) => ({ ...state, output: [...state.output, message.message || `${message.command} failed`] }))
-    })
-    const unsubscribeDebugOutput = window.tungsten.onDebugOutput(({ output }) => setDebugState((state) => ({ ...state, output: [...state.output, output] })))
-    const unsubscribeDebugExit = window.tungsten.onDebugExit(({ code }) => setDebugState((state) => ({ ...state, running: false, output: [...state.output, `Adapter exited with code ${code}`] })))
+    const unsubscribeDebugMessage = window.tungsten.onDebugMessage(({ id, message }) => handleDebugMessage(id, message))
+    const unsubscribeDebugOutput = window.tungsten.onDebugOutput(({ output }) => handleDebugOutput(output))
+    const unsubscribeDebugExit = window.tungsten.onDebugExit(({ code }) => handleDebugExit(code))
     const unsubscribeUpdater = window.tungsten.onUpdaterStatus(({ event }) => {
       const labels: Record<string, string> = { 'checking-for-update': 'Checking for updates…', 'update-available': 'Update available', 'update-not-available': 'Up to date', 'download-progress': 'Downloading update…', 'update-downloaded': 'Restart to update', error: 'Update check failed' }
       setUpdateState(labels[event] || event)
       if (event === 'update-available') void window.tungsten?.downloadUpdate()
     })
     return () => { unsubscribeWorkspace(); unsubscribeRemote(); unsubscribeCollaborationDocument(); unsubscribeCollaborationEvent(); unsubscribeExtension(); unsubscribeLanguage(); unsubscribeStatus(); unsubscribeDebugMessage(); unsubscribeDebugOutput(); unsubscribeDebugExit(); unsubscribeUpdater() }
-  }, [breakpoints, collaborationName, debugFrames, notify, watches])
+  }, [collaborationName, handleDebugExit, handleDebugMessage, handleDebugOutput, notify])
 
   useEffect(() => {
     if (!window.tungsten || !workspaceRoot || !dirty.size) return
@@ -1719,10 +1562,6 @@ export default function App() {
     const timer = window.setTimeout(() => { void window.tungsten?.sendCollaborationEvent({ type: 'presence', state: 'cursor', name: collaborationName, path: activePath, line: cursor.line, column: cursor.column }) }, 90)
     return () => window.clearTimeout(timer)
   }, [activePath, collaborationActive, collaborationName, cursor.column, cursor.line])
-
-  useEffect(() => {
-    localStorage.setItem(TERMINAL_LAYOUT_KEY, JSON.stringify({ tabs: terminalTabs.map(({ id, label, profile }) => ({ id, label, profile, generation: 0 })), activeId: activeTerminalId, split: terminalSplit }))
-  }, [activeTerminalId, terminalSplit, terminalTabs])
 
   useEffect(() => {
     localStorage.setItem(WORKBENCH_LAYOUT_KEY, JSON.stringify({ sidebarVisible, sidebarWidth, panelOpen, panelHeight }))
@@ -1832,37 +1671,6 @@ export default function App() {
     window.addEventListener('mouseup', up)
   }
 
-  const newTerminal = (profile?: TerminalProfile, label?: string) => {
-    const id = nextTerminalIdRef.current++
-    setTerminalTabs((tabs) => [...tabs, { id, label: label || profile?.label || `shell ${id}`, generation: 0, profile: profile ? { kind: profile.kind, id: profile.id } : undefined }])
-    setActiveTerminalId(id)
-    setPanelTab('TERMINAL')
-    setPanelOpen(true)
-    return id
-  }
-
-  const closeTerminal = (id: number) => {
-    if (terminalTabs.length === 1) {
-      const replacementId = nextTerminalIdRef.current++
-      setTerminalTabs([{ id: replacementId, label: 'shell 1', generation: 0 }])
-      setActiveTerminalId(replacementId)
-      return
-    }
-    const remaining = terminalTabs.filter((terminal) => terminal.id !== id)
-    setTerminalTabs(remaining)
-    if (activeTerminalId === id) setActiveTerminalId(remaining[0].id)
-  }
-
-  /** Move focus between terminal tabs, wrapping at both ends. */
-  const focusTerminalByOffset = (offset: number) => {
-    if (terminalTabs.length < 2) return
-    const index = terminalTabs.findIndex((terminal) => terminal.id === activeTerminalId)
-    const next = ((index + offset) % terminalTabs.length + terminalTabs.length) % terminalTabs.length
-    setActiveTerminalId(terminalTabs[next].id)
-    setPanelTab('TERMINAL')
-    setPanelOpen(true)
-  }
-
   /** Every snippet available: builtins plus anything the user has authored. */
   const allSnippets = useMemo(() => [...builtinSnippets, ...userSnippets], [userSnippets])
 
@@ -1970,7 +1778,7 @@ export default function App() {
       <div className="output-panel"><span>[Tungsten]</span> Workspace index ready · {files.length} files<br /><span>[Project]</span> {projectInfo.frameworks.join(', ') || 'No framework detected'}<br /><span>[Language]</span> {lspState.message}<br /><span>[Git]</span> {gitInfo.isRepository ? `Watching ${gitInfo.branch}` : 'No repository detected'}</div>
     )
     if (panelTab === 'DEBUG CONSOLE') return (
-      <div className="debug-console-output">{debugState.output.length ? debugState.output.map((line, index) => <div key={index}>{line}</div>) : <div className="empty-panel"><Bot size={24} /><strong>Debug console is ready</strong><span>Start a debug session to inspect values.</span></div>}</div>
+      <div className="debug-console-output">{debugOutput.length ? debugOutput.map((line, index) => <div key={index}>{line}</div>) : <div className="empty-panel"><Bot size={24} /><strong>Debug console is ready</strong><span>Start a debug session to inspect values.</span></div>}</div>
     )
     return (
       <TerminalPanel
@@ -1985,22 +1793,22 @@ export default function App() {
         searchRequest={terminalSearchRequest}
         themeId={activeTheme.id}
         fontSize={Math.max(9, settings.fontSize - 1)}
-        onSelectTab={setActiveTerminalId}
-        onCloseTab={closeTerminal}
-        onNewTerminal={newTerminal}
-        onSearchQueryChange={setTerminalSearchQuery}
-        onSearchSubmit={(query) => setTerminalSearchRequest({ id: Date.now(), query })}
-        onCloseSearch={() => setTerminalSearchOpen(false)}
+        onSelectTab={terminal.focus}
+        onCloseTab={terminal.close}
+        onNewTerminal={terminal.open}
+        onSearchQueryChange={terminal.setSearchQuery}
+        onSearchSubmit={terminal.search}
+        onCloseSearch={() => terminal.setSearchOpen(false)}
         onFocusChange={(focused) => setFocusedSurface((current) => focused ? 'terminal' : current === 'terminal' ? 'none' : current)}
         lines={terminalLines}
         input={terminalInput}
-        onInputChange={setTerminalInput}
+        onInputChange={terminal.setInput}
         onRun={runTerminalCommand}
         history={history}
         historyIndex={historyIndex}
-        onHistoryIndexChange={setHistoryIndex}
+        onHistoryIndexChange={terminal.setHistoryIndex}
         workspaceName={workspaceName}
-        inputRef={terminalInputRef}
+        inputRef={terminal.inputRef}
         endRef={terminalEndRef}
       />
     )
@@ -2168,9 +1976,9 @@ export default function App() {
     )
     if (activity === 'debug') return (
       <DebugView
-        running={debugState.running}
-        sessionId={debugState.id}
-        output={debugState.output}
+        running={debugRunning}
+        sessionId={debugSessionId}
+        output={debugOutput}
         hasLaunchConfig={files.some((file) => file.path === '.tungsten/launch.json')}
         threads={debugThreads}
         frames={debugFrames}
@@ -2182,35 +1990,33 @@ export default function App() {
         breakpoints={breakpoints}
         canAddBreakpoint={Boolean(activeFile)}
         shortcutFor={shortcutFor}
-        onStart={() => { void startDebugging() }}
-        onStop={() => { void stopDebugging() }}
-        onControl={(command) => { void debugControl(command) }}
-        onSelectThread={(threadId) => {
-          setDebugState((state) => ({ ...state, threadId }))
-          void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'stackTrace', arguments: { threadId, startFrame: 0, levels: 50 } })
-        }}
+        onStart={() => { void debug.start() }}
+        onStop={() => { void debug.stop() }}
+        onControl={(command) => { void debug.control(command) }}
+        onSelectThread={debug.selectThread}
         onSelectFrame={(frame) => {
-          // A DAP frame reports an absolute path; map it back onto a workspace
-          // path so the right buffer opens.
-          const candidate = (frame.source?.path || '').replaceAll('\\', '/')
-          const relative = candidate.startsWith(workspaceRoot.replaceAll('\\', '/'))
-            ? candidate.slice(workspaceRoot.length + 1)
-            : files.find((file) => candidate.endsWith(`/${file.path}`))?.path || frame.source?.name || ''
-          if (files.some((file) => file.path === relative)) {
-            openFile(relative)
+          // A frame reports the adapter's own absolute path; open the buffer
+          // it corresponds to, if the workspace has one.
+          const path = workspacePathForSource(frame.source, workspaceRoot, files.map((file) => file.path))
+          if (path) {
+            openFile(path)
             window.setTimeout(() => {
               editorInstance?.setPosition({ lineNumber: frame.line, column: 1 })
               editorInstance?.revealLineInCenter(frame.line)
             }, 30)
           }
-          void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'scopes', arguments: { frameId: frame.id } })
+          debug.selectFrame(frame.id)
         }}
         onWatchInputChange={setWatchInput}
-        onAddWatch={() => { setWatches((items) => [...items, watchInput.trim()]); setWatchInput('') }}
-        onRemoveWatch={(expression) => setWatches((items) => items.filter((item) => item !== expression))}
-        onAddBreakpoint={() => { if (activeFile) void toggleBreakpoint(activeFile.path, cursor.line) }}
-        onEditBreakpointCondition={(path, line) => { void editBreakpointCondition(path, line) }}
-        onRemoveBreakpoint={(path, line) => { void toggleBreakpoint(path, line) }}
+        onAddWatch={() => { debug.addWatch(watchInput); setWatchInput('') }}
+        onRemoveWatch={debug.removeWatch}
+        onAddBreakpoint={() => { if (activeFile) void debug.toggleBreakpoint(activeFile.path, cursor.line) }}
+        onEditBreakpointCondition={(path, line) => {
+          const point = breakpoints.find((breakpoint) => breakpoint.path === path && breakpoint.line === line)
+          const condition = window.prompt('Breakpoint condition (leave empty for unconditional)', point?.condition || '') ?? point?.condition
+          void debug.setBreakpointCondition(path, line, condition)
+        }}
+        onRemoveBreakpoint={(path, line) => { void debug.toggleBreakpoint(path, line) }}
         onRevealBreakpoint={(path, line) => {
           openFile(path)
           setCursor({ line, column: 1 })
@@ -2362,7 +2168,7 @@ export default function App() {
     ],
     Run: [
       { command: 'workbench.action.tungsten.runProject' },
-      { command: debugState.running ? 'workbench.action.debug.stop' : 'workbench.action.debug.start' },
+      { command: debugRunning ? 'workbench.action.debug.stop' : 'workbench.action.debug.start' },
       { command: 'workbench.action.debug.continue', divider: true },
       { command: 'workbench.action.debug.stepOver' },
       { command: 'workbench.action.debug.stepInto' },
@@ -2544,28 +2350,18 @@ export default function App() {
                 problemCount={problems.length}
                 terminalKind={window.tungsten ? 'pty' : 'sandbox'}
                 onNewTerminal={() => {
-                  if (window.tungsten) return void newTerminal()
+                  if (window.tungsten) return void terminal.open()
+                  // The emulated shell has a single buffer, so a "new
+                  // terminal" is a rule in the scrollback and a focused input.
                   setPanelTab('TERMINAL')
-                  setTerminalLines((lines) => [...lines, { text: '— new terminal session —', kind: 'muted' }])
-                  window.setTimeout(() => terminalInputRef.current?.focus(), 20)
+                  terminal.appendLine({ text: '— new terminal session —', kind: 'muted' })
+                  terminal.focusInput()
                 }}
                 splitActive={terminalSplit}
-                onToggleSplit={() => {
-                  // Splitting with only one session open would show the same
-                  // terminal twice, so make a second one first.
-                  if (terminalTabs.length < 2) newTerminal()
-                  setTerminalSplit((value) => !value)
-                }}
+                onToggleSplit={terminal.toggleSplit}
                 searchActive={terminalSearchOpen}
-                onToggleSearch={() => setTerminalSearchOpen((value) => !value)}
-                onRestartTerminal={() => {
-                  if (!window.tungsten) return setTerminalLines([])
-                  // Bumping the generation remounts the xterm instance, which
-                  // starts a fresh pty for that tab.
-                  setTerminalTabs((tabs) => tabs.map((terminal) => (
-                    terminal.id === activeTerminalId ? { ...terminal, generation: terminal.generation + 1 } : terminal
-                  )))
-                }}
+                onToggleSearch={() => terminal.setSearchOpen(!terminalSearchOpen)}
+                onRestartTerminal={terminal.restart}
                 onMaximize={() => setPanelHeight((height) => (height > 400 ? 225 : Math.round(window.innerHeight * .62)))}
                 onClose={() => setPanelOpen(false)}
               />
@@ -2712,11 +2508,11 @@ export default function App() {
           onConnect={() => { void connectRemote() }}
           onDisconnect={() => { void disconnectRemoteWorkspace() }}
           onOpenWsl={(distribution) => {
-            newTerminal({ kind: 'wsl', id: distribution, label: `WSL: ${distribution}` })
+            terminal.open({ kind: 'wsl', id: distribution, label: `WSL: ${distribution}` })
             setRemoteModal(false)
           }}
           onOpenContainer={(container) => {
-            newTerminal({ kind: 'container', id: container.id, label: container.name })
+            terminal.open({ kind: 'container', id: container.id, label: container.name })
             setRemoteModal(false)
           }}
           onClose={() => setRemoteModal(false)}

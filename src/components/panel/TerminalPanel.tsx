@@ -15,11 +15,11 @@ import { Suspense, lazy } from 'react'
 import type React from 'react'
 import { Plus, Search, TerminalSquare, X } from 'lucide-react'
 
+import type { TerminalLine, TerminalProfile, TerminalTab } from '../../terminal/terminalSessions'
+
 const DesktopTerminal = lazy(() => import('../DesktopTerminal'))
 
-export type TerminalProfile = { kind: 'wsl' | 'container'; id: string; label?: string }
-export type TerminalTab = { id: number; label: string; generation: number; profile?: Omit<TerminalProfile, 'label'> }
-export type TerminalLine = { text: string; kind?: string }
+export type { TerminalLine, TerminalProfile, TerminalTab }
 
 export type RemoteProfiles = {
   wsl: string[]
