@@ -109,7 +109,6 @@ import {
 } from './theme/themeService'
 import { buildPaletteItems, parsePaletteQuery } from './quickopen/paletteItems'
 import { useWorkspaceSearch } from './search/useWorkspaceSearch'
-import { MarkerSeverity, MarkerService, filterMarkers, groupMarkersByResource } from './markers/markerService'
 import { builtinSnippets, parseSnippetFile, resolveSnippet, snippetsForLanguage, type Snippet } from './snippets/snippetService'
 import type { SnippetVariableContext } from './snippets/snippetVariables'
 import { configurationByCategory, configurationSchema, searchConfiguration } from './configuration/configurationRegistry'
@@ -123,8 +122,9 @@ import { cursorsInFile } from './collaboration/collaborationModel'
 import { useDebugSession } from './debug/useDebugSession'
 import { workspacePathForSource } from './debug/debugModel'
 import { useGitService } from './git/useGitService'
-import { lspLanguages, prepareLanguageDocument, registerLanguageProviders } from './languages/monacoLanguageClient'
+import { registerLanguageProviders } from './languages/monacoLanguageClient'
 import { registerSnippetProvider } from './languages/monacoSnippetProvider'
+import { useDiagnostics } from './languages/useDiagnostics'
 import { useTerminalSessions } from './terminal/useTerminalSessions'
 import './styles.css'
 
@@ -293,16 +293,12 @@ export default function App() {
   const [snippetsOpen, setSnippetsOpen] = useState(false)
   const [settingsEditorOpen, setSettingsEditorOpen] = useState(false)
   const [settingsEditorQuery, setSettingsEditorQuery] = useState('')
-  const [problemFilter, setProblemFilter] = useState('')
-  const [problemSeverities, setProblemSeverities] = useState(MarkerSeverity.Error | MarkerSeverity.Warning | MarkerSeverity.Info)
   const [externalChange, setExternalChange] = useState<string | null>(null)
   const [projectModal, setProjectModal] = useState(false)
   const [remoteConnected, setRemoteConnected] = useState(false)
   const [projectTemplate, setProjectTemplate] = useState('web')
   const [projectName, setProjectName] = useState('my-tungsten-app')
   const [watchInput, setWatchInput] = useState('')
-  const [lspState, setLspState] = useState<{ language: string; running: boolean; message: string }>({ language: '', running: false, message: 'Built-in syntax engine' })
-  const [problems, setProblems] = useState<Array<{ message: string; path: string; line: number; severity: number }>>([])
   const [updateState, setUpdateState] = useState('Up to date')
   const [editorInstance, setEditorInstance] = useState<any>(null)
   const [toast, setToast] = useState('')
@@ -465,6 +461,12 @@ export default function App() {
       notify(`Could not open folder: ${(error as Error).message}`)
     }
   }, [applyDesktopWorkspace, notify])
+
+  // Monaco is loaded by the first editor that mounts; reading it lazily keeps
+  // the diagnostics handler stable enough to subscribe once.
+  const getMonaco = useCallback(() => monacoApi, [])
+  const diagnostics = useDiagnostics({ activeFile, workspaceRoot, editorInstance, getMonaco })
+  const { problems, handleNotification: handleLanguageNotification, handleStatus: handleLanguageStatus } = diagnostics
 
   const project = useProjectService({
     workspaceRoot,
@@ -1068,35 +1070,6 @@ export default function App() {
   }, [applyDesktopWorkspace])
 
   useEffect(() => {
-    if (!window.tungsten || !activeFile || !workspaceRoot || !lspLanguages.has(activeFile.language)) return
-    let canceled = false
-    const timer = window.setTimeout(() => {
-      window.tungsten!.startLanguageServer(activeFile.language).then((status) => {
-        if (canceled) return
-        setLspState({ language: activeFile.language, running: status.running, message: status.running ? `${activeFile.language} language server` : status.error || 'Syntax highlighting only' })
-      }).catch((error: Error) => {
-        if (!canceled) setLspState({ language: activeFile.language, running: false, message: error.message })
-      })
-    }, 350)
-    return () => { canceled = true; window.clearTimeout(timer) }
-  }, [activeFile, workspaceRoot])
-
-  useEffect(() => {
-    if (!window.tungsten || !activeFile || !workspaceRoot || !lspLanguages.has(activeFile.language)) return
-    const timer = window.setTimeout(async () => {
-      const model = editorInstance?.getModel()
-      if (!model) return
-      const context = await prepareLanguageDocument(activeFile.language, model)
-      if (!context) return
-      await context.api.languageNotify(activeFile.language, 'textDocument/didChange', {
-        textDocument: { uri: context.uri, version: model.getVersionId() },
-        contentChanges: [{ text: model.getValue() }],
-      })
-    }, 450)
-    return () => window.clearTimeout(timer)
-  }, [activeFile, editorInstance, workspaceRoot])
-
-  useEffect(() => {
     toggleBreakpointRef.current = (path, line) => { void debug.toggleBreakpoint(path, line) }
     snippetsRef.current = allSnippets
     snippetContextRef.current = {
@@ -1117,26 +1090,8 @@ export default function App() {
     const unsubscribeCollaborationDocument = window.tungsten.onCollaborationDocument(({ files: sharedFiles }) => handleRoomDocument(sharedFiles))
     const unsubscribeExtension = window.tungsten.onExtensionEvent((message) => { if (message.type === 'error') notify(`${message.extensionId}: ${message.message}`) })
     const unsubscribeCollaborationEvent = window.tungsten.onCollaborationEvent(handleRoomEvent)
-    const unsubscribeLanguage = window.tungsten.onLanguageNotification(({ language, message }) => {
-      if (message.method !== 'textDocument/publishDiagnostics' || !monacoApi) return
-      const diagnostics = message.params?.diagnostics || []
-      const uri = decodeURIComponent(message.params?.uri || '')
-      const model = monacoApi.editor.getModels().find((candidate: any) => uri.endsWith(decodeURIComponent(candidate.uri.path)))
-      if (!model) return
-      const problemPath = model.uri.path.replace(/^\/+/, '')
-      setProblems(diagnostics.map((diagnostic: any) => ({ message: diagnostic.message, path: problemPath, line: diagnostic.range.start.line + 1, severity: diagnostic.severity || 3 })))
-      monacoApi.editor.setModelMarkers(model, `tungsten-${language}`, diagnostics.map((diagnostic: any) => ({
-        startLineNumber: diagnostic.range.start.line + 1,
-        startColumn: diagnostic.range.start.character + 1,
-        endLineNumber: diagnostic.range.end.line + 1,
-        endColumn: diagnostic.range.end.character + 1,
-        message: diagnostic.message,
-        source: diagnostic.source || language,
-        code: diagnostic.code?.toString(),
-        severity: diagnostic.severity === 1 ? monacoApi.MarkerSeverity.Error : diagnostic.severity === 2 ? monacoApi.MarkerSeverity.Warning : monacoApi.MarkerSeverity.Info,
-      })))
-    })
-    const unsubscribeStatus = window.tungsten.onLanguageStatus(({ language, running }) => setLspState({ language, running, message: running ? `${language} language server` : `${language} server stopped` }))
+    const unsubscribeLanguage = window.tungsten.onLanguageNotification(handleLanguageNotification)
+    const unsubscribeStatus = window.tungsten.onLanguageStatus(handleLanguageStatus)
     const unsubscribeDebugMessage = window.tungsten.onDebugMessage(({ id, message }) => handleDebugMessage(id, message))
     const unsubscribeDebugOutput = window.tungsten.onDebugOutput(({ output }) => handleDebugOutput(output))
     const unsubscribeDebugExit = window.tungsten.onDebugExit(({ code }) => handleDebugExit(code))
@@ -1146,7 +1101,7 @@ export default function App() {
       if (event === 'update-available') void window.tungsten?.downloadUpdate()
     })
     return () => { unsubscribeWorkspace(); unsubscribeRemote(); unsubscribeCollaborationDocument(); unsubscribeCollaborationEvent(); unsubscribeExtension(); unsubscribeLanguage(); unsubscribeStatus(); unsubscribeDebugMessage(); unsubscribeDebugOutput(); unsubscribeDebugExit(); unsubscribeUpdater() }
-  }, [handleDebugExit, handleDebugMessage, handleDebugOutput, handleRoomDocument, handleRoomEvent, notify])
+  }, [handleDebugExit, handleDebugMessage, handleDebugOutput, handleLanguageNotification, handleLanguageStatus, handleRoomDocument, handleRoomEvent, notify])
 
   useEffect(() => {
     if (!window.tungsten || !workspaceRoot || !dirty.size) return
@@ -1318,48 +1273,17 @@ export default function App() {
   }, [notify])
 
   /**
-   * Problems are projected into the marker model so the panel gets VS Code's
-   * filtering, severity toggles, and per-file grouping.
-   */
-  const problemMarkers = useMemo(() => {
-    const service = new MarkerService()
-    const byPath = new Map<string, typeof problems>()
-    for (const problem of problems) {
-      byPath.set(problem.path, [...(byPath.get(problem.path) ?? []), problem])
-    }
-    for (const [path, items] of byPath) {
-      service.changeOne('tungsten', path, items.map((problem) => ({
-        // LSP severity: 1=error, 2=warning, 3=info, 4=hint.
-        severity: problem.severity === 1 ? MarkerSeverity.Error
-          : problem.severity === 2 ? MarkerSeverity.Warning
-            : problem.severity === 4 ? MarkerSeverity.Hint : MarkerSeverity.Info,
-        message: problem.message,
-        startLineNumber: problem.line,
-        startColumn: 1,
-        endLineNumber: problem.line,
-        endColumn: 1,
-      })))
-    }
-    return service.read()
-  }, [problems])
-
-  const filteredProblemGroups = useMemo(
-    () => groupMarkersByResource(filterMarkers(problemMarkers, problemFilter, problemSeverities)),
-    [problemMarkers, problemFilter, problemSeverities],
-  )
-
-  /**
    * The bottom panel. Each tab is its own component; this only routes.
    */
   const panelContent = () => {
     if (panelTab === 'PROBLEMS') return (
       <ProblemsPanel
-        groups={filteredProblemGroups}
+        groups={diagnostics.groups}
         totalCount={problems.length}
-        filter={problemFilter}
-        onFilterChange={setProblemFilter}
-        severities={problemSeverities}
-        onToggleSeverity={(severity) => setProblemSeverities((current) => current ^ severity)}
+        filter={diagnostics.filter}
+        onFilterChange={diagnostics.setFilter}
+        severities={diagnostics.severities}
+        onToggleSeverity={(severity) => diagnostics.setSeverities((current) => current ^ severity)}
         onReveal={(resource, line, column) => {
           openFile(resource)
           if (!line) return
@@ -1369,7 +1293,7 @@ export default function App() {
       />
     )
     if (panelTab === 'OUTPUT') return (
-      <div className="output-panel"><span>[Tungsten]</span> Workspace index ready · {files.length} files<br /><span>[Project]</span> {projectInfo.frameworks.join(', ') || 'No framework detected'}<br /><span>[Language]</span> {lspState.message}<br /><span>[Git]</span> {gitInfo.isRepository ? `Watching ${gitInfo.branch}` : 'No repository detected'}</div>
+      <div className="output-panel"><span>[Tungsten]</span> Workspace index ready · {files.length} files<br /><span>[Project]</span> {projectInfo.frameworks.join(', ') || 'No framework detected'}<br /><span>[Language]</span> {diagnostics.status.message}<br /><span>[Git]</span> {gitInfo.isRepository ? `Watching ${gitInfo.branch}` : 'No repository detected'}</div>
     )
     if (panelTab === 'DEBUG CONSOLE') return (
       <div className="debug-console-output">{debugOutput.length ? debugOutput.map((line, index) => <div key={index}>{line}</div>) : <div className="empty-panel"><Bot size={24} /><strong>Debug console is ready</strong><span>Start a debug session to inspect values.</span></div>}</div>
@@ -1878,8 +1802,8 @@ export default function App() {
         changeCount={sourceChanges.length}
         onOpenSourceControl={() => { setActivity('source'); setSidebarVisible(true); void refreshGit() }}
         onRefreshGit={refreshGit}
-        errorCount={problems.filter((problem) => problem.severity === 1).length}
-        warningCount={problems.filter((problem) => problem.severity !== 1).length}
+        errorCount={diagnostics.counts.errors}
+        warningCount={diagnostics.counts.warnings}
         onOpenProblems={() => { setPanelOpen(true); setPanelTab('PROBLEMS') }}
         pendingChord={pendingChords.length ? keybindingLabel(pendingChords) : ''}
         workspaceName={workspaceName}
@@ -1892,7 +1816,7 @@ export default function App() {
         onGotoLine={() => { setPalette({ open: true, mode: 'line' }); setPaletteQuery(':') }}
         themeLabel={activeTheme.label}
         onPickTheme={() => { setThemePickerOpen(true); setPaletteQuery('') }}
-        lsp={lspState}
+        lsp={diagnostics.status}
         updateState={updateState}
         onUpdate={() => {
           if (updateState === 'Restart to update') void window.tungsten?.installUpdate()

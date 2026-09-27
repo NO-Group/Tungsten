@@ -136,7 +136,7 @@ describe('desktop bridge contract', () => {
     expect(renderer).toContain('registerSnippetProvider')
     expect(renderer).toContain('useWorkspaceSearch({')
     expect(workspaceSearch).toContain('searchFiles(')
-    expect(renderer).toContain('groupMarkersByResource')
+    expect(readFileSync(new URL('./languages/useDiagnostics.ts', import.meta.url), 'utf8')).toContain('groupMarkersByResource')
     expect(renderer).toContain('configurationByCategory')
   })
 
@@ -244,6 +244,16 @@ describe('desktop bridge contract', () => {
     // Presence, cursors and comments fold into the room by pure rules.
     expect(code(model)).not.toContain('window.tungsten')
     expect(code(model)).not.toContain('useState')
+  })
+
+  it('keeps diagnostics in a service that merges per file', () => {
+    const hook = readFileSync(new URL('./languages/useDiagnostics.ts', import.meta.url), 'utf8')
+    expect(renderer).toContain('const diagnostics = useDiagnostics({')
+    expect(code(hook)).toContain('mergeDiagnostics(current, path,')
+    expect(code(hook)).toContain('setModelMarkers')
+    for (const call of ['setModelMarkers', 'startLanguageServer', 'publishDiagnostics']) {
+      expect(code(renderer), call).not.toContain(call)
+    }
   })
 
   it('registers Monaco language and snippet providers from their own modules', () => {
