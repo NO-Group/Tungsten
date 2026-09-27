@@ -246,6 +246,20 @@ describe('desktop bridge contract', () => {
     expect(code(model)).not.toContain('useState')
   })
 
+  it('registers Monaco language and snippet providers from their own modules', () => {
+    const client = readFileSync(new URL('./languages/monacoLanguageClient.ts', import.meta.url), 'utf8')
+    const snippets = readFileSync(new URL('./languages/monacoSnippetProvider.ts', import.meta.url), 'utf8')
+    expect(renderer).toContain("from './languages/monacoLanguageClient'")
+    expect(renderer).toContain("from './languages/monacoSnippetProvider'")
+    for (const provider of ['registerHoverProvider', 'registerDefinitionProvider', 'registerRenameProvider', 'registerCodeActionProvider']) {
+      expect(client, provider).toContain(provider)
+      expect(code(renderer), provider).not.toContain(provider)
+    }
+    // Snippets work with no server, so they are registered separately.
+    expect(snippets).toContain('registerCompletionItemProvider')
+    expect(snippets).not.toContain('window.tungsten')
+  })
+
   it('builds quick-open rows outside the component', () => {
     expect(renderer).toContain("from './quickopen/paletteItems'")
     expect(renderer).toContain('buildPaletteItems(paletteMode, paletteSearch, {')
