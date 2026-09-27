@@ -317,3 +317,44 @@ export const symbolsFor = (file?: WorkspaceFile): DocumentSymbol[] => {
  * what it is.
  */
 export const PREVIEW_PATH = '$preview'
+
+/** A node in the explorer tree: either a folder with children or a file. */
+export type TreeNode = {
+  name: string
+  path: string
+  folder: boolean
+  children: TreeNode[]
+}
+
+/**
+ * Folds a flat list of workspace paths into the nested tree the explorer
+ * renders. Folders sort before files and both sort alphabetically, which is
+ * the ordering every file explorer has trained people to expect.
+ */
+export function buildTree(files: WorkspaceFile[]): TreeNode[] {
+  const root: TreeNode[] = []
+
+  files.forEach((file) => {
+    const parts = file.path.split('/')
+    let children = root
+    let current = ''
+
+    parts.forEach((part, index) => {
+      current = current ? `${current}/${part}` : part
+      const isFolder = index < parts.length - 1
+      let node = children.find((item) => item.name === part && item.folder === isFolder)
+      if (!node) {
+        node = { name: part, path: current, folder: isFolder, children: [] }
+        children.push(node)
+      }
+      children = node.children
+    })
+  })
+
+  const sort = (nodes: TreeNode[]) => {
+    nodes.sort((a, b) => Number(b.folder) - Number(a.folder) || a.name.localeCompare(b.name))
+    nodes.forEach((node) => sort(node.children))
+  }
+  sort(root)
+  return root
+}

@@ -7,6 +7,19 @@ const rendererEntry = readFileSync(new URL('./main.tsx', import.meta.url), 'utf8
 const renderer = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
 const configuredEditor = readFileSync(new URL('./components/ConfiguredEditor.tsx', import.meta.url), 'utf8')
 const editorGroup = readFileSync(new URL('./components/EditorGroup.tsx', import.meta.url), 'utf8')
+const sidebarViews = ['SearchView', 'SourceControlView', 'DebugView', 'TestingView', 'ExtensionsView', 'ExplorerView']
+const sidebarSource = Object.fromEntries(sidebarViews.map((name) => [
+  name,
+  readFileSync(new URL(`./components/sidebar/${name}.tsx`, import.meta.url), 'utf8'),
+])) as Record<string, string>
+const panelSource = Object.fromEntries(['ProblemsPanel', 'TerminalPanel'].map((name) => [
+  name,
+  readFileSync(new URL(`./components/panel/${name}.tsx`, import.meta.url), 'utf8'),
+])) as Record<string, string>
+/** Strips comments so prose about an API is not mistaken for a call to it. */
+const code = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
+/** Everything the workbench renders, whichever file it now lives in. */
+const workbench = [renderer, editorGroup, ...Object.values(sidebarSource), ...Object.values(panelSource)].join('\n')
 const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8')
 
 describe('desktop bridge contract', () => {
@@ -120,9 +133,37 @@ describe('desktop bridge contract', () => {
 
   it('exposes the search options VS Code offers', () => {
     for (const option of ['matchCase', 'wholeWord', 'isRegex']) {
-      expect(renderer, option).toContain(option)
+      expect(workbench, option).toContain(option)
     }
-    expect(renderer).toContain('Replace All')
+    expect(sidebarSource.SearchView).toContain('Replace All')
+  })
+
+  it('splits the sidebar into one presentational view per activity', () => {
+    // The workbench routes to a view per activity instead of inlining six
+    // screens' worth of JSX in one function.
+    for (const name of sidebarViews) {
+      expect(renderer, name).toContain(`<${name}`)
+      expect(renderer, name).toContain(`from './components/sidebar/${name}'`)
+    }
+    // Views take their data and callbacks as props: no workbench state, no
+    // storage, and no direct calls into the desktop bridge.
+    for (const [name, source] of Object.entries(sidebarSource)) {
+      expect(code(source), name).not.toContain('window.tungsten')
+      expect(code(source), name).not.toContain('localStorage')
+    }
+    // The one exception is the file tree, which owns its own expansion state.
+    expect(sidebarSource.ExplorerView).not.toContain('useState')
+    expect(sidebarSource.SourceControlView).not.toContain('useState')
+  })
+
+  it('splits the panel into problems and terminal components', () => {
+    expect(renderer).toContain('<ProblemsPanel')
+    expect(renderer).toContain('<TerminalPanel')
+    expect(code(panelSource.ProblemsPanel)).not.toContain('window.tungsten')
+    // The terminal decides between a PTY and the emulated shell from a prop,
+    // so both paths stay renderable in a test.
+    expect(code(panelSource.TerminalPanel)).not.toContain('window.tungsten')
+    expect(panelSource.TerminalPanel).toContain('desktop ?')
   })
 
   it('scores quick access with the fuzzy scorer rather than substring matching', () => {

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive,
   Bell,
@@ -19,21 +19,16 @@ import {
   Command,
   Copy,
   CornerDownRight,
-  Cpu,
-  Ellipsis,
   Download,
   Eye,
   File,
   FileCode2,
   FlaskConical,
   Files,
-  Folder,
   FolderOpen,
   FolderPlus,
   GitBranch,
   GitCommitHorizontal,
-  GitCompareArrows,
-  GitPullRequest,
   Hammer,
   Keyboard,
   Layers,
@@ -53,15 +48,9 @@ import {
   RefreshCw,
   RotateCcw,
   Search,
-  Filter,
   Code,
-  Shapes,
-  List,
-  Variable,
-  Hash,
   Replace,
   Settings,
-  ShieldCheck,
   SquareCode,
   SplitSquareHorizontal,
   StepForward,
@@ -74,9 +63,16 @@ import {
   Zap,
 } from 'lucide-react'
 import { PREVIEW_PATH, defaultFiles, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
-import { FileGlyph } from './components/FileGlyph'
 import { TipButton } from './components/TipButton'
 import { EditorGroup } from './components/EditorGroup'
+import { ProblemsPanel } from './components/panel/ProblemsPanel'
+import { SearchView } from './components/sidebar/SearchView'
+import { SourceControlView } from './components/sidebar/SourceControlView'
+import { DebugView } from './components/sidebar/DebugView'
+import { TestingView } from './components/sidebar/TestingView'
+import { ExtensionsView } from './components/sidebar/ExtensionsView'
+import { ExplorerView } from './components/sidebar/ExplorerView'
+import { TerminalPanel } from './components/panel/TerminalPanel'
 import {
   type EditorGroupLayout,
   MAX_GROUPS,
@@ -94,7 +90,6 @@ import {
   splitGroup,
   togglePinned,
 } from './editor/editorGroups'
-import { folderIconFor } from './theme/fileIcons'
 import {
   applyMonacoTheme,
   applyWorkbenchTheme,
@@ -106,14 +101,13 @@ import {
 } from './theme/themeService'
 import { prepareQuery, scoreItem, type Match } from './quickopen/fuzzyScorer'
 import { buildSearchRegex, replaceInFile, searchFiles } from './search/textSearch'
-import { MarkerSeverity, MarkerService, filterMarkers, groupMarkersByResource, severityLabel } from './markers/markerService'
+import { MarkerSeverity, MarkerService, filterMarkers, groupMarkersByResource } from './markers/markerService'
 import { builtinSnippets, parseSnippetFile, resolveSnippet, snippetsForLanguage, type Snippet } from './snippets/snippetService'
 import type { SnippetVariableContext } from './snippets/snippetVariables'
 import { configurationByCategory, configurationSchema, searchConfiguration } from './configuration/configurationRegistry'
 import { chordFromEvent, createResolver, keybindingLabel, parseKeybinding, type KeybindingRule } from './keybinding/keybindings'
 import defaultKeybindingRules from './keybinding/defaults'
 import { parseWhenClause, type Context as WhenContext } from './keybinding/contextkey'
-const DesktopTerminal = lazy(() => import('./components/DesktopTerminal'))
 import './styles.css'
 
 type Activity = 'explorer' | 'search' | 'source' | 'debug' | 'tests' | 'extensions'
@@ -156,13 +150,6 @@ type SettingsState = {
   screenReaderOptimized: boolean
   telemetry: boolean
   crashReports: boolean
-}
-
-type TreeNode = {
-  name: string
-  path: string
-  folder: boolean
-  children: TreeNode[]
 }
 
 const WORKSPACE_KEY = 'tungsten.workspace.v1'
@@ -455,34 +442,6 @@ function mergeKeybindings(overrides: Record<string, string>): KeybindingRule[] {
   return rules
 }
 
-function buildTree(files: WorkspaceFile[]): TreeNode[] {
-  const root: TreeNode[] = []
-
-  files.forEach((file) => {
-    const parts = file.path.split('/')
-    let children = root
-    let current = ''
-
-    parts.forEach((part, index) => {
-      current = current ? `${current}/${part}` : part
-      const isFolder = index < parts.length - 1
-      let node = children.find((item) => item.name === part && item.folder === isFolder)
-      if (!node) {
-        node = { name: part, path: current, folder: isFolder, children: [] }
-        children.push(node)
-      }
-      children = node.children
-    })
-  })
-
-  const sort = (nodes: TreeNode[]) => {
-    nodes.sort((a, b) => Number(b.folder) - Number(a.folder) || a.name.localeCompare(b.name))
-    nodes.forEach((node) => sort(node.children))
-  }
-  sort(root)
-  return root
-}
-
 /**
  * Render text with the fuzzy-matched characters emphasised, the way VS Code
  * highlights quick-open results.
@@ -498,85 +457,6 @@ function Highlight({ text, matches }: { text: string; matches: Match[] }) {
   })
   if (cursor < text.length) parts.push(text.slice(cursor))
   return <>{parts}</>
-}
-
-/** Outline icons per symbol kind, mirroring VS Code's symbol iconography. */
-const symbolIcons: Record<string, typeof Braces> = {
-  function: Braces,
-  method: Braces,
-  class: Box,
-  interface: Shapes,
-  enum: List,
-  struct: Box,
-  variable: Variable,
-  constant: Variable,
-  property: Variable,
-  html: Code,
-  symbol: Hash,
-}
-
-/**
- * File icon, resolved through the Seti-style icon theme so every common file
- * type gets its own glyph and colour.
- */
-function ExplorerTree({
-  files,
-  activePath,
-  openFile,
-  dirty,
-  onFileContext,
-}: {
-  files: WorkspaceFile[]
-  activePath: string
-  openFile: (path: string) => void
-  dirty: Set<string>
-  onFileContext: (event: React.MouseEvent, path: string) => void
-}) {
-  const [expanded, setExpanded] = useState(() => new Set(['src', 'src/utils']))
-  const tree = useMemo(() => buildTree(files), [files])
-
-  const renderNode = (node: TreeNode, depth = 0) => {
-    if (node.folder) {
-      const isOpen = expanded.has(node.path)
-      return (
-        <div key={node.path}>
-          <button
-            className="tree-row folder-row"
-            style={{ paddingLeft: 8 + depth * 14 }}
-            onClick={() => setExpanded((current) => {
-              const next = new Set(current)
-              if (isOpen) next.delete(node.path)
-              else next.add(node.path)
-              return next
-            })}
-          >
-            {isOpen ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-            {isOpen
-              ? <FolderOpen size={15} className="folder-icon" style={{ color: folderIconFor(node.name, true).color }} />
-              : <Folder size={15} className="folder-icon" style={{ color: folderIconFor(node.name).color }} />}
-            <span>{node.name}</span>
-          </button>
-          {isOpen && node.children.map((child) => renderNode(child, depth + 1))}
-        </div>
-      )
-    }
-
-    return (
-      <button
-        key={node.path}
-        className={`tree-row file-row ${activePath === node.path ? 'selected' : ''}`}
-        style={{ paddingLeft: 26 + depth * 14 }}
-        onClick={() => openFile(node.path)}
-        onContextMenu={(event) => onFileContext(event, node.path)}
-      >
-        <FileGlyph path={node.path} />
-        <span className="tree-label">{node.name}</span>
-        {dirty.has(node.path) && <span className="dirty-dot" />}
-      </button>
-    )
-  }
-
-  return <div className="file-tree">{tree.map((node) => renderNode(node))}</div>
 }
 
 const activityItems = [
@@ -2241,54 +2121,25 @@ export default function App() {
     [problemMarkers, problemFilter, problemSeverities],
   )
 
+  /**
+   * The bottom panel. Each tab is its own component; this only routes.
+   */
   const panelContent = () => {
     if (panelTab === 'PROBLEMS') return (
-      <div className="problems-panel">
-        <div className="problems-toolbar">
-          <div className="problems-filter">
-            <Filter size={12} />
-            <input value={problemFilter} onChange={(event) => setProblemFilter(event.target.value)} placeholder="Filter (e.g. text, !exclude)" aria-label="Filter problems" />
-          </div>
-          <div className="problems-severities">
-            {([['Errors', MarkerSeverity.Error], ['Warnings', MarkerSeverity.Warning], ['Infos', MarkerSeverity.Info]] as const).map(([label, severity]) => (
-              <button
-                key={label}
-                className={(problemSeverities & severity) !== 0 ? 'active' : ''}
-                aria-pressed={(problemSeverities & severity) !== 0}
-                title={`Toggle ${label.toLowerCase()}`}
-                onClick={() => setProblemSeverities((current) => current ^ severity)}
-              >{label}</button>
-            ))}
-          </div>
-        </div>
-        {filteredProblemGroups.length === 0 ? (
-          <div className="empty-panel"><CircleCheck size={24} /><strong>{problems.length ? 'No matching problems' : 'No problems detected'}</strong><span>{problems.length ? 'Adjust the filter to see more.' : 'Workspace validation passed.'}</span></div>
-        ) : (
-          <div className="problems-list">
-            {filteredProblemGroups.map((group) => (
-              <div className="problems-group" key={group.resource}>
-                <button className="problems-group-head" onClick={() => openFile(group.resource)}>
-                  <FileGlyph path={group.resource} />
-                  <strong>{fileName(group.resource)}</strong>
-                  <span className="problems-group-path">{group.resource}</span>
-                  <span className="count-pill">{group.markers.length}</span>
-                </button>
-                {group.markers.map((marker, index) => (
-                  <button
-                    className="problems-row"
-                    key={`${marker.resource}-${marker.startLineNumber}-${index}`}
-                    onClick={() => { openFile(marker.resource); editorInstance?.setPosition({ lineNumber: marker.startLineNumber, column: marker.startColumn }); editorInstance?.revealLineInCenter(marker.startLineNumber) }}
-                  >
-                    <CircleAlert size={13} className={marker.severity === MarkerSeverity.Error ? 'error' : marker.severity === MarkerSeverity.Warning ? 'warning' : 'info'} />
-                    <span>{marker.message}</span>
-                    <small>{severityLabel(marker.severity)} · {marker.startLineNumber}:{marker.startColumn}</small>
-                  </button>
-                ))}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <ProblemsPanel
+        groups={filteredProblemGroups}
+        totalCount={problems.length}
+        filter={problemFilter}
+        onFilterChange={setProblemFilter}
+        severities={problemSeverities}
+        onToggleSeverity={(severity) => setProblemSeverities((current) => current ^ severity)}
+        onReveal={(resource, line, column) => {
+          openFile(resource)
+          if (!line) return
+          editorInstance?.setPosition({ lineNumber: line, column: column ?? 1 })
+          editorInstance?.revealLineInCenter(line)
+        }}
+      />
     )
     if (panelTab === 'OUTPUT') return (
       <div className="output-panel"><span>[Tungsten]</span> Workspace index ready · {files.length} files<br /><span>[Project]</span> {projectInfo.frameworks.join(', ') || 'No framework detected'}<br /><span>[Language]</span> {lspState.message}<br /><span>[Git]</span> {gitInfo.isRepository ? `Watching ${gitInfo.branch}` : 'No repository detected'}</div>
@@ -2296,46 +2147,37 @@ export default function App() {
     if (panelTab === 'DEBUG CONSOLE') return (
       <div className="debug-console-output">{debugState.output.length ? debugState.output.map((line, index) => <div key={index}>{line}</div>) : <div className="empty-panel"><Bot size={24} /><strong>Debug console is ready</strong><span>Start a debug session to inspect values.</span></div>}</div>
     )
-    if (window.tungsten) {
-      const secondary = terminalTabs.find((terminal) => terminal.id !== activeTerminalId)
-      const visible = terminalTabs.filter((terminal) => terminal.id === activeTerminalId || (terminalSplit && terminal.id === secondary?.id))
-      return <div className="terminal-workspace">
-        <div className="terminal-tab-strip">{terminalTabs.map((terminal) => <button key={terminal.id} className={terminal.id === activeTerminalId ? 'active' : ''} onClick={() => setActiveTerminalId(terminal.id)}><TerminalSquare size={11} /><span>{terminal.label}</span><X size={10} onClick={(event) => { event.stopPropagation(); closeTerminal(terminal.id) }} /></button>)}<button className="terminal-add" title="New local terminal" onClick={() => newTerminal()}><Plus size={12} /></button><select title="Terminal profile" defaultValue="" onChange={(event) => { const [kind, id] = event.target.value.split(':'); if (kind === 'wsl') newTerminal({ kind, id, label: `WSL · ${id}` }); if (kind === 'container') { const container = remoteProfiles.containers.find((item) => item.id === id); newTerminal({ kind, id, label: `Docker · ${container?.name || id}` }); } event.target.value = '' }}><option value="">Profiles…</option>{remoteProfiles.wsl.map((name) => <option key={`wsl:${name}`} value={`wsl:${name}`}>WSL · {name}</option>)}{remoteProfiles.containers.map((container) => <option key={`container:${container.id}`} value={`container:${container.id}`}>Docker · {container.name}</option>)}</select></div>
-        {terminalSearchOpen && <form className="terminal-search" onSubmit={(event) => { event.preventDefault(); if (terminalSearchQuery) setTerminalSearchRequest({ id: Date.now(), query: terminalSearchQuery }) }}><Search size={12} /><input autoFocus value={terminalSearchQuery} onChange={(event) => setTerminalSearchQuery(event.target.value)} placeholder="Find in terminal" /><button type="submit">Next</button><button type="button" onClick={() => setTerminalSearchOpen(false)}><X size={12} /></button></form>}
-        <div className={`terminal-grid ${terminalSplit && visible.length > 1 ? 'split' : ''}`} onFocus={() => setFocusedSurface('terminal')} onBlur={() => setFocusedSurface((current) => current === 'terminal' ? 'none' : current)}>{visible.map((terminal) => <div key={`${terminal.id}-${terminal.generation}`} className="terminal-cell"><Suspense fallback={<div className="terminal-loading">Starting PTY…</div>}><DesktopTerminal sessionKey={terminal.id * 1000 + terminal.generation} command={terminal.id === (terminalCommand?.terminalId || activeTerminalId) ? terminalCommand : null} profile={terminal.profile} searchRequest={terminal.id === activeTerminalId ? terminalSearchRequest : null} themeId={activeTheme.id} fontSize={Math.max(9, settings.fontSize - 1)} /></Suspense></div>)}</div>
-      </div>
-    }
     return (
-      <div className="terminal" onClick={() => terminalInputRef.current?.focus()}>
-        <div className="terminal-scroll">
-          {terminalLines.map((line, index) => <div key={index} className={`terminal-line ${line.kind || ''}`}>{line.text}</div>)}
-          <div className="terminal-prompt">
-            <span className="prompt-user">tungsten@{workspaceName}</span><span className="prompt-path"> ~/{workspaceName} </span><span>$</span>
-            <input
-              ref={terminalInputRef}
-              value={terminalInput}
-              spellCheck={false}
-              autoComplete="off"
-              aria-label="Terminal input"
-              onChange={(event) => setTerminalInput(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') {
-                  runTerminalCommand(terminalInput); setTerminalInput('')
-                } else if (event.key === 'ArrowUp') {
-                  event.preventDefault()
-                  const next = Math.min(history.length - 1, historyIndex + 1)
-                  setHistoryIndex(next); setTerminalInput(history[history.length - 1 - next] || '')
-                } else if (event.key === 'ArrowDown') {
-                  event.preventDefault()
-                  const next = Math.max(-1, historyIndex - 1)
-                  setHistoryIndex(next); setTerminalInput(next === -1 ? '' : history[history.length - 1 - next] || '')
-                }
-              }}
-            />
-          </div>
-          <div ref={terminalEndRef} />
-        </div>
-      </div>
+      <TerminalPanel
+        desktop={Boolean(window.tungsten)}
+        tabs={terminalTabs}
+        activeId={activeTerminalId}
+        split={terminalSplit}
+        profiles={remoteProfiles}
+        command={terminalCommand}
+        searchOpen={terminalSearchOpen}
+        searchQuery={terminalSearchQuery}
+        searchRequest={terminalSearchRequest}
+        themeId={activeTheme.id}
+        fontSize={Math.max(9, settings.fontSize - 1)}
+        onSelectTab={setActiveTerminalId}
+        onCloseTab={closeTerminal}
+        onNewTerminal={newTerminal}
+        onSearchQueryChange={setTerminalSearchQuery}
+        onSearchSubmit={(query) => setTerminalSearchRequest({ id: Date.now(), query })}
+        onCloseSearch={() => setTerminalSearchOpen(false)}
+        onFocusChange={(focused) => setFocusedSurface((current) => focused ? 'terminal' : current === 'terminal' ? 'none' : current)}
+        lines={terminalLines}
+        input={terminalInput}
+        onInputChange={setTerminalInput}
+        onRun={runTerminalCommand}
+        history={history}
+        historyIndex={historyIndex}
+        onHistoryIndexChange={setHistoryIndex}
+        workspaceName={workspaceName}
+        inputRef={terminalInputRef}
+        endRef={terminalEndRef}
+      />
     )
   }
 
@@ -2421,178 +2263,224 @@ export default function App() {
     notify(`Replaced ${searchResultSet.matchCount} occurrence${searchResultSet.matchCount === 1 ? '' : 's'} in ${changed} file${changed === 1 ? '' : 's'}`)
   }, [files, notify, searchOptions.isRegex, searchQuery, searchReplace, searchResultSet, workspaceRoot])
 
+  /**
+   * The sidebar. Each activity has its own view component; this only routes to
+   * one and supplies it with workbench state and callbacks.
+   */
   const sidebarContent = () => {
     if (activity === 'search') return (
-      <>
-        <div className="sidebar-title"><span>SEARCH</span><TipButton label={searchShowReplace ? 'Hide replace' : 'Show replace'} active={searchShowReplace} onClick={() => setSearchShowReplace((value) => !value)}><Replace size={14} /></TipButton></div>
-        <div className="search-input-row">
-          <div className={`search-box-wrap ${searchRegexError ? 'invalid' : ''}`}>
-            <Search size={13} />
-            <input value={searchQuery} onChange={(event) => setSearchQuery(event.target.value)} placeholder="Search" aria-label="Search workspace" />
-            <div className="search-toggles">
-              <button className={searchOptions.matchCase ? 'active' : ''} title="Match Case (Alt+C)" aria-pressed={searchOptions.matchCase} onClick={() => setSearchOptions((value) => ({ ...value, matchCase: !value.matchCase }))}>Aa</button>
-              <button className={searchOptions.wholeWord ? 'active' : ''} title="Match Whole Word (Alt+W)" aria-pressed={searchOptions.wholeWord} onClick={() => setSearchOptions((value) => ({ ...value, wholeWord: !value.wholeWord }))}>ab</button>
-              <button className={searchOptions.isRegex ? 'active' : ''} title="Use Regular Expression (Alt+R)" aria-pressed={searchOptions.isRegex} onClick={() => setSearchOptions((value) => ({ ...value, isRegex: !value.isRegex }))}>.*</button>
-            </div>
-          </div>
-        </div>
-        {searchShowReplace && <div className="search-input-row">
-          <div className="search-box-wrap">
-            <Replace size={13} />
-            <input value={searchReplace} onChange={(event) => setSearchReplace(event.target.value)} placeholder="Replace" aria-label="Replace with" />
-          </div>
-          <button className="search-replace-all" disabled={searchResultSet.matchCount === 0} title="Replace All" onClick={() => { void replaceAllMatches() }}>Replace All</button>
-        </div>}
-        <button className="search-toggle-details" onClick={() => setSearchShowDetails((value) => !value)}>{searchShowDetails ? '▾' : '▸'} files to include / exclude</button>
-        {searchShowDetails && <div className="search-globs">
-          <label>include<input value={searchIncludes} onChange={(event) => setSearchIncludes(event.target.value)} placeholder="e.g. src/**, *.ts" /></label>
-          <label>exclude<input value={searchExcludes} onChange={(event) => setSearchExcludes(event.target.value)} placeholder="e.g. **/*.test.ts" /></label>
-        </div>}
-        <div className="search-meta">
-          {searchRegexError
-            ? <span className="search-error">Invalid regular expression</span>
-            : searching
-              ? 'Searching with ripgrep…'
-              : searchQuery
-                ? `${searchResults.length} result${searchResults.length === 1 ? '' : 's'} in ${new Set(searchResults.map((item) => item.file.path)).size} file${new Set(searchResults.map((item) => item.file.path)).size === 1 ? '' : 's'}${searchResultSet.limitHit ? ' (truncated)' : ''}`
-                : 'Type to search across files'}
-        </div>
-        <div className="search-results">
-          {searchResults.map((result, index) => <button key={`${result.file.path}-${result.index}-${result.column}-${index}`} onClick={() => { openFile(result.file.path); setCursor({ line: result.index + 1, column: result.column }); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: result.index + 1, column: result.column }); editorInstance?.revealLineInCenter(result.index + 1) }, 30) }}>
-            <div><FileGlyph path={result.file.path} /><strong>{fileName(result.file.path)}</strong><span>:{result.index + 1}</span></div>
-            <p>
-              {result.line.slice(Math.max(0, result.match.start - 24), result.match.start).trimStart()}
-              <mark>{result.line.slice(result.match.start, result.match.end)}</mark>
-              {result.line.slice(result.match.end, result.match.end + 60)}
-            </p>
-          </button>)}
-        </div>
-      </>
+      <SearchView
+        query={searchQuery}
+        replace={searchReplace}
+        showReplace={searchShowReplace}
+        showDetails={searchShowDetails}
+        includes={searchIncludes}
+        excludes={searchExcludes}
+        options={searchOptions}
+        regexError={searchRegexError}
+        searching={searching}
+        results={searchResults}
+        matchCount={searchResultSet.matchCount}
+        limitHit={searchResultSet.limitHit}
+        onQueryChange={setSearchQuery}
+        onReplaceChange={setSearchReplace}
+        onToggleReplace={() => setSearchShowReplace((value) => !value)}
+        onToggleDetails={() => setSearchShowDetails((value) => !value)}
+        onIncludesChange={setSearchIncludes}
+        onExcludesChange={setSearchExcludes}
+        onOptionsChange={setSearchOptions}
+        onReplaceAll={() => { void replaceAllMatches() }}
+        onOpenResult={(path, line, column) => {
+          openFile(path)
+          setCursor({ line, column })
+          // The editor for a freshly opened file mounts on the next frame, so
+          // the reveal has to wait for it.
+          window.setTimeout(() => {
+            editorInstance?.setPosition({ lineNumber: line, column })
+            editorInstance?.revealLineInCenter(line)
+          }, 30)
+        }}
+      />
     )
     if (activity === 'source') return (
-      <>
-        <div className="sidebar-title"><span>SOURCE CONTROL</span><span className="branch-label"><GitBranch size={11} />{gitInfo.branch || 'no repository'}</span></div>
-        <div className="git-view-tabs"><button className={gitView === 'changes' ? 'active' : ''} onClick={() => setGitView('changes')}>Changes</button><button className={gitView === 'history' ? 'active' : ''} onClick={() => setGitView('history')}>History</button><button className={gitView === 'github' ? 'active' : ''} onClick={() => setGitView('github')}>GitHub</button></div>
-        {gitView === 'changes' && <>
-        {gitBranches.length > 0 && <div className="branch-switcher"><GitBranch size={13} /><select value={gitInfo.branch} onChange={(event) => { void window.tungsten?.gitCheckout(event.target.value).then((status) => { setGitInfo(status); void refreshWorkspace() }).catch((error: Error) => notify(error.message)) }}>{gitBranches.map((branch) => <option key={branch}>{branch}</option>)}</select></div>}
-        {gitOperation.operation ? <div className="git-operation-card"><strong>{gitOperation.operation.toUpperCase()} IN PROGRESS</strong><span>{gitOperation.conflicts.length ? `${gitOperation.conflicts.length} conflict${gitOperation.conflicts.length === 1 ? '' : 's'} must be resolved` : 'All conflicts resolved; ready to continue'}</span>{gitOperation.conflicts.map((path) => <button key={path} onClick={() => { void openGitConflict(path) }}><GitCompareArrows size={12} /><span>{path}</span><ChevronRight size={11} /></button>)}<div><button disabled={gitOperation.conflicts.length > 0} onClick={() => { void finishGitOperation('continue') }}><Check size={11} />Continue</button><button onClick={() => { void finishGitOperation('abort') }}><X size={11} />Abort</button></div></div> : gitBranches.length > 1 && <div className="git-integrate"><select value={gitIntegrateBranch} onChange={(event) => setGitIntegrateBranch(event.target.value)}><option value="">Integrate branch…</option>{gitBranches.filter((branch) => branch !== gitInfo.branch).map((branch) => <option key={branch}>{branch}</option>)}</select><button disabled={!gitIntegrateBranch} onClick={() => { void integrateGitBranch('merge') }}>Merge</button><button disabled={!gitIntegrateBranch} onClick={() => { void integrateGitBranch('rebase') }}>Rebase</button></div>}
-        <div className="commit-box">
-          <textarea
-            value={commitMessage}
-            onChange={(event) => setCommitMessage(event.target.value)}
-            onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === 'Enter') void commitChanges() }}
-            placeholder="Message (⌘Enter to commit)"
-          />
-          <button disabled={!commitMessage.trim() || (!sourceChanges.length && window.tungsten !== undefined)} onClick={() => { void commitChanges() }}><Check size={14} /> Commit all changes</button>
-        </div>
-        <div className="section-heading"><span>CHANGES</span><span className="count-pill">{sourceChanges.length}</span><TipButton label="Refresh Git status" onClick={refreshGit}><RefreshCw size={13} /></TipButton></div>
-        {!gitInfo.isRepository && window.tungsten && workspaceRoot ? (
-          <div className="sidebar-empty"><GitCommitHorizontal size={25} /><span>{gitInfo.error || 'This folder is not a Git repository'}</span></div>
-        ) : sourceChanges.length === 0 ? (
-          <div className="sidebar-empty"><GitCommitHorizontal size={25} /><span>Working tree is clean</span></div>
-        ) : sourceChanges.map(({ path, status, staged, workingTree }) => (
-          <div className="change-row" key={path}>
-            <button className="change-main" onClick={() => { if (window.tungsten) { if (status.includes('U') || status === 'AA' || status === 'DD') void openGitConflict(path); else void openGitDiff(path, Boolean(staged && !workingTree)) } else if (files.some((file) => file.path === path)) openFile(path) }}><FileGlyph path={path} /><span>{fileName(path)}</span><small>{path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : ''}{staged ? ' · staged' : ''}</small></button>
-            {window.tungsten && !status.includes('U') && status !== 'AA' && status !== 'DD' && <button className="stage-button" title={staged && !workingTree ? 'Unstage file' : 'Stage file'} onClick={() => { void window.tungsten!.gitStage(path, !(staged && !workingTree)).then(setGitInfo).catch((error: Error) => notify(error.message)) }}>{staged && !workingTree ? <Minus size={12} /> : <Plus size={12} />}</button>}
-            <b>{status}</b>
-          </div>
-        ))}
-        <div className="git-actions"><button onClick={() => { void window.tungsten?.gitStashPush(`Tungsten stash ${new Date().toLocaleString()}`).then((status) => { setGitInfo(status); void refreshGit() }).catch((error: Error) => notify(error.message)) }}>Stash changes</button><button disabled={gitStashes.length === 0} onClick={() => { if (gitStashes[0]) void window.tungsten?.gitStashPop(gitStashes[0].ref).then((status) => { setGitInfo(status); void refreshWorkspace() }).catch((error: Error) => notify(error.message)) }}>Pop stash</button></div>
-        </>}
-        {gitView === 'history' && <div className="git-history-list">{gitHistory.map((commit) => <div key={commit.hash}><i /><span><strong>{commit.subject}</strong><small>{commit.shortHash} · {commit.author} · {new Date(commit.date).toLocaleDateString()}</small>{commit.refs && <em>{commit.refs}</em>}</span></div>)}{gitStashes.length > 0 && <><div className="section-heading"><span>STASHES</span><span className="count-pill">{gitStashes.length}</span></div>{gitStashes.map((stash) => <button className="stash-row" key={stash.ref} onClick={() => { void window.tungsten?.gitStashPop(stash.ref).then(setGitInfo).catch((error: Error) => notify(error.message)) }}><Archive size={12} /><span>{stash.subject}</span><small>{stash.ref}</small></button>)}</>}</div>}
-        {gitView === 'github' && <div className="github-list"><div className="section-heading"><span>PULL REQUESTS</span><span className="count-pill">{githubItems.pullRequests.length}</span></div>{githubItems.pullRequests.map((item) => <button key={`pr-${item.number}`} onClick={() => { void window.tungsten?.openExternal(item.url) }}><GitPullRequest size={13} /><span><strong>#{item.number} {item.title}</strong><small>{item.state}</small></span></button>)}<div className="section-heading"><span>ISSUES</span><span className="count-pill">{githubItems.issues.length}</span></div>{githubItems.issues.map((item) => <button key={`issue-${item.number}`} onClick={() => { void window.tungsten?.openExternal(item.url) }}><CircleAlert size={13} /><span><strong>#{item.number} {item.title}</strong><small>{item.state}</small></span></button>)}</div>}
-      </>
+      <SourceControlView
+        desktop={Boolean(window.tungsten)}
+        view={gitView}
+        branch={gitInfo.branch}
+        branches={gitBranches}
+        isRepository={gitInfo.isRepository}
+        error={gitInfo.error}
+        operation={gitOperation}
+        integrateBranch={gitIntegrateBranch}
+        commitMessage={commitMessage}
+        changes={sourceChanges}
+        history={gitHistory}
+        stashes={gitStashes}
+        github={githubItems}
+        onViewChange={setGitView}
+        onCheckoutBranch={(branch) => {
+          void window.tungsten?.gitCheckout(branch)
+            .then((status) => { setGitInfo(status); void refreshWorkspace() })
+            .catch((error: Error) => notify(error.message))
+        }}
+        onOpenConflict={(path) => { void openGitConflict(path) }}
+        onFinishOperation={(mode) => { void finishGitOperation(mode) }}
+        onIntegrateBranchChange={setGitIntegrateBranch}
+        onIntegrate={(mode) => { void integrateGitBranch(mode) }}
+        onCommitMessageChange={setCommitMessage}
+        onCommit={() => { void commitChanges() }}
+        onRefresh={refreshGit}
+        onOpenChange={(change) => {
+          if (!window.tungsten) {
+            if (files.some((file) => file.path === change.path)) openFile(change.path)
+            return
+          }
+          const conflicted = change.status.includes('U') || change.status === 'AA' || change.status === 'DD'
+          if (conflicted) void openGitConflict(change.path)
+          else void openGitDiff(change.path, Boolean(change.staged && !change.workingTree))
+        }}
+        onStageChange={(change) => {
+          void window.tungsten?.gitStage(change.path, !(change.staged && !change.workingTree))
+            .then(setGitInfo)
+            .catch((error: Error) => notify(error.message))
+        }}
+        onStash={() => {
+          void window.tungsten?.gitStashPush(`Tungsten stash ${new Date().toLocaleString()}`)
+            .then((status) => { setGitInfo(status); void refreshGit() })
+            .catch((error: Error) => notify(error.message))
+        }}
+        onPopStash={(reference) => {
+          if (!reference) return
+          void window.tungsten?.gitStashPop(reference)
+            .then((status) => { setGitInfo(status); void refreshWorkspace() })
+            .catch((error: Error) => notify(error.message))
+        }}
+        onOpenExternal={(url) => { void window.tungsten?.openExternal(url) }}
+      />
     )
     if (activity === 'debug') return (
-      <>
-        <div className="sidebar-title"><span>RUN AND DEBUG</span><TipButton label={debugState.running ? 'Stop debugging' : 'Start debugging'} onClick={() => { if (debugState.running) void stopDebugging(); else void startDebugging() }}>{debugState.running ? <CircleStop size={15} /> : <Play size={15} />}</TipButton></div>
-        <div className="debug-launch">
-          <button className={debugState.running ? 'stop' : ''} onClick={() => { if (debugState.running) void stopDebugging(); else void startDebugging() }}>{debugState.running ? <CircleStop size={15} /> : <BugPlay size={15} />}{debugState.running ? 'Stop session' : 'Start debugging'}<kbd>F5</kbd></button>
-          <p>{files.some((file) => file.path === '.tungsten/launch.json') ? 'Using .tungsten/launch.json' : 'Add .tungsten/launch.json with your DAP adapter configuration.'}</p>
-        </div>
-        {debugState.running && debugState.id && <div className="debug-controls">{([
-          ['Continue', 'continue', Play],
-          ['Pause', 'pause', Pause],
-          ['Step over', 'next', StepForward],
-          ['Step into', 'stepIn', CornerDownRight],
-          ['Step out', 'stepOut', Undo2],
-        ] as const).map(([label, command, Icon]) => <button key={command} title={`${label} (${shortcutFor(`workbench.action.debug.${command === 'next' ? 'stepOver' : command === 'stepIn' ? 'stepInto' : command === 'stepOut' ? 'stepOut' : command}`) || '—'})`} onClick={() => { void debugControl(command) }}><Icon size={13} /></button>)}<span>DAP SESSION</span></div>}
-        {debugState.running && <>
-          <div className="section-heading"><ChevronDown size={13} /><span>THREADS</span><span className="count-pill">{debugThreads.length}</span></div>
-          <div className="debug-data-list">{debugThreads.map((thread) => <button key={thread.id} onClick={() => { setDebugState((state) => ({ ...state, threadId: thread.id })); void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'stackTrace', arguments: { threadId: thread.id, startFrame: 0, levels: 50 } }) }}><Cpu size={12} /><strong>{thread.name}</strong><small>#{thread.id}</small></button>)}</div>
-          <div className="section-heading"><ChevronDown size={13} /><span>CALL STACK</span><span className="count-pill">{debugFrames.length}</span></div>
-          <div className="debug-data-list">{debugFrames.map((frame) => <button key={frame.id} onClick={() => { const candidate = (frame.source?.path || '').replaceAll('\\', '/'); const relative = candidate.startsWith(workspaceRoot.replaceAll('\\', '/')) ? candidate.slice(workspaceRoot.length + 1) : files.find((file) => candidate.endsWith(`/${file.path}`))?.path || frame.source?.name || ''; if (files.some((file) => file.path === relative)) { openFile(relative); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: frame.line, column: 1 }); editorInstance?.revealLineInCenter(frame.line) }, 30) } void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'scopes', arguments: { frameId: frame.id } }) }}><Layers size={12} /><strong>{frame.name}</strong><small>{frame.source?.name || 'source'}:{frame.line}</small></button>)}</div>
-          <div className="section-heading"><ChevronDown size={13} /><span>VARIABLES</span><span className="count-pill">{debugVariables.length}</span></div>
-          <div className="debug-variable-list">{debugScopes.map((scope) => <b key={scope.name}>{scope.name}</b>)}{debugVariables.map((variable, index) => <div key={`${variable.name}-${index}`}><span>{variable.name}</span><code>{variable.value}</code><small>{variable.type}</small></div>)}</div>
-          <div className="section-heading"><ChevronDown size={13} /><span>WATCH</span><span className="count-pill">{watches.length}</span></div>
-          <div className="watch-input"><input value={watchInput} placeholder="Expression" onChange={(event) => setWatchInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter' && watchInput.trim()) { setWatches((items) => [...items, watchInput.trim()]); setWatchInput('') } }} /><Plus size={12} /></div>
-          <div className="debug-variable-list">{watches.map((expression) => <div key={expression}><span>{expression}</span><code>{watchValues[expression] || 'not evaluated'}</code><X size={11} onClick={() => setWatches((items) => items.filter((item) => item !== expression))} /></div>)}</div>
-        </>}
-        <div className="section-heading"><ChevronDown size={13} /><span>BREAKPOINTS</span><span className="count-pill">{breakpoints.length}</span><TipButton label="Add breakpoint at cursor" onClick={() => { if (activeFile) void toggleBreakpoint(activeFile.path, cursor.line) }}><Plus size={13} /></TipButton></div>
-        <div className="breakpoint-list">{breakpoints.length ? breakpoints.map((point) => <button key={`${point.path}:${point.line}`} title="Right-click to edit condition" onContextMenu={(event) => { event.preventDefault(); void editBreakpointCondition(point.path, point.line) }} onClick={() => { openFile(point.path); setCursor({ line: point.line, column: 1 }); editorInstance?.revealLineInCenter(point.line); editorInstance?.setPosition({ lineNumber: point.line, column: 1 }) }}><span className="breakpoint-dot" /><strong>{fileName(point.path)}</strong><small>line {point.line}{point.condition ? ` · ${point.condition}` : ''}</small><X size={12} onClick={(event) => { event.stopPropagation(); void toggleBreakpoint(point.path, point.line) }} /></button>) : <p>No breakpoints set</p>}</div>
-        <div className="section-heading"><ChevronDown size={13} /><span>DEBUG OUTPUT</span></div>
-        <div className="debug-sidebar-output">{debugState.output.slice(-8).map((line, index) => <p key={index}>{line}</p>)}</div>
-      </>
+      <DebugView
+        running={debugState.running}
+        sessionId={debugState.id}
+        output={debugState.output}
+        hasLaunchConfig={files.some((file) => file.path === '.tungsten/launch.json')}
+        threads={debugThreads}
+        frames={debugFrames}
+        scopes={debugScopes}
+        variables={debugVariables}
+        watches={watches}
+        watchInput={watchInput}
+        watchValues={watchValues}
+        breakpoints={breakpoints}
+        canAddBreakpoint={Boolean(activeFile)}
+        shortcutFor={shortcutFor}
+        onStart={() => { void startDebugging() }}
+        onStop={() => { void stopDebugging() }}
+        onControl={(command) => { void debugControl(command) }}
+        onSelectThread={(threadId) => {
+          setDebugState((state) => ({ ...state, threadId }))
+          void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'stackTrace', arguments: { threadId, startFrame: 0, levels: 50 } })
+        }}
+        onSelectFrame={(frame) => {
+          // A DAP frame reports an absolute path; map it back onto a workspace
+          // path so the right buffer opens.
+          const candidate = (frame.source?.path || '').replaceAll('\\', '/')
+          const relative = candidate.startsWith(workspaceRoot.replaceAll('\\', '/'))
+            ? candidate.slice(workspaceRoot.length + 1)
+            : files.find((file) => candidate.endsWith(`/${file.path}`))?.path || frame.source?.name || ''
+          if (files.some((file) => file.path === relative)) {
+            openFile(relative)
+            window.setTimeout(() => {
+              editorInstance?.setPosition({ lineNumber: frame.line, column: 1 })
+              editorInstance?.revealLineInCenter(frame.line)
+            }, 30)
+          }
+          void window.tungsten?.sendDebug(debugState.id!, { type: 'request', command: 'scopes', arguments: { frameId: frame.id } })
+        }}
+        onWatchInputChange={setWatchInput}
+        onAddWatch={() => { setWatches((items) => [...items, watchInput.trim()]); setWatchInput('') }}
+        onRemoveWatch={(expression) => setWatches((items) => items.filter((item) => item !== expression))}
+        onAddBreakpoint={() => { if (activeFile) void toggleBreakpoint(activeFile.path, cursor.line) }}
+        onEditBreakpointCondition={(path, line) => { void editBreakpointCondition(path, line) }}
+        onRemoveBreakpoint={(path, line) => { void toggleBreakpoint(path, line) }}
+        onRevealBreakpoint={(path, line) => {
+          openFile(path)
+          setCursor({ line, column: 1 })
+          editorInstance?.revealLineInCenter(line)
+          editorInstance?.setPosition({ lineNumber: line, column: 1 })
+        }}
+      />
     )
     if (activity === 'tests') return (
-      <>
-        <div className="sidebar-title"><span>TESTING & TASKS</span><TipButton label="Refresh tests and coverage" onClick={() => { void window.tungsten?.detectProject().then(setProjectInfo); void window.tungsten?.discoverTests().then(setDiscoveredTests); void window.tungsten?.readCoverage().then(setCoverage) }}><RefreshCw size={14} /></TipButton></div>
-        <div className="framework-tags">{projectInfo.frameworks.length ? projectInfo.frameworks.map((framework) => <span key={framework}>{framework}</span>) : <span>No framework detected</span>}</div>
-        <div className="section-heading"><ChevronDown size={13} /><span>TEST PROFILES</span><span className="count-pill">{projectInfo.tests.length}</span></div>
-        <div className="task-list">{projectInfo.tests.length ? projectInfo.tests.map((task) => <button key={task.label} onClick={() => runIntegratedCommand(task.command)}><FlaskConical size={14} /><span><strong>{task.label}</strong><small>{task.command}</small></span><Play size={12} /></button>) : <div className="sidebar-empty compact"><FlaskConical size={22} /><span>No test runner detected</span></div>}</div>
-        <div className="section-heading"><ChevronDown size={13} /><span>DISCOVERED TESTS</span><span className="count-pill">{discoveredTests.length}</span></div>
-        <div className="test-case-list">{discoveredTests.slice(0, 300).map((test) => { const result = testResults[test.id]; return <div key={test.id} className={result?.status || ''}><button title="Open test" onClick={() => { setActiveTestResult(test.id); openFile(test.path); window.setTimeout(() => { editorInstance?.setPosition({ lineNumber: test.line, column: 1 }); editorInstance?.revealLineInCenter(test.line) }, 30) }}>{result?.status === 'failed' ? <CircleAlert size={11} /> : result?.status === 'running' ? <RefreshCw size={11} className="spin" /> : <CircleCheck size={11} />}<span><strong>{test.name}</strong><small>{test.path}:{test.line}{result?.durationMs !== undefined ? ` · ${result.durationMs} ms` : ''}</small></span></button><button title="Run this test" onClick={() => { void runStructuredTest(test.id) }}><Play size={11} /></button><button title="Debug this test" onClick={() => { runIntegratedCommand(test.command); notify('Test command started in a dedicated terminal; attach a launch configuration to debug') }}><BugPlay size={11} /></button></div> })}</div>
-        {activeTestResult && testResults[activeTestResult] && <div className={`test-result-detail ${testResults[activeTestResult].status}`}><strong>{testResults[activeTestResult].status.toUpperCase()}</strong>{testResults[activeTestResult].failures?.map((line, index) => <code key={`failure-${index}`}>{line}</code>)}{testResults[activeTestResult].snapshots?.map((line, index) => <code key={`snapshot-${index}`}>Snapshot · {line}</code>)}{testResults[activeTestResult].output && <pre>{testResults[activeTestResult].output}</pre>}</div>}
-        <div className="coverage-summary"><ShieldCheck size={13} /><span>{Object.keys(coverage).length ? `Coverage loaded for ${Object.keys(coverage).length} files` : 'Run coverage to enable editor overlays'}</span></div>
-        <div className="section-heading"><ChevronDown size={13} /><span>PROJECT TASKS</span><span className="count-pill">{projectInfo.tasks.length}</span></div>
-        <div className="task-list">{projectInfo.tasks.map((task) => <button key={`${task.label}-${task.command}`} onClick={() => runIntegratedCommand(task.command)}><ListChecks size={14} /><span><strong>{task.label}</strong><small>{task.command}</small></span><Play size={12} /></button>)}</div>
-      </>
+      <TestingView
+        frameworks={projectInfo.frameworks}
+        testProfiles={projectInfo.tests}
+        tasks={projectInfo.tasks}
+        discovered={discoveredTests}
+        results={testResults}
+        activeResult={activeTestResult}
+        coverageFileCount={Object.keys(coverage).length}
+        onRefresh={() => {
+          void window.tungsten?.detectProject().then(setProjectInfo)
+          void window.tungsten?.discoverTests().then(setDiscoveredTests)
+          void window.tungsten?.readCoverage().then(setCoverage)
+        }}
+        onRunTask={runIntegratedCommand}
+        onOpenTest={(test) => {
+          setActiveTestResult(test.id)
+          openFile(test.path)
+          window.setTimeout(() => {
+            editorInstance?.setPosition({ lineNumber: test.line, column: 1 })
+            editorInstance?.revealLineInCenter(test.line)
+          }, 30)
+        }}
+        onRunTest={(id) => { void runStructuredTest(id) }}
+        onDebugTest={(test) => {
+          runIntegratedCommand(test.command)
+          notify('Test command started in a dedicated terminal; attach a launch configuration to debug')
+        }}
+      />
     )
     if (activity === 'extensions') return (
-      <>
-        <div className="sidebar-title"><span>EXTENSIONS</span><TipButton label="Install extension from folder" onClick={() => { void installExtension() }}><PackagePlus size={15} /></TipButton></div>
-        <div className="search-box-wrap"><Search size={13} /><input placeholder="Search installed extensions" /></div>
-        <div className="extension-install-banner"><PackagePlus size={17} /><div><strong>Declarative extensions</strong><p>Install commands, themes and language contributions from a local folder.</p></div><button onClick={() => { void installExtension() }}>Install</button></div>
-        <div className="section-heading"><span>BUILT IN</span><span className="count-pill">4</span></div>
-        {[
-          { id: 'core.languages', name: 'Language Core', description: `${supportedLanguages.length} bundled language grammars`, icon: 'L' },
-          { id: 'core.format', name: 'Formatter Core', description: 'Monaco document formatting bridge', icon: 'P' },
-          { id: 'core.git', name: 'Git Tools', description: 'Diffs, staging, branches and commits', icon: 'G' },
-          { id: 'core.debug', name: 'Debug Adapter Core', description: 'Debug Adapter Protocol transport', icon: 'D' },
-        ].map((extension) => <div className="extension-card" key={extension.id}><div className={`extension-icon ext-${extension.icon.toLowerCase()}`}>{extension.icon}</div><div><strong>{extension.name}</strong><p>{extension.description}</p><span>Tungsten · Enabled</span></div><ShieldCheck size={13} /></div>)}
-        <div className="section-heading"><span>INSTALLED PACKAGES</span><span className="count-pill">{extensions.length}</span></div>
-        {extensions.map((extension) => <div className={`extension-card managed ${extension.enabled === false ? 'disabled' : ''}`} key={extension.id}><div className="extension-icon">{extension.name[0] || 'E'}</div><div><strong>{extension.name}</strong><p>{extension.description}</p><span>{extension.publisher} · {extension.scope || 'user'} · {extension.verification || 'declarative'} · {extension.enabled === false ? 'Disabled' : 'Enabled'}</span><small>{extension.permissions?.length ? `Permissions: ${extension.permissions.join(', ')}` : 'No runtime permissions'}</small></div><div className="extension-actions"><button title={extension.enabled === false ? 'Enable extension' : 'Disable extension'} onClick={() => { void window.tungsten?.setExtensionEnabled(extension.id, extension.enabled === false).then(setExtensions).catch((error: Error) => notify(error.message)) }}>{extension.enabled === false ? <Play size={11} /> : <CircleStop size={11} />}</button>{extension.scope !== 'workspace' && <button title="Uninstall extension" onClick={() => { void window.tungsten?.uninstallExtension(extension.id).then(setExtensions).catch((error: Error) => notify(error.message)) }}><Trash2 size={11} /></button>}</div></div>)}
-      </>
+      <ExtensionsView
+        extensions={extensions}
+        languageCount={supportedLanguages.length}
+        onInstall={() => { void installExtension() }}
+        onToggleEnabled={(extension) => {
+          void window.tungsten?.setExtensionEnabled(extension.id, extension.enabled === false)
+            .then(setExtensions)
+            .catch((error: Error) => notify(error.message))
+        }}
+        onUninstall={(id) => {
+          void window.tungsten?.uninstallExtension(id)
+            .then(setExtensions)
+            .catch((error: Error) => notify(error.message))
+        }}
+      />
     )
     return (
-      <>
-        <div className="sidebar-title"><span>EXPLORER</span><Ellipsis size={16} /></div>
-        <div className="project-heading"><ChevronDown size={13} /><strong>{workspaceName.toUpperCase()}</strong><span>{externalChange && <i className="workspace-change-dot" title={`${externalChange} changed on disk`} />}</span><TipButton label="Open folder" onClick={openDesktopFolder}><FolderOpen size={14} /></TipButton><TipButton label="Add workspace root" onClick={() => { void addWorkspaceFolder() }}><FolderPlus size={14} /></TipButton><TipButton label="Refresh workspace" onClick={() => { setExternalChange(null); void refreshWorkspace() }}><RefreshCw size={13} /></TipButton><TipButton label="New file" onClick={openNewFileDialog}><File size={14} /><Plus size={8} className="mini-plus" /></TipButton></div>
-        {workspaceRoots.length > 1 && <div className="workspace-roots">{workspaceRoots.map((root) => <div key={root.path}><span>{root.prefix || '@primary'} · {root.name}</span>{root.prefix && <button title="Remove workspace root" onClick={() => { void removeWorkspaceFolder(root.prefix) }}><X size={10} /></button>}</div>)}</div>}
-        <ExplorerTree files={files} activePath={activePath} openFile={openFile} dirty={dirty} onFileContext={(event, path) => { event.preventDefault(); setContextMenu({ x: event.clientX, y: event.clientY, path }) }} />
-        <div className="outline-section">
-          <div className="section-heading"><ChevronDown size={13} /><span>OUTLINE</span><span /><Ellipsis size={14} /></div>
-          {symbols.length ? <div className="symbols-list">{symbols.map((symbol, index) => {
-            // Each kind gets its own icon and colour, and nesting is indented,
-            // so the outline reads like VS Code's rather than a flat list.
-            const SymbolIcon = symbolIcons[symbol.type] ?? Braces
-            return (
-              <button
-                key={`${symbol.label}-${symbol.line}-${index}`}
-                className={activeFile && cursor.line === symbol.line ? 'active' : ''}
-                style={{ paddingLeft: 22 + symbol.depth * 11 }}
-                title={`${symbol.type} · line ${symbol.line}`}
-                onClick={() => revealLine(symbol.line)}
-              >
-                <SymbolIcon size={12} className={`symbol-icon symbol-${symbol.type}`} />
-                <span>{symbol.label}</span>
-                <small>{symbol.line}</small>
-              </button>
-            )
-          })}</div> : <p className="outline-empty">No symbols found</p>}
-        </div>
-        <div className="collapsed-section"><ChevronRight size={13} /> TIMELINE</div>
-      </>
+      <ExplorerView
+        workspaceName={workspaceName}
+        externalChange={externalChange}
+        roots={workspaceRoots}
+        files={files}
+        activePath={activePath}
+        dirty={dirty}
+        symbols={symbols}
+        cursorLine={cursor.line}
+        hasActiveFile={Boolean(activeFile)}
+        onOpenFolder={openDesktopFolder}
+        onAddRoot={() => { void addWorkspaceFolder() }}
+        onRemoveRoot={(prefix) => { void removeWorkspaceFolder(prefix) }}
+        onRefresh={() => { setExternalChange(null); void refreshWorkspace() }}
+        onNewFile={openNewFileDialog}
+        onOpenFile={openFile}
+        onFileContext={(event, path) => {
+          event.preventDefault()
+          setContextMenu({ x: event.clientX, y: event.clientY, path })
+        }}
+        onRevealLine={revealLine}
+      />
     )
   }
 

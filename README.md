@@ -135,6 +135,19 @@ npm run desktop:dist
 
 Installers are written to `out/`. Build on each target OS or use the included `Build desktop installers` GitHub Actions workflow. Optional signing environment variables are documented in the workflow. Create an unpacked current-platform app with `npm run desktop:pack`. See the [laptop testing guide](docs/LAPTOP_TESTING.md) for installation notes and the acceptance checklist.
 
+## Workbench structure
+
+`src/App.tsx` owns workbench state — the workspace, the editor group layout, Git, debug and terminal sessions — and nothing else. Everything it renders lives in its own component and receives data and callbacks as props:
+
+| Area | Components |
+| --- | --- |
+| Editor | `components/EditorGroup.tsx`, `components/ConfiguredEditor.tsx`, `components/Preview.tsx` |
+| Sidebar | `components/sidebar/` — `ExplorerView`, `SearchView`, `SourceControlView`, `DebugView`, `TestingView`, `ExtensionsView` |
+| Panel | `components/panel/` — `ProblemsPanel`, `TerminalPanel` |
+| Shared | `components/FileGlyph.tsx`, `components/TipButton.tsx` |
+
+None of these components reads `localStorage` or calls `window.tungsten`: desktop capability arrives as a prop, so every view renders in the browser build and in jsdom. `src/components/views.test.tsx` mounts each one and drives it, and `src/platform.test.ts` enforces the boundary.
+
 ## Validation
 
 ```bash
