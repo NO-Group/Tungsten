@@ -35,6 +35,7 @@ import {
 } from 'lucide-react'
 
 import { PREVIEW_PATH, fileName, type WorkspaceFile } from '../workspace'
+import type { GitComparison } from '../git/gitModel'
 import { type TungstenTheme, monacoThemeName } from '../theme/themeService'
 import {
   type EditorGroup as EditorGroupModel,
@@ -66,17 +67,6 @@ export type EditorSettings = {
 }
 
 /** The staged/unstaged comparison currently being reviewed, if any. */
-export type GitComparison = {
-  virtualPath: string
-  path: string
-  before: string
-  after: string
-  staged: boolean
-  /** Absent for an ordinary diff; true only while resolving a merge conflict. */
-  conflict?: boolean
-  base?: string
-  hunks: Array<{ id: string; header: string; patch: string }>
-}
 
 /**
  * Everything the group can ask the workbench to do.
@@ -139,6 +129,8 @@ export type EditorGroupProps = {
   monaco: MonacoBridge
   actions: EditorGroupActions
 }
+
+export type { GitComparison }
 
 const EDITOR_FONT = "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace"
 

@@ -185,6 +185,39 @@ describe('desktop bridge contract', () => {
     expect(code(titleBar)).not.toContain('parseWhenClause')
   })
 
+  it('keeps every Git call in the Git service', () => {
+    const service = readFileSync(new URL('./git/useGitService.ts', import.meta.url), 'utf8')
+    // One file owns the Git bridge, so the workbench cannot drift into
+    // half-refreshed state by calling it from a handler that forgot to.
+    expect(code(renderer)).not.toMatch(/tungsten[?!]?\.git[A-Z]/)
+    expect(code(service)).toMatch(/api\.gitStatus\(\)/)
+    expect(renderer).toContain('const git = useGitService({')
+    // Status interpretation and document naming are pure, and tested as such.
+    const model = readFileSync(new URL('./git/gitModel.ts', import.meta.url), 'utf8')
+    expect(code(model)).not.toContain('window.tungsten')
+    expect(code(model)).not.toContain('useState')
+    expect(code(renderer)).not.toContain(".tungsten/diffs/")
+  })
+
+  it('emulates the browser shell outside the workbench component', () => {
+    const shell = readFileSync(new URL('./terminal/sandboxShell.ts', import.meta.url), 'utf8')
+    expect(renderer).toContain('runSandboxCommand(command, { workspaceName, files, dirty })')
+    expect(code(shell)).not.toContain('window.tungsten')
+    expect(code(shell)).not.toContain('useState')
+    // The desktop path stays in the workbench: it is a real child process.
+    expect(code(renderer)).toContain('window.tungsten.runCommand(command)')
+  })
+
+  it('draws the activity bar and panel header from components', () => {
+    expect(renderer).toContain('<ActivityBar')
+    expect(renderer).toContain('<PanelHeader')
+    for (const name of ['ActivityBar', 'panel/PanelHeader']) {
+      const source = readFileSync(new URL(`./components/${name}.tsx`, import.meta.url), 'utf8')
+      expect(code(source), name).not.toContain('window.tungsten')
+      expect(code(source), name).not.toContain('useState')
+    }
+  })
+
   it('builds every dialog on one modal shell', () => {
     // Backdrop dismissal, Escape, the dialog role and the accessible name are
     // implemented once, so no dialog can be missing one of them.

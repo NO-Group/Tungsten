@@ -19,8 +19,10 @@ import { DebugView } from './sidebar/DebugView'
 import { TestingView } from './sidebar/TestingView'
 import { ExtensionsView } from './sidebar/ExtensionsView'
 import { ExplorerView } from './sidebar/ExplorerView'
+import { ActivityBar } from './ActivityBar'
 import { TitleBar, type Menu } from './TitleBar'
 import { StatusBar } from './StatusBar'
+import { PanelHeader } from './panel/PanelHeader'
 import { ProblemsPanel } from './panel/ProblemsPanel'
 import { TerminalPanel } from './panel/TerminalPanel'
 import { MarkerSeverity } from '../markers/markerService'
@@ -416,5 +418,59 @@ describe('status bar', () => {
     expect(container.textContent).toContain('Web')
     render(<StatusBar {...props} platform="linux" />)
     expect(container.textContent).toContain('Desktop')
+  })
+})
+
+describe('activity bar', () => {
+  const props = { active: 'explorer' as const, sidebarVisible: true, onSelect: noop, onOpenSettings: noop }
+
+  it('marks only the active view as pressed, and only while the sidebar shows', () => {
+    render(<ActivityBar {...props} active="source" />)
+    expect(button('Source Control').getAttribute('aria-pressed')).toBe('true')
+    expect(button('Explorer').getAttribute('aria-pressed')).toBe('false')
+
+    render(<ActivityBar {...props} active="source" sidebarVisible={false} />)
+    expect(button('Source Control').getAttribute('aria-pressed')).toBe('false')
+  })
+
+  it('badges pending work and hides empty counts', () => {
+    render(<ActivityBar {...props} badges={{ source: 7, tests: 0 }} />)
+    expect(button('Source Control').textContent).toBe('7')
+    expect(button('Testing').textContent).toBe('')
+  })
+
+  it('reports the view that was clicked, including the active one', () => {
+    const selected: string[] = []
+    render(<ActivityBar {...props} onSelect={(id) => selected.push(id)} />)
+    click('Search')
+    // Clicking the current view is what collapses the sidebar, so it must
+    // still be reported rather than swallowed as a no-op.
+    click('Explorer')
+    expect(selected).toEqual(['search', 'explorer'])
+  })
+})
+
+describe('panel header', () => {
+  const props = {
+    activeTab: 'TERMINAL', onSelectTab: noop, problemCount: 4, terminalKind: 'sandbox' as const,
+    onNewTerminal: noop, splitActive: false, onToggleSplit: noop, searchActive: false,
+    onToggleSearch: noop, onRestartTerminal: noop, onMaximize: noop, onClose: noop,
+  }
+
+  it('counts problems on the tab and names the terminal backing', () => {
+    const dom = render(<PanelHeader {...props} />)
+    expect(button('PROBLEMS').textContent).toContain('4')
+    expect(dom.querySelector('.terminal-name')?.textContent).toContain('sandbox')
+    expect(render(<PanelHeader {...props} terminalKind="pty" />).querySelector('.terminal-name')?.textContent).toContain('pty')
+  })
+
+  it('switches tabs and keeps the terminal actions available on every tab', () => {
+    const selected: string[] = []
+    let split = 0
+    render(<PanelHeader {...props} activeTab="PROBLEMS" onSelectTab={(tab) => selected.push(tab)} onToggleSplit={() => { split += 1 }} />)
+    click('OUTPUT')
+    click('Split terminal')
+    expect(selected).toEqual(['OUTPUT'])
+    expect(split).toBe(1)
   })
 })

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react'
 import {
   Archive,
   Blocks,
@@ -12,7 +12,6 @@ import {
   CircleAlert,
   CircleCheck,
   CircleStop,
-  CircleUserRound,
   Columns2,
   Command,
   Copy,
@@ -57,9 +56,10 @@ import {
   Zap,
 } from 'lucide-react'
 import { PREVIEW_PATH, defaultFiles, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
-import { TipButton } from './components/TipButton'
 import { EditorGroup } from './components/EditorGroup'
 import { ContextMenu } from './components/ContextMenu'
+import { ActivityBar, type Activity } from './components/ActivityBar'
+import { PanelHeader } from './components/panel/PanelHeader'
 import { TitleBar, type Menu as AppMenu } from './components/TitleBar'
 import { StatusBar } from './components/StatusBar'
 import { CommandPalette, type PaletteEntry, type PaletteMode } from './components/dialogs/CommandPalette'
@@ -116,12 +116,13 @@ import { configurationByCategory, configurationSchema, searchConfiguration } fro
 import { chordFromEvent, createResolver, keybindingLabel, parseKeybinding, type KeybindingRule } from './keybinding/keybindings'
 import defaultKeybindingRules from './keybinding/defaults'
 import { parseWhenClause, type Context as WhenContext } from './keybinding/contextkey'
+import { useGitService } from './git/useGitService'
+import { runSandboxCommand } from './terminal/sandboxShell'
 import './styles.css'
 
 /** Menu bar order, as read left to right. */
 const MENU_ORDER = ['File', 'Edit', 'Selection', 'View', 'Go', 'Run', 'Terminal', 'Help']
 
-type Activity = 'explorer' | 'search' | 'source' | 'debug' | 'tests' | 'extensions'
 type TerminalProfile = { kind: 'wsl' | 'container'; id: string; label?: string }
 type TerminalTab = { id: number; label: string; generation: number; profile?: Omit<TerminalProfile, 'label'> }
 type CommandItem = {
@@ -412,15 +413,6 @@ function mergeKeybindings(overrides: Record<string, string>): KeybindingRule[] {
   return rules
 }
 
-const activityItems = [
-  { id: 'explorer' as const, label: 'Explorer', icon: Files },
-  { id: 'search' as const, label: 'Search', icon: Search },
-  { id: 'source' as const, label: 'Source Control', icon: GitBranch },
-  { id: 'debug' as const, label: 'Run and Debug', icon: BugPlay },
-  { id: 'tests' as const, label: 'Testing', icon: FlaskConical },
-  { id: 'extensions' as const, label: 'Extensions', icon: Blocks },
-]
-
 export default function App() {
   const [initialTerminalLayout] = useState(loadTerminalLayout)
   const [initialWorkbenchLayout] = useState(loadWorkbenchLayout)
@@ -521,16 +513,6 @@ export default function App() {
   const [nativeSearchResults, setNativeSearchResults] = useState<Array<{ path: string; line: number; column: number; preview: string }>>([])
   const [searching, setSearching] = useState(false)
   const [externalChange, setExternalChange] = useState<string | null>(null)
-  const [commitMessage, setCommitMessage] = useState('')
-  const [gitInfo, setGitInfo] = useState<GitStatusResult>({ isRepository: false, branch: 'main', changes: [], error: '' })
-  const [gitBranches, setGitBranches] = useState<string[]>([])
-  const [gitView, setGitView] = useState<'changes' | 'history' | 'github'>('changes')
-  const [gitOperation, setGitOperation] = useState<{ operation: 'merge' | 'rebase' | null; conflicts: string[] }>({ operation: null, conflicts: [] })
-  const [gitIntegrateBranch, setGitIntegrateBranch] = useState('')
-  const [gitComparison, setGitComparison] = useState<{ path: string; virtualPath: string; before: string; after: string; staged: boolean; hunks: Array<{ id: string; header: string; patch: string }>; conflict?: boolean; base?: string } | null>(null)
-  const [gitHistory, setGitHistory] = useState<Array<{ hash: string; shortHash: string; author: string; date: string; subject: string; refs: string }>>([])
-  const [gitStashes, setGitStashes] = useState<Array<{ ref: string; hash: string; subject: string }>>([])
-  const [githubItems, setGithubItems] = useState<{ pullRequests: Array<{ number: number; title: string; state: string; url: string }>; issues: Array<{ number: number; title: string; state: string; url: string }> }>({ pullRequests: [], issues: [] })
   const [projectInfo, setProjectInfo] = useState<ProjectInfo>({ tasks: [{ label: 'npm: dev', command: 'npm run dev' }, { label: 'npm: build', command: 'npm run build' }], tests: [], frameworks: ['Vite'] })
   const [discoveredTests, setDiscoveredTests] = useState<Array<{ id: string; name: string; path: string; line: number; command: string }>>([])
   const [testResults, setTestResults] = useState<Record<string, { status: 'running' | 'passed' | 'failed'; durationMs?: number; output?: string; failures?: string[]; snapshots?: string[] }>>({})
@@ -594,6 +576,13 @@ export default function App() {
   /** Indirection so the global key listener always calls the latest dispatcher. */
   const runCommandRef = useRef<(id: string) => Promise<boolean>>(async () => false)
 
+  /**
+   * Bumped whenever the files on disk may have changed underneath us. Services
+   * that mirror the disk -- Git, for now -- watch it instead of every save,
+   * refresh and folder-open having to call them.
+   */
+  const [workingTreeRevision, bumpWorkingTree] = useReducer((revision: number) => revision + 1, 0)
+
   const activeFile = files.find((file) => file.path === activePath)
   const symbols = useMemo(() => symbolsFor(activeFile), [activeFile])
   const runEditorAction = useCallback((action: string) => {
@@ -620,32 +609,6 @@ export default function App() {
    * exposes. Keybindings, palette entries and menu items are all filtered
    * through these.
    */
-  const whenContext = useMemo<WhenContext>(() => ({
-    editorFocus: focusedSurface === 'editor',
-    terminalFocus: focusedSurface === 'terminal',
-    editorTextFocus: focusedSurface === 'editor',
-    inputFocus: focusedSurface === 'input',
-    activityBar: activity,
-    panelVisible: panelOpen,
-    panelTab,
-    sidebarVisible,
-    zenMode,
-    editorIsOpen: Boolean(activePath) && activePath !== PREVIEW_PATH,
-    openTabs: openTabs.length,
-    multipleGroups: layout.groups.length > 1,
-    editorGroups: layout.groups.length,
-    resourceExtname: activePath.includes('.') ? `.${activePath.split('.').pop()}` : '',
-    resourceLangId: activeFile?.language || '',
-    dirtyCount: dirty.size,
-    isDesktop: Boolean(window.tungsten),
-    workspaceOpen: Boolean(workspaceRoot),
-    remoteConnected,
-    gitRepository: gitInfo.isRepository,
-    gitOperation: gitOperation.operation || '',
-    debugState: debugState.running ? (debugState.threadId ? 'stopped' : 'running') : '',
-    quickOpenOpen: palette.open,
-  }), [activeFile, activePath, activity, debugState.running, debugState.threadId, dirty.size, focusedSurface, gitInfo.isRepository, gitOperation.operation, layout.groups.length, openTabs.length, palette.open, panelOpen, panelTab, remoteConnected, sidebarVisible, workspaceRoot, zenMode])
-
   const notify = useCallback((message: string) => {
     setToast(message)
     window.setTimeout(() => setToast(''), 2200)
@@ -666,7 +629,8 @@ export default function App() {
         notify('All files saved')
       }
       if (window.tungsten && workspaceRoot) {
-        window.tungsten.gitStatus().then(setGitInfo).catch(() => undefined)
+        // The files on disk moved on; Git state follows the revision.
+        bumpWorkingTree()
         if (!path) void window.tungsten.clearRecovery()
       }
     }
@@ -707,12 +671,7 @@ export default function App() {
       setActivePath(preferred?.path || '')
     }
     setDirty(new Set())
-    window.tungsten?.gitStatus().then(setGitInfo).catch(() => undefined)
-    window.tungsten?.gitBranches().then(setGitBranches).catch(() => setGitBranches([]))
-    window.tungsten?.gitHistory(150).then(setGitHistory).catch(() => setGitHistory([]))
-    window.tungsten?.gitStashes().then(setGitStashes).catch(() => setGitStashes([]))
-    window.tungsten?.gitOperationStatus().then(setGitOperation).catch(() => setGitOperation({ operation: null, conflicts: [] }))
-    window.tungsten?.githubItems().then(setGithubItems).catch(() => setGithubItems({ pullRequests: [], issues: [] }))
+    bumpWorkingTree()
     window.tungsten?.detectProject().then(setProjectInfo).catch(() => undefined)
     window.tungsten?.discoverTests().then(setDiscoveredTests).catch(() => setDiscoveredTests([]))
     window.tungsten?.readCoverage().then(setCoverage).catch(() => setCoverage({}))
@@ -928,6 +887,7 @@ export default function App() {
         setActivePath(remaining.includes(activePath) ? activePath : remaining[0] || result.files[0]?.path || '')
         setDirty(new Set())
         setExternalChange(null)
+        bumpWorkingTree()
         notify(`${result.files.length} files refreshed from disk`)
       }
     } catch (error) {
@@ -942,59 +902,81 @@ export default function App() {
     setOpenTabs(['README.md', 'index.html', 'src/main.js'])
     setActivePath('src/main.js')
     setDirty(new Set())
-    setGitInfo({ isRepository: false, branch: 'main', changes: [], error: '' })
     localStorage.removeItem(WORKSPACE_KEY)
     notify('Workspace restored to defaults')
   }, [notify, setActivePath, setOpenTabs])
 
-  const refreshGit = useCallback(async () => {
-    if (!window.tungsten || !workspaceRoot) return
-    try {
-      setGitInfo(await window.tungsten.gitStatus())
-      window.tungsten.gitHistory(150).then(setGitHistory).catch(() => setGitHistory([]))
-      window.tungsten.gitBranches().then(setGitBranches).catch(() => setGitBranches([]))
-      window.tungsten.gitOperationStatus().then(setGitOperation).catch(() => setGitOperation({ operation: null, conflicts: [] }))
-      window.tungsten.gitStashes().then(setGitStashes).catch(() => setGitStashes([]))
-      window.tungsten.githubItems().then(setGithubItems).catch(() => setGithubItems({ pullRequests: [], issues: [] }))
-    } catch (error) {
-      setGitInfo({ isRepository: false, branch: '', changes: [], error: (error as Error).message })
-    }
-  }, [workspaceRoot])
+  const git = useGitService({
+    workspaceRoot,
+    revision: workingTreeRevision,
+    dirty,
+    activeFile,
+    notify,
+    save,
+    refreshWorkspace,
+    showDocument: (file) => {
+      setFiles((current) => [...current.filter((item) => item.path !== file.path), file])
+      openFile(file.path)
+    },
+    closeDocument: (virtualPath, focusPath) => {
+      setOpenTabs((tabs) => tabs.filter((tab) => tab !== virtualPath))
+      setActivePath(focusPath)
+    },
+    reportOutput: (text) => setTerminalLines((lines) => [...lines, { text, kind: 'success' }]),
+    clearDirty: () => setDirty(new Set()),
+  })
+  const {
+    status: gitInfo, branches: gitBranches, history: gitHistory, stashes: gitStashes, github: githubItems,
+    operation: gitOperation, comparison: gitComparison, view: gitView, setView: setGitView,
+    integrateBranch: gitIntegrateBranch, setIntegrateBranch: setGitIntegrateBranch,
+    commitMessage, setCommitMessage, sourceChanges, refresh: refreshGit, commit: commitChanges,
+    openConflict: openGitConflict, openBlame: openGitBlame,
+    stageHunk: stageGitHunk, resolveConflict: resolveGitConflict,
+    integrate: integrateGitBranch, finishOperation: finishGitOperation,
+  } = git
 
-  const commitChanges = async () => {
-    if (!commitMessage.trim()) return
-    if (!window.tungsten || !workspaceRoot) {
-      setDirty(new Set())
-      setCommitMessage('')
-      notify('Demo changes committed locally')
-      return
-    }
-    try {
-      await save()
-      const result = await window.tungsten.gitCommit(commitMessage)
-      setGitInfo(result.status)
-      setCommitMessage('')
-      setTerminalLines((lines) => [...lines, { text: result.output, kind: 'success' }])
-      notify('Changes committed')
-    } catch (error) {
-      notify(`Commit failed: ${(error as Error).message}`)
-    }
-  }
+  const whenContext = useMemo<WhenContext>(() => ({
+    editorFocus: focusedSurface === 'editor',
+    terminalFocus: focusedSurface === 'terminal',
+    editorTextFocus: focusedSurface === 'editor',
+    inputFocus: focusedSurface === 'input',
+    activityBar: activity,
+    panelVisible: panelOpen,
+    panelTab,
+    sidebarVisible,
+    zenMode,
+    editorIsOpen: Boolean(activePath) && activePath !== PREVIEW_PATH,
+    openTabs: openTabs.length,
+    multipleGroups: layout.groups.length > 1,
+    editorGroups: layout.groups.length,
+    resourceExtname: activePath.includes('.') ? `.${activePath.split('.').pop()}` : '',
+    resourceLangId: activeFile?.language || '',
+    dirtyCount: dirty.size,
+    isDesktop: Boolean(window.tungsten),
+    workspaceOpen: Boolean(workspaceRoot),
+    remoteConnected,
+    gitRepository: gitInfo.isRepository,
+    gitOperation: gitOperation.operation || '',
+    debugState: debugState.running ? (debugState.threadId ? 'stopped' : 'running') : '',
+    quickOpenOpen: palette.open,
+  }), [activeFile, activePath, activity, debugState.running, debugState.threadId, dirty.size, focusedSurface, gitInfo.isRepository, gitOperation.operation, layout.groups.length, openTabs.length, palette.open, panelOpen, panelTab, remoteConnected, sidebarVisible, workspaceRoot, zenMode])
 
+  /**
+   * Runs a command in the bottom panel's terminal.
+   *
+   * On the desktop this is a real child process. In the browser it falls
+   * through to the emulated shell, which answers from the in-memory
+   * workspace.
+   */
   const runTerminalCommand = (raw: string) => {
     const command = raw.trim()
     if (!command) return
     setHistory((current) => [...current, command])
     setHistoryIndex(-1)
-    const base: Array<{ text: string; kind?: string }> = [{ text: `tungsten@${workspaceName} ~/${workspaceName} $ ${command}`, kind: 'command' }]
-    const [name, ...args] = command.split(/\s+/)
 
-    if (name === 'clear') {
-      setTerminalLines([])
-      return
-    }
     if (window.tungsten && workspaceRoot) {
-      setTerminalLines((lines) => [...lines, ...base])
+      if (command === 'clear') return setTerminalLines([])
+      setTerminalLines((lines) => [...lines, { text: `tungsten@${workspaceName} ~/${workspaceName} $ ${command}`, kind: 'command' }])
       window.tungsten.runCommand(command).then((result) => {
         const output: Array<{ text: string; kind?: string }> = []
         if (result.stdout.trimEnd()) output.push({ text: result.stdout.trimEnd(), kind: result.code === 0 ? undefined : 'warning' })
@@ -1004,37 +986,10 @@ export default function App() {
       }).catch((error: Error) => setTerminalLines((lines) => [...lines, { text: error.message, kind: 'error' }]))
       return
     }
-    if (name === 'help') {
-      base.push({ text: 'Available: help, clear, ls, pwd, cat, echo, date, whoami, git status, npm run dev, npm run build', kind: 'muted' })
-    } else if (name === 'pwd') {
-      base.push({ text: '/workspace/forge' })
-    } else if (name === 'whoami') {
-      base.push({ text: 'tungsten' })
-    } else if (name === 'date') {
-      base.push({ text: new Date().toString() })
-    } else if (name === 'echo') {
-      base.push({ text: args.join(' ') })
-    } else if (name === 'ls') {
-      const target = args[0]?.replace(/\/$/, '') || ''
-      const entries = new Set<string>()
-      files.filter((file) => !target || file.path.startsWith(`${target}/`)).forEach((file) => {
-        const relative = target ? file.path.slice(target.length + 1) : file.path
-        entries.add(relative.split('/')[0] + (relative.includes('/') ? '/' : ''))
-      })
-      base.push({ text: [...entries].join('   ') || `ls: ${target}: No such directory` })
-    } else if (name === 'cat') {
-      const file = files.find((item) => item.path === args[0])
-      base.push({ text: file?.content || `cat: ${args[0] || ''}: No such file`, kind: file ? undefined : 'error' })
-    } else if (command === 'git status') {
-      base.push({ text: `On branch main\n${dirty.size ? `Changes not staged for commit:\n  ${[...dirty].map((path) => `modified: ${path}`).join('\n  ')}` : 'nothing to commit, working tree clean'}`, kind: dirty.size ? 'warning' : 'success' })
-    } else if (command === 'npm run dev') {
-      base.push({ text: 'VITE ready in 287 ms\n  Local: tungsten://preview/forge\n  press Ctrl+Enter to open', kind: 'success' })
-    } else if (command === 'npm run build') {
-      base.push({ text: '✓ 8 modules transformed.\n✓ built in 412ms  dist/index.html  7.21 kB', kind: 'success' })
-    } else {
-      base.push({ text: `${name}: command not found`, kind: 'error' })
-    }
-    setTerminalLines((lines) => [...lines, ...base])
+
+    const result = runSandboxCommand(command, { workspaceName, files, dirty })
+    if (result.clear) setTerminalLines([])
+    else setTerminalLines((lines) => [...lines, ...result.lines])
   }
 
   const runIntegratedCommand = (command: string) => {
@@ -1212,86 +1167,6 @@ export default function App() {
     }
   }
 
-  const openGitDiff = useCallback(async (path: string, staged = false) => {
-    if (!window.tungsten) return
-    try {
-      const [{ diff, hunks }, versions] = await Promise.all([window.tungsten.gitDiff(path, staged), window.tungsten.gitFileVersions(path, staged)])
-      const virtualPath = `.tungsten/diffs/${staged ? 'staged-' : ''}${fileName(path)}.diff`
-      setGitComparison({ ...versions, virtualPath, hunks })
-      setFiles((current) => [...current.filter((file) => file.path !== virtualPath), { path: virtualPath, content: diff, language: 'diff' }])
-      openFile(virtualPath)
-    } catch (error) {
-      notify(`Could not open diff: ${(error as Error).message}`)
-    }
-  }, [notify, openFile])
-
-  const stageGitHunk = useCallback(async (patch: string) => {
-    if (!window.tungsten || !gitComparison) return
-    try {
-      const status = await window.tungsten.gitStageHunk(patch, gitComparison.staged)
-      setGitInfo(status)
-      notify(gitComparison.staged ? 'Hunk unstaged' : 'Hunk staged')
-      await openGitDiff(gitComparison.path, gitComparison.staged)
-    } catch (error) { notify(`Could not apply hunk: ${(error as Error).message}`) }
-  }, [gitComparison, notify, openGitDiff])
-
-  const openGitConflict = async (path: string) => {
-    if (!window.tungsten) return
-    try {
-      const versions = await window.tungsten.gitConflictVersions(path)
-      const virtualPath = `.tungsten/conflicts/${fileName(path)}.merge`
-      setGitComparison({ path, virtualPath, before: versions.ours, after: versions.theirs, base: versions.base, staged: false, hunks: [], conflict: true })
-      setFiles((current) => [...current.filter((file) => file.path !== virtualPath), { path: virtualPath, content: versions.theirs, language: languageForPath(path) }])
-      openFile(virtualPath)
-    } catch (error) { notify(`Could not open conflict: ${(error as Error).message}`) }
-  }
-
-  const resolveGitConflict = useCallback(async (resolution: 'ours' | 'theirs' | 'both' | 'mark') => {
-    if (!window.tungsten || !gitComparison?.conflict) return
-    try {
-      setGitInfo(await window.tungsten.gitResolveConflict(gitComparison.path, resolution))
-      notify(resolution === 'mark' ? 'Working file marked as resolved' : `Conflict resolved using ${resolution === 'ours' ? 'current' : resolution === 'theirs' ? 'incoming' : 'both'} changes`)
-      setGitComparison(null)
-      setOpenTabs((tabs) => tabs.filter((tab) => tab !== gitComparison.virtualPath))
-      setActivePath(gitComparison.path)
-      await refreshWorkspace()
-      await refreshGit()
-    } catch (error) { notify(`Could not resolve conflict: ${(error as Error).message}`) }
-  }, [gitComparison, notify, refreshGit, refreshWorkspace, setActivePath, setOpenTabs])
-
-  const integrateGitBranch = async (operation: 'merge' | 'rebase') => {
-    if (!window.tungsten || !gitIntegrateBranch) return
-    try {
-      const status = await window.tungsten.gitIntegrate(operation, gitIntegrateBranch)
-      setGitInfo(status)
-      await refreshWorkspace()
-      await refreshGit()
-      const conflicted = status.changes.some((change) => change.status.includes('U') || change.status === 'AA' || change.status === 'DD')
-      notify(`${operation === 'merge' ? 'Merge' : 'Rebase'} ${conflicted ? 'requires conflict resolution' : 'completed'}`)
-    } catch (error) { notify(`${operation} failed: ${(error as Error).message}`); await refreshGit() }
-  }
-
-  const finishGitOperation = async (action: 'continue' | 'abort') => {
-    if (!window.tungsten || !gitOperation.operation) return
-    try {
-      setGitInfo(await window.tungsten.gitOperationAction(gitOperation.operation, action))
-      await refreshWorkspace()
-      await refreshGit()
-      notify(`${gitOperation.operation} ${action === 'continue' ? 'continued' : 'aborted'}`)
-    } catch (error) { notify(`Could not ${action} ${gitOperation.operation}: ${(error as Error).message}`) }
-  }
-
-  const openGitBlame = async () => {
-    if (!window.tungsten || !activeFile || activeFile.language === 'diff') return
-    try {
-      const blame = await window.tungsten.gitBlame(activeFile.path)
-      const virtualPath = `.tungsten/blame/${fileName(activeFile.path)}.txt`
-      const content = blame.map((entry) => `${entry.hash.slice(0, 9).padEnd(10)} ${entry.author.slice(0, 18).padEnd(19)} ${entry.date} │ ${entry.content}`).join('\n')
-      setFiles((current) => [...current.filter((file) => file.path !== virtualPath), { path: virtualPath, content, language: 'plaintext' }])
-      openFile(virtualPath)
-    } catch (error) { notify(`Could not load blame: ${(error as Error).message}`) }
-  }
-
   const extensionCommands: CommandItem[] = extensions.flatMap((extension) => {
     if (extension.enabled === false) return []
     const contributions = extension.contributes as { commands?: Array<{ id?: string; title?: string; command?: string }> }
@@ -1309,14 +1184,6 @@ export default function App() {
       },
     }))
   })
-
-  /** Working-tree changes: git status merged with unsaved editor buffers. */
-  const sourceChanges = useMemo(() => {
-    const changes = new Map<string, { path: string; status: string; staged?: boolean; workingTree?: boolean }>()
-    if (gitInfo.isRepository) gitInfo.changes.forEach((change) => changes.set(change.path, change))
-    dirty.forEach((path) => changes.set(path, { ...(changes.get(path) || { path, status: 'M' }), workingTree: true }))
-    return [...changes.values()]
-  }, [dirty, gitInfo])
 
   /**
    * The command table.
@@ -1450,7 +1317,7 @@ export default function App() {
       { id: 'tungsten.git.refresh', label: 'Git: Refresh', detail: 'Reload status, branches and history', icon: RefreshCw, action: () => { void refreshGit() } },
       { id: 'tungsten.git.commitStaged', label: 'Git: Commit Staged', detail: commitMessage ? commitMessage : 'Enter a commit message first', icon: GitCommitHorizontal, when: 'gitRepository', action: () => { void commitChanges() } },
       { id: 'tungsten.git.blame', label: 'Git: Show Blame for Active File', detail: activeFile?.path || 'No active file', icon: GitCommitHorizontal, when: 'editorIsOpen && gitRepository', action: openGitBlame },
-      { id: 'tungsten.git.stash', label: 'Git: Stash Changes', detail: `${sourceChanges.length} changes`, icon: Archive, when: 'gitRepository', action: () => { void window.tungsten?.gitStashPush().then(setGitInfo).then(() => refreshGit()) } },
+      { id: 'tungsten.git.stash', label: 'Git: Stash Changes', detail: `${sourceChanges.length} changes`, icon: Archive, when: 'gitRepository', action: () => { void git.stash() } },
 
       // Preferences.
       { id: 'tungsten.action.openQuickSettings', label: 'Preferences: Open Quick Settings', detail: 'Editor and workspace toggles', icon: Settings, action: () => setSettingsOpen(true) },
@@ -2276,11 +2143,7 @@ export default function App() {
         stashes={gitStashes}
         github={githubItems}
         onViewChange={setGitView}
-        onCheckoutBranch={(branch) => {
-          void window.tungsten?.gitCheckout(branch)
-            .then((status) => { setGitInfo(status); void refreshWorkspace() })
-            .catch((error: Error) => notify(error.message))
-        }}
+        onCheckoutBranch={(branch) => { void git.checkout(branch) }}
         onOpenConflict={(path) => { void openGitConflict(path) }}
         onFinishOperation={(mode) => { void finishGitOperation(mode) }}
         onIntegrateBranchChange={setGitIntegrateBranch}
@@ -2289,30 +2152,17 @@ export default function App() {
         onCommit={() => { void commitChanges() }}
         onRefresh={refreshGit}
         onOpenChange={(change) => {
+          // Without a repository there is nothing to diff against, so the
+          // browser demo just opens the file itself.
           if (!window.tungsten) {
             if (files.some((file) => file.path === change.path)) openFile(change.path)
             return
           }
-          const conflicted = change.status.includes('U') || change.status === 'AA' || change.status === 'DD'
-          if (conflicted) void openGitConflict(change.path)
-          else void openGitDiff(change.path, Boolean(change.staged && !change.workingTree))
+          git.openChange(change)
         }}
-        onStageChange={(change) => {
-          void window.tungsten?.gitStage(change.path, !(change.staged && !change.workingTree))
-            .then(setGitInfo)
-            .catch((error: Error) => notify(error.message))
-        }}
-        onStash={() => {
-          void window.tungsten?.gitStashPush(`Tungsten stash ${new Date().toLocaleString()}`)
-            .then((status) => { setGitInfo(status); void refreshGit() })
-            .catch((error: Error) => notify(error.message))
-        }}
-        onPopStash={(reference) => {
-          if (!reference) return
-          void window.tungsten?.gitStashPop(reference)
-            .then((status) => { setGitInfo(status); void refreshWorkspace() })
-            .catch((error: Error) => notify(error.message))
-        }}
+        onStageChange={(change) => { void git.stageFile(change) }}
+        onStash={() => { void git.stash() }}
+        onPopStash={(reference) => { void git.popStash(reference) }}
         onOpenExternal={(url) => { void window.tungsten?.openExternal(url) }}
       />
     )
@@ -2646,26 +2496,19 @@ export default function App() {
       />
 
       <main className="workbench">
-        <aside className="activitybar">
-          <div>
-            {activityItems.map((item) => {
-              const Icon = item.icon
-              return <button key={item.id} className={activity === item.id && sidebarVisible ? 'active' : ''} onClick={() => {
-                if (item.id === 'source') void refreshGit()
-                if (activity === item.id) setSidebarVisible((value) => !value)
-                else { setActivity(item.id); setSidebarVisible(true) }
-              }} aria-label={item.label} title={item.label}>
-                <Icon size={21} strokeWidth={1.65} />
-                {item.id === 'source' && sourceChanges.length > 0 && <span className="activity-badge">{sourceChanges.length}</span>}
-                {item.id === 'tests' && projectInfo.tests.length > 0 && <span className="activity-badge">{projectInfo.tests.length}</span>}
-              </button>
-            })}
-          </div>
-          <div>
-            <button aria-label="Accounts" title="Accounts"><CircleUserRound size={20} strokeWidth={1.6} /><span className="presence-dot" /></button>
-            <button aria-label="Manage" title="Manage" onClick={() => setSettingsOpen(true)}><Settings size={20} strokeWidth={1.6} /></button>
-          </div>
-        </aside>
+        <ActivityBar
+          active={activity}
+          sidebarVisible={sidebarVisible}
+          badges={{ source: sourceChanges.length, tests: projectInfo.tests.length }}
+          onSelect={(id) => {
+            if (id === 'source') void refreshGit()
+            // Clicking the view you are already in collapses the sidebar, the
+            // way VS Code's activity bar behaves.
+            if (activity === id) setSidebarVisible((value) => !value)
+            else { setActivity(id); setSidebarVisible(true) }
+          }}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
 
         {sidebarVisible && <aside className="sidebar" style={{ width: sidebarWidth }}>
           {sidebarContent()}
@@ -2695,10 +2538,37 @@ export default function App() {
 
             {panelOpen && <section className="bottom-panel" style={{ height: panelHeight }}>
               <div className="resize-handle horizontal" onMouseDown={startPanelResize} />
-              <header className="panel-header">
-                <nav>{['PROBLEMS', 'OUTPUT', 'DEBUG CONSOLE', 'TERMINAL'].map((tab) => <button key={tab} className={panelTab === tab ? 'active' : ''} onClick={() => setPanelTab(tab)}>{tab}{tab === 'PROBLEMS' && <span className="tab-count">{problems.length}</span>}</button>)}</nav>
-                <div><span className="terminal-name"><TerminalSquare size={13} /> {window.tungsten ? 'pty' : 'sandbox'} <ChevronDown size={11} /></span><TipButton label="New terminal" onClick={() => { if (window.tungsten) newTerminal(); else { setPanelTab('TERMINAL'); setTerminalLines((lines) => [...lines, { text: '— new terminal session —', kind: 'muted' }]); window.setTimeout(() => terminalInputRef.current?.focus(), 20) } }}><Plus size={14} /></TipButton><TipButton label="Split terminal" active={terminalSplit} onClick={() => { if (terminalTabs.length < 2) newTerminal(); setTerminalSplit((value) => !value) }}><Columns2 size={13} /></TipButton><TipButton label="Find in terminal" active={terminalSearchOpen} onClick={() => setTerminalSearchOpen((value) => !value)}><Search size={13} /></TipButton><TipButton label="Restart terminal" onClick={() => { if (window.tungsten) setTerminalTabs((tabs) => tabs.map((terminal) => terminal.id === activeTerminalId ? { ...terminal, generation: terminal.generation + 1 } : terminal)); else setTerminalLines([]) }}><Trash2 size={13} /></TipButton><TipButton label="Maximize panel" onClick={() => setPanelHeight((height) => height > 400 ? 225 : Math.round(window.innerHeight * .62))}><Maximize2 size={13} /></TipButton><TipButton label="Close panel" onClick={() => setPanelOpen(false)}><X size={14} /></TipButton></div>
-              </header>
+              <PanelHeader
+                activeTab={panelTab}
+                onSelectTab={setPanelTab}
+                problemCount={problems.length}
+                terminalKind={window.tungsten ? 'pty' : 'sandbox'}
+                onNewTerminal={() => {
+                  if (window.tungsten) return void newTerminal()
+                  setPanelTab('TERMINAL')
+                  setTerminalLines((lines) => [...lines, { text: '— new terminal session —', kind: 'muted' }])
+                  window.setTimeout(() => terminalInputRef.current?.focus(), 20)
+                }}
+                splitActive={terminalSplit}
+                onToggleSplit={() => {
+                  // Splitting with only one session open would show the same
+                  // terminal twice, so make a second one first.
+                  if (terminalTabs.length < 2) newTerminal()
+                  setTerminalSplit((value) => !value)
+                }}
+                searchActive={terminalSearchOpen}
+                onToggleSearch={() => setTerminalSearchOpen((value) => !value)}
+                onRestartTerminal={() => {
+                  if (!window.tungsten) return setTerminalLines([])
+                  // Bumping the generation remounts the xterm instance, which
+                  // starts a fresh pty for that tab.
+                  setTerminalTabs((tabs) => tabs.map((terminal) => (
+                    terminal.id === activeTerminalId ? { ...terminal, generation: terminal.generation + 1 } : terminal
+                  )))
+                }}
+                onMaximize={() => setPanelHeight((height) => (height > 400 ? 225 : Math.round(window.innerHeight * .62)))}
+                onClose={() => setPanelOpen(false)}
+              />
               {panelContent()}
             </section>}
           </div>
