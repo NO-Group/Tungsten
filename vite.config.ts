@@ -1,8 +1,15 @@
+import { readFileSync } from 'node:fs'
+
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
+// package.json is the only place the version is written down; the About
+// dialog, the terminal banner and the installer all read it from here.
+const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
+
 export default defineConfig({
   base: './',
+  define: { __APP_VERSION__: JSON.stringify(version) },
   plugins: [react()],
   build: {
     target: 'es2022',

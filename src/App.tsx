@@ -126,6 +126,7 @@ import { registerLanguageProviders } from './languages/monacoLanguageClient'
 import { registerSnippetProvider } from './languages/monacoSnippetProvider'
 import { useDiagnostics } from './languages/useDiagnostics'
 import { useTerminalSessions } from './terminal/useTerminalSessions'
+import { APP_VERSION } from './version'
 import './styles.css'
 
 /** Menu bar order, as read left to right. */
@@ -161,7 +162,6 @@ function loadUserSnippets(): Snippet[] {
     return []
   }
 }
-const APP_VERSION = '3.0'
 let monacoApi: any = null
 
 function loadFiles() {

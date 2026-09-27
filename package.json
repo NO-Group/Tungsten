@@ -1,6 +1,6 @@
 {
   "name": "tungsten-ide",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "private": true,
   "description": "A rugged, cross-platform development environment.",
   "author": {

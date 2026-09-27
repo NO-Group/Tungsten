@@ -1,5 +1,8 @@
 import { readFileSync } from 'node:fs'
+
 import { describe, expect, it } from 'vitest'
+
+import { APP_VERSION } from './version'
 
 const main = readFileSync(new URL('../electron/main.cjs', import.meta.url), 'utf8')
 const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url), 'utf8')
@@ -244,6 +247,15 @@ describe('desktop bridge contract', () => {
     // Presence, cursors and comments fold into the room by pure rules.
     expect(code(model)).not.toContain('window.tungsten')
     expect(code(model)).not.toContain('useState')
+  })
+
+  it('writes the product version down in exactly one place', () => {
+    const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
+    expect(APP_VERSION).toBe(manifest.version)
+    // The About dialog and the shell banner both read it rather than restate it.
+    expect(renderer).toContain('APP_VERSION')
+    expect(readFileSync(new URL('./terminal/useTerminalSessions.ts', import.meta.url), 'utf8'))
+      .toContain('Tungsten Shell ${APP_VERSION}')
   })
 
   it('keeps diagnostics in a service that merges per file', () => {

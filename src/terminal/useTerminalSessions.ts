@@ -15,6 +15,7 @@ import {
   restartTerminalTab, serializeTerminalLayout, terminalAtOffset,
   type TerminalLayout, type TerminalLine, type TerminalProfile,
 } from './terminalSessions'
+import { APP_VERSION } from '../version'
 
 const TERMINAL_LAYOUT_KEY = 'tungsten.terminals.v2'
 
@@ -30,7 +31,7 @@ export type TerminalHost = {
 /** The banner the emulated shell opens with. */
 function welcomeLines(): TerminalLine[] {
   return [
-    { text: `Tungsten Shell 2.2.0  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
+    { text: `Tungsten Shell ${APP_VERSION}  ·  ${window.tungsten ? 'desktop process runner' : 'web sandbox'}`, kind: 'muted' },
     { text: `${supportedLanguages.length} language grammars loaded. Type “help” for available commands.`, kind: 'success' },
   ]
 }
