@@ -6,6 +6,7 @@ const preload = readFileSync(new URL('../electron/preload.cjs', import.meta.url)
 const rendererEntry = readFileSync(new URL('./main.tsx', import.meta.url), 'utf8')
 const renderer = readFileSync(new URL('./App.tsx', import.meta.url), 'utf8')
 const configuredEditor = readFileSync(new URL('./components/ConfiguredEditor.tsx', import.meta.url), 'utf8')
+const editorGroup = readFileSync(new URL('./components/EditorGroup.tsx', import.meta.url), 'utf8')
 const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8')
 
 describe('desktop bridge contract', () => {
@@ -67,13 +68,31 @@ describe('desktop bridge contract', () => {
     expect(renderer).toContain("inlineClassName: 'debug-inline-value'")
   })
 
-  it('drives the workbench from the imported VS Code themes', () => {
+  it('drives the workbench from the theme service', () => {
+    // The workbench applies the palette; the editor groups apply it to Monaco.
     expect(renderer).toContain('applyWorkbenchTheme')
-    expect(renderer).toContain('monacoThemeName(activeTheme)')
+    expect(renderer).toContain('applyMonacoTheme')
+    expect(editorGroup).toContain('monacoThemeName(theme)')
     // The stylesheet must consume the runtime custom properties rather than
     // hard-coding Tungsten's original palette.
     expect(styles).toContain('var(--tg-background')
     expect(styles).toContain("data-theme-kind='hc-dark'")
+  })
+
+  it('renders editor groups from the group model rather than a flat tab list', () => {
+    // The renderer must not reintroduce standalone tab state: the layout is the
+    // single source of truth, and openTabs/activePath are derived from it.
+    expect(renderer).toContain('layout.groups.map')
+    expect(renderer).toContain('<EditorGroup')
+    expect(renderer).not.toMatch(/useState\(\['README\.md'/)
+    expect(renderer).toContain('createLayout(')
+
+    // The group itself stays presentational: it reports intent upward and
+    // never reaches for application state directly.
+    expect(editorGroup).toContain('actions.setLayout')
+    expect(editorGroup).not.toContain('useState')
+    expect(editorGroup).not.toContain('localStorage')
+    expect(editorGroup).not.toContain('window.tungsten')
   })
 
   it('routes commands through a single id-keyed table', () => {

@@ -307,3 +307,13 @@ export const symbolsFor = (file?: WorkspaceFile): DocumentSymbol[] => {
 
   return symbols.slice(0, 400)
 }
+
+/**
+ * Virtual path for the built-in live preview editor.
+ *
+ * It is not a real file, so every code path that reads or writes the workspace
+ * has to recognise it. Keeping the constant here rather than in the renderer
+ * means the tab strip, the editor group model and the save logic all agree on
+ * what it is.
+ */
+export const PREVIEW_PATH = '$preview'

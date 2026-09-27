@@ -21,7 +21,6 @@ import {
   CornerDownRight,
   Cpu,
   Ellipsis,
-  ExternalLink,
   Download,
   Eye,
   File,
@@ -74,7 +73,10 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { defaultFiles, fileIconClass, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
+import { PREVIEW_PATH, defaultFiles, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
+import { FileGlyph } from './components/FileGlyph'
+import { TipButton } from './components/TipButton'
+import { EditorGroup } from './components/EditorGroup'
 import {
   type EditorGroupLayout,
   MAX_GROUPS,
@@ -85,17 +87,14 @@ import {
   closeToTheRight as closeToTheRightInLayout,
   createLayout,
   cycleEditorInGroup,
-  focusGroup,
   focusGroupByOffset,
   joinGroups,
-  moveEditor,
   revealPath,
-  setActiveEditor as setActiveEditorInGroup,
   setGroupEditors,
   splitGroup,
   togglePinned,
 } from './editor/editorGroups'
-import { fileIconFor, folderIconFor } from './theme/fileIcons'
+import { folderIconFor } from './theme/fileIcons'
 import {
   applyMonacoTheme,
   applyWorkbenchTheme,
@@ -115,9 +114,6 @@ import { chordFromEvent, createResolver, keybindingLabel, parseKeybinding, type 
 import defaultKeybindingRules from './keybinding/defaults'
 import { parseWhenClause, type Context as WhenContext } from './keybinding/contextkey'
 const DesktopTerminal = lazy(() => import('./components/DesktopTerminal'))
-const configuredEditor = () => import('./components/ConfiguredEditor')
-const Editor = lazy(configuredEditor)
-const DiffEditor = lazy(() => configuredEditor().then((module) => ({ default: module.DiffEditor })))
 import './styles.css'
 
 type Activity = 'explorer' | 'search' | 'source' | 'debug' | 'tests' | 'extensions'
@@ -189,7 +185,6 @@ function loadUserSnippets(): Snippet[] {
   }
 }
 const APP_VERSION = '3.0'
-const PREVIEW_PATH = '$preview'
 const lspLanguages = new Set(['javascript', 'typescript', 'python', 'rust', 'go', 'c', 'cpp', 'java', 'csharp', 'ruby', 'php', 'kotlin', 'lua'])
 const openedLspDocuments = new Set<string>()
 let languageProvidersRegistered = false
@@ -524,46 +519,6 @@ const symbolIcons: Record<string, typeof Braces> = {
  * File icon, resolved through the Seti-style icon theme so every common file
  * type gets its own glyph and colour.
  */
-function FileGlyph({ path }: { path: string }) {
-  const icon = fileIconFor(path)
-  return (
-    <span
-      className={`file-glyph ${fileIconClass(path)}`}
-      style={{ color: icon.color }}
-      title={icon.label}
-      aria-hidden
-    >{icon.glyph}</span>
-  )
-}
-
-function TipButton({
-  label,
-  children,
-  className = '',
-  onClick,
-  active = false,
-  disabled = false,
-}: {
-  label: string
-  children: React.ReactNode
-  className?: string
-  onClick?: () => void
-  active?: boolean
-  disabled?: boolean
-}) {
-  return (
-    <button
-      className={`icon-button ${active ? 'active' : ''} ${className}`}
-      aria-label={label}
-      title={label}
-      onClick={onClick}
-      disabled={disabled}
-    >
-      {children}
-    </button>
-  )
-}
-
 function ExplorerTree({
   files,
   activePath,
@@ -622,30 +577,6 @@ function ExplorerTree({
   }
 
   return <div className="file-tree">{tree.map((node) => renderNode(node))}</div>
-}
-
-function Preview({ html, onReload }: { html: string; onReload: () => void }) {
-  const [key, setKey] = useState(0)
-  return (
-    <section className="preview-shell">
-      <div className="preview-toolbar">
-        <div className="preview-controls">
-          <button aria-label="Reload preview" title="Reload preview" onClick={() => { setKey((value) => value + 1); onReload() }}>
-            <RefreshCw size={13} />
-          </button>
-        </div>
-        <div className="preview-address">
-          <ShieldCheck size={13} />
-          <span>tungsten://preview/forge</span>
-        </div>
-        <button className="preview-external" title="Open preview in a new tab" onClick={() => {
-          const blob = new Blob([html], { type: 'text/html' })
-          window.open(URL.createObjectURL(blob), '_blank')
-        }}><ExternalLink size={13} /></button>
-      </div>
-      <iframe key={key} title="Project preview" sandbox="allow-scripts" srcDoc={html} />
-    </section>
-  )
 }
 
 const activityItems = [
@@ -1070,11 +1001,11 @@ export default function App() {
     ])
   }, [notify, openTabs, setActivePath, setOpenTabs])
 
-  const openNewFileDialog = () => {
+  const openNewFileDialog = useCallback(() => {
     setRenameTarget(null)
     setNewFileName('')
     setNewFileOpen(true)
-  }
+  }, [])
 
   const createFile = async () => {
     const path = newFileName.trim().replace(/^[/\\]+/, '').replace(/\\/g, '/')
@@ -1436,7 +1367,7 @@ export default function App() {
     }
   }
 
-  const openGitDiff = async (path: string, staged = false) => {
+  const openGitDiff = useCallback(async (path: string, staged = false) => {
     if (!window.tungsten) return
     try {
       const [{ diff, hunks }, versions] = await Promise.all([window.tungsten.gitDiff(path, staged), window.tungsten.gitFileVersions(path, staged)])
@@ -1447,9 +1378,9 @@ export default function App() {
     } catch (error) {
       notify(`Could not open diff: ${(error as Error).message}`)
     }
-  }
+  }, [notify, openFile])
 
-  const stageGitHunk = async (patch: string) => {
+  const stageGitHunk = useCallback(async (patch: string) => {
     if (!window.tungsten || !gitComparison) return
     try {
       const status = await window.tungsten.gitStageHunk(patch, gitComparison.staged)
@@ -1457,7 +1388,7 @@ export default function App() {
       notify(gitComparison.staged ? 'Hunk unstaged' : 'Hunk staged')
       await openGitDiff(gitComparison.path, gitComparison.staged)
     } catch (error) { notify(`Could not apply hunk: ${(error as Error).message}`) }
-  }
+  }, [gitComparison, notify, openGitDiff])
 
   const openGitConflict = async (path: string) => {
     if (!window.tungsten) return
@@ -1470,7 +1401,7 @@ export default function App() {
     } catch (error) { notify(`Could not open conflict: ${(error as Error).message}`) }
   }
 
-  const resolveGitConflict = async (resolution: 'ours' | 'theirs' | 'both' | 'mark') => {
+  const resolveGitConflict = useCallback(async (resolution: 'ours' | 'theirs' | 'both' | 'mark') => {
     if (!window.tungsten || !gitComparison?.conflict) return
     try {
       setGitInfo(await window.tungsten.gitResolveConflict(gitComparison.path, resolution))
@@ -1481,7 +1412,7 @@ export default function App() {
       await refreshWorkspace()
       await refreshGit()
     } catch (error) { notify(`Could not resolve conflict: ${(error as Error).message}`) }
-  }
+  }, [gitComparison, notify, refreshGit, refreshWorkspace, setActivePath, setOpenTabs])
 
   const integrateGitBranch = async (operation: 'merge' | 'rebase') => {
     if (!window.tungsten || !gitIntegrateBranch) return
@@ -2759,165 +2690,65 @@ export default function App() {
   }
 
 
+
   /**
-   * Renders one editor group: its own tab strip, breadcrumbs and editor body.
+   * Monaco wiring handed to every editor group.
    *
-   * Every group is a full editor -- there is no "primary" pane and no cheap
-   * placeholder for the inactive ones. The only thing the active group gets
-   * that the others do not is ownership of `editorInstance`, which the
-   * commands that act on "the editor" resolve through.
+   * `register` runs on each editor mount and is idempotent: providers and
+   * themes are keyed by language/name, so re-registering them when a second
+   * split opens is harmless. `api` exposes the live namespace for the gutter
+   * click handler, which has to compare against Monaco's MouseTargetType.
    */
-  const renderEditorGroup = (group: EditorGroupLayout['groups'][number]) => {
-    const isActiveGroup = group.id === layout.activeGroupId
-    const paneActivePath = group.editors[group.activeIndex]?.path ?? ''
-    const paneFile = files.find((file) => file.path === paneActivePath)
+  const monacoBridge = useMemo(() => ({
+    register: (instance: unknown) => {
+      const monaco = instance as any
+      monacoApi = monaco
+      registerLanguageProviders(monaco)
+      registerSnippetProvider(monaco, () => snippetsRef.current, () => snippetContextRef.current)
+      // Register every theme up front so switching is instant.
+      for (const theme of themes) {
+        monaco.editor.defineTheme(monacoThemeName(theme), {
+          base: theme.base,
+          inherit: true,
+          rules: theme.rules,
+          colors: theme.editor,
+        })
+      }
+      applyMonacoTheme(monaco, activeTheme)
+    },
+    api: () => monacoApi,
+  }), [activeTheme])
 
-    return (
-      <div
-        key={group.id}
-        className={`editor-group ${isActiveGroup ? 'active' : ''}`}
-        style={{ flexGrow: group.size, flexBasis: 0 }}
-        onMouseDownCapture={() => { if (!isActiveGroup) setLayout((current) => focusGroup(current, group.id)) }}
-        onDragOver={(event) => { if (event.dataTransfer.types.includes('text/tungsten-editor')) { event.preventDefault(); event.dataTransfer.dropEffect = 'move' } }}
-        onDrop={(event) => {
-          const raw = event.dataTransfer.getData('text/tungsten-editor')
-          if (!raw) return
-          event.preventDefault()
-          try {
-            const { path, groupId } = JSON.parse(raw) as { path: string; groupId: number }
-            if (groupId === group.id) return
-            setLayout((current) => moveEditor(current, path, groupId, group.id))
-          } catch { /* a drag from outside Tungsten; ignore it */ }
-        }}
-      >
-        <div className="editor-tabs">
-          <div className="tab-scroll">
-            {group.editors.map((editor, editorIndex) => {
-              const path = editor.path
-              const isPreview = path === PREVIEW_PATH
-              return <button
-                key={path}
-                className={`editor-tab ${paneActivePath === path ? 'active' : ''} ${editor.pinned ? 'pinned' : ''} ${editor.preview ? 'preview' : ''}`}
-                draggable
-                onDragStart={(event) => { event.dataTransfer.setData('text/tungsten-editor', JSON.stringify({ path, groupId: group.id })); event.dataTransfer.effectAllowed = 'move' }}
-                onAuxClick={(event) => { if (event.button === 1) { event.preventDefault(); closeTabIn(group.id, path) } }}
-                onDoubleClick={() => setLayout((current) => togglePinned(current, path, group.id))}
-                onClick={() => setLayout((current) => setActiveEditorInGroup(current, group.id, editorIndex))}
-              >
-                {isPreview ? <Eye size={14} className="preview-tab-icon" /> : <FileGlyph path={path} />}
-                <span>{isPreview ? 'Preview' : fileName(path)}</span>
-                {dirty.has(path) ? <span className="tab-dirty" /> : <X size={13} className="tab-close" onClick={(event) => { event.stopPropagation(); closeTabIn(group.id, path) }} />}
-              </button>
-            })}
-          </div>
-          <div className="tab-actions">
-            {isActiveGroup && <>
-              <TipButton label="Run project" onClick={runProject}><Play size={14} fill="currentColor" /></TipButton>
-              <TipButton label="Toggle side preview" active={sidePreview} onClick={() => setSidePreview((value) => !value)}><SplitSquareHorizontal size={14} /></TipButton>
-            </>}
-            <TipButton label={`Split editor ${layout.orientation === 'horizontal' ? 'right' : 'down'}`} onClick={() => setLayout((current) => splitGroup(focusGroup(current, group.id), current.orientation === 'horizontal' ? 'right' : 'down', paneActivePath || undefined))}><SplitSquareHorizontal size={14} /></TipButton>
-            {layout.groups.length > 1 && <TipButton label="Close group" onClick={() => setLayout((current) => setGroupEditors(current, group.id, []))}><X size={14} /></TipButton>}
-            {isActiveGroup && <TipButton label="More actions" onClick={() => setPalette({ open: true, mode: 'commands' })}><Ellipsis size={15} /></TipButton>}
-          </div>
-        </div>
+  /**
+   * Everything an editor group can ask the workbench to do.
+   *
+   * Groups are presentational: they never touch application state directly,
+   * they report intent through here. That is what lets four of them coexist
+   * without fighting over who owns the layout.
+   */
+  const editorActions = useMemo(() => ({
+    setLayout,
+    closeTab: closeTabIn,
+    updateFile: updateFileAt,
+    openFile,
+    notify,
+    setEditorInstance,
+    setCursor,
+    setFocusedSurface: setFocusedSurface as (next: string | ((current: string) => string)) => void,
+    toggleBreakpoint: (path: string, line: number) => toggleBreakpointRef.current(path, line),
+    buildPreview,
+    setSidePreview,
+    runProject,
+    openCommandPalette: (mode: 'commands' | 'files') => setPalette({ open: true, mode }),
+    resolveGitConflict,
+    stageGitHunk,
+    openDesktopFolder,
+    openNewFileDialog,
+    openRemoteDialog: () => setRemoteModal(true),
+    openCollaborationDialog: () => setCollaborationOpen(true),
+    openProjectDialog: () => setProjectModal(true),
+  }), [buildPreview, closeTabIn, notify, openDesktopFolder, openFile, openNewFileDialog, resolveGitConflict, runProject, stageGitHunk, updateFileAt])
 
-        {paneActivePath && paneActivePath !== PREVIEW_PATH && <div className="breadcrumbs">
-          <span>{workspaceName}</span><ChevronRight size={12} />
-          {paneActivePath.split('/').map((part, index, parts) => <span className="crumb" key={`${part}-${index}`}>{index === parts.length - 1 && <FileGlyph path={paneActivePath} />}{part}{index < parts.length - 1 && <ChevronRight size={12} />}</span>)}
-          {dirty.has(paneActivePath) && <span className="unsaved-label">UNSAVED</span>}
-        </div>}
-
-        <div className={`editor-area ${sidePreview && paneFile && paneActivePath !== PREVIEW_PATH ? 'with-side-preview' : ''}`}>
-          <Suspense fallback={<div className="editor-loading"><div className="loading-mark"><Hammer size={24} /></div><span>Heating editor core…</span></div>}>
-          {paneActivePath === PREVIEW_PATH ? <Preview html={buildPreview()} onReload={() => notify('Preview refreshed')} /> : gitComparison && paneActivePath === gitComparison.virtualPath ? (
-            <div className="git-compare-editor">
-              <div className="git-compare-toolbar"><span><GitCompareArrows size={13} /> {gitComparison.path}</span><strong>{gitComparison.conflict ? 'CURRENT ↔ INCOMING' : gitComparison.staged ? 'INDEX ↔ HEAD' : 'WORKTREE ↔ INDEX'}</strong><div>{gitComparison.conflict ? <><button onClick={() => { void resolveGitConflict('ours') }}><Check size={11} />Accept current</button><button onClick={() => { void resolveGitConflict('theirs') }}><Check size={11} />Accept incoming</button><button onClick={() => { void resolveGitConflict('both') }}><Copy size={11} />Accept both</button><button title="Open the marker file for manual editing" onClick={() => openFile(gitComparison.path)}><FileCode2 size={11} />Edit manually</button><button title="Stage the manually edited working file" onClick={() => { void resolveGitConflict('mark') }}><GitCommitHorizontal size={11} />Mark resolved</button></> : gitComparison.hunks.map((hunk, index) => <button key={hunk.id} title={hunk.header} onClick={() => { void stageGitHunk(hunk.patch) }}>{gitComparison.staged ? <Minus size={11} /> : <Plus size={11} />}{gitComparison.staged ? 'Unstage' : 'Stage'} hunk {index + 1}</button>)}</div></div>
-              <DiffEditor height="100%" original={gitComparison.before} modified={gitComparison.after} language={files.find((file) => file.path === gitComparison.path)?.language || 'plaintext'} theme={monacoThemeName(activeTheme)} options={{ readOnly: true, renderSideBySide: true, automaticLayout: true, minimap: { enabled: false }, fontSize: settings.fontSize, fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace", originalEditable: false, scrollBeyondLastLine: false }} />
-            </div>
-          ) : paneFile ? (
-            <Editor
-              height="100%"
-              path={`file:///${paneFile.path}`}
-              language={paneFile.language}
-              value={paneFile.content}
-              theme={monacoThemeName(activeTheme)}
-              beforeMount={(monaco) => {
-                monacoApi = monaco
-                registerLanguageProviders(monaco)
-                registerSnippetProvider(monaco, () => snippetsRef.current, () => snippetContextRef.current)
-                // Register every imported VS Code theme so switching is instant.
-                for (const theme of themes) {
-                  monaco.editor.defineTheme(monacoThemeName(theme), {
-                    base: theme.base,
-                    inherit: true,
-                    rules: theme.rules,
-                    colors: theme.editor,
-                  })
-                }
-                applyMonacoTheme(monaco, activeTheme)
-              }}
-              onChange={(value) => updateFileAt(paneActivePath, value)}
-              onMount={(editor) => {
-                if (isActiveGroup) setEditorInstance(editor)
-                editor.onDidChangeCursorPosition((event) => setCursor({ line: event.position.lineNumber, column: event.position.column }))
-                // Track focus so `when` clauses like `editorFocus` resolve correctly.
-                editor.onDidFocusEditorText(() => {
-                  // Focus follows the caret: the pane the user is typing in
-                  // becomes the active group, and owns `editorInstance`.
-                  setFocusedSurface('editor')
-                  setEditorInstance(editor)
-                  setLayout((current) => focusGroup(current, group.id))
-                })
-                editor.onDidBlurEditorText(() => setFocusedSurface((current) => current === 'editor' ? 'none' : current))
-                editor.onMouseDown((event: any) => {
-                  const breakpointPath = decodeURIComponent(editor.getModel()?.uri.path || '').replace(/^\/+/, '')
-                  if (event.target.type === monacoApi.editor.MouseTargetType.GUTTER_GLYPH_MARGIN && event.target.position && breakpointPath) toggleBreakpointRef.current(breakpointPath, event.target.position.lineNumber)
-                })
-                editor.focus()
-              }}
-              options={{
-                fontFamily: "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace",
-                readOnly: paneFile.language === 'diff',
-                glyphMargin: true,
-                fontSize: settings.fontSize,
-                lineHeight: Math.round(settings.fontSize * 1.62),
-                fontLigatures: true,
-                minimap: { enabled: settings.minimap, maxColumn: 90, renderCharacters: false, scale: 1 },
-                wordWrap: settings.wordWrap ? 'on' : 'off',
-                renderWhitespace: settings.renderWhitespace ? 'selection' : 'none',
-                stickyScroll: { enabled: settings.stickyScroll },
-                padding: { top: 14, bottom: 20 },
-                smoothScrolling: !settings.reducedMotion,
-                cursorSmoothCaretAnimation: settings.reducedMotion ? 'off' : 'on',
-                accessibilitySupport: settings.screenReaderOptimized ? 'on' : 'auto',
-                cursorBlinking: 'smooth',
-                renderLineHighlight: 'all',
-                overviewRulerBorder: false,
-                hideCursorInOverviewRuler: true,
-                bracketPairColorization: { enabled: true },
-                guides: { bracketPairs: true, indentation: true },
-                scrollBeyondLastLine: false,
-                automaticLayout: true,
-                tabSize: 2,
-              }}
-              loading={<div className="editor-loading"><div className="loading-mark"><Hammer size={24} /></div><span>Heating editor core…</span></div>}
-            />
-          ) : (
-            <div className={`empty-editor ${isActiveGroup ? '' : 'idle'}`}>
-              <div className="empty-brand"><Hammer size={41} /></div><h2>TUNGSTEN</h2><p>A development environment forged for focus.</p>
-              <div className="dashboard-cards"><button onClick={openDesktopFolder}><FolderOpen size={16} /><span><strong>Local workspace</strong><small>Open a folder on this computer</small></span></button><button onClick={() => setRemoteModal(true)}><SquareCode size={16} /><span><strong>Remote development</strong><small>SSH, containers, and WSL</small></span></button><button onClick={() => setCollaborationOpen(true)}><UsersRound size={16} /><span><strong>Live collaboration</strong><small>Shared editing and review</small></span></button></div>
-              <div className="empty-actions"><button onClick={() => setProjectModal(true)}>New project <kbd>⇧⌘N</kbd></button><button onClick={openDesktopFolder}>Open folder <kbd>⌘O</kbd></button><button onClick={() => setPalette({ open: true, mode: 'files' })}>Quick open <kbd>⌘P</kbd></button><button onClick={openNewFileDialog}>New file <kbd>⌘N</kbd></button><button onClick={runProject}>Run project <kbd>⌃↵</kbd></button></div>
-            </div>
-          )}
-          </Suspense>
-          {sidePreview && paneFile && paneActivePath !== PREVIEW_PATH && <div className="side-preview-pane">
-            <div className="side-preview-heading"><span><Eye size={12} /> LIVE PREVIEW</span><button title="Close side preview" onClick={() => setSidePreview(false)}><X size={13} /></button></div>
-            <div className="side-preview-content"><Preview html={buildPreview()} onReload={() => notify('Preview refreshed')} /></div>
-          </div>}
-        </div>
-      </div>
-    )
-  }
 
   return (
     <div className={`ide ${settings.reducedMotion ? 'reduced-motion' : ''} ${settings.highContrast ? 'high-contrast' : ''}`} onClick={() => { if (menuOpen) setMenuOpen(null); if (contextMenu) setContextMenu(null) }}>
@@ -2995,7 +2826,22 @@ export default function App() {
         <section className="main-stage">
           <div className="editor-and-panel">
             <div className={`editor-groups ${layout.orientation}`}>
-              {layout.groups.map((group) => renderEditorGroup(group))}
+              {layout.groups.map((group) => (
+                <EditorGroup
+                  key={group.id}
+                  group={group}
+                  layout={layout}
+                  files={files}
+                  dirty={dirty}
+                  settings={settings}
+                  theme={activeTheme}
+                  workspaceName={workspaceName}
+                  gitComparison={gitComparison}
+                  sidePreview={sidePreview}
+                  monaco={monacoBridge}
+                  actions={editorActions}
+                />
+              ))}
             </div>
 
             {panelOpen && <section className="bottom-panel" style={{ height: panelHeight }}>
