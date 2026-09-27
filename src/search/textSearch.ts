@@ -167,3 +167,59 @@ export function replaceInFile(content: string, matches: SearchMatch[], replaceme
   }
   return lines.join('\n')
 }
+
+/** One row in the search view: a match, and the file it belongs to. */
+export interface SearchResultRow {
+  file: { path: string; content: string; language: string }
+  line: string
+  /** Zero-based line index, for keying the row. */
+  index: number
+  column: number
+  match: SearchMatch
+}
+
+/** A hit reported by the desktop's native (ripgrep) search. */
+export interface NativeSearchHit {
+  path: string
+  line: number
+  column: number
+  preview: string
+}
+
+/**
+ * Builds the rows the search view renders.
+ *
+ * The in-memory index is capped, so on a large repository some files are never
+ * loaded and the client-side matcher cannot see them. Native hits cover the
+ * whole tree, so they are merged in -- but only for files the index never
+ * loaded, or every match in an indexed file would be listed twice.
+ */
+export function toSearchRows(
+  resultSet: SearchResultSet,
+  files: Array<{ path: string; content: string; language: string }>,
+  native: NativeSearchHit[],
+  languageOf: (path: string) => string,
+  query: string,
+): SearchResultRow[] {
+  const indexed = new Set(files.map((file) => file.path))
+  const local = resultSet.results.flatMap((result) => {
+    const file = files.find((item) => item.path === result.path)
+      || { path: result.path, content: '', language: languageOf(result.path) }
+    return result.matches.map((match) => ({
+      file, line: match.text, index: match.line - 1, column: match.start + 1, match,
+    }))
+  })
+  const extra = native
+    .filter((hit) => !indexed.has(hit.path))
+    .map((hit) => {
+      const start = Math.max(0, hit.column - 1)
+      return {
+        file: { path: hit.path, content: '', language: languageOf(hit.path) },
+        line: hit.preview,
+        index: hit.line - 1,
+        column: hit.column,
+        match: { line: hit.line, start, end: start + query.length, text: hit.preview },
+      }
+    })
+  return [...local, ...extra]
+}

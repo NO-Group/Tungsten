@@ -108,7 +108,7 @@ import {
   themes,
 } from './theme/themeService'
 import { prepareQuery, scoreItem } from './quickopen/fuzzyScorer'
-import { buildSearchRegex, replaceInFile, searchFiles } from './search/textSearch'
+import { useWorkspaceSearch } from './search/useWorkspaceSearch'
 import { MarkerSeverity, MarkerService, filterMarkers, groupMarkersByResource } from './markers/markerService'
 import { builtinSnippets, parseSnippetFile, resolveSnippet, snippetsForLanguage, type Snippet } from './snippets/snippetService'
 import type { SnippetVariableContext } from './snippets/snippetVariables'
@@ -116,6 +116,8 @@ import { configurationByCategory, configurationSchema, searchConfiguration } fro
 import { chordFromEvent, createResolver, keybindingLabel, parseKeybinding, type KeybindingRule } from './keybinding/keybindings'
 import defaultKeybindingRules from './keybinding/defaults'
 import { parseWhenClause, type Context as WhenContext } from './keybinding/contextkey'
+import { useCollaboration } from './collaboration/useCollaboration'
+import { cursorsInFile } from './collaboration/collaborationModel'
 import { useDebugSession } from './debug/useDebugSession'
 import { workspacePathForSource } from './debug/debugModel'
 import { useGitService } from './git/useGitService'
@@ -486,21 +488,12 @@ export default function App() {
   const [renameTarget, setRenameTarget] = useState<string | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; path: string } | null>(null)
   const [sidePreview, setSidePreview] = useState(false)
-  const [searchQuery, setSearchQuery] = useState('')
-  const [searchReplace, setSearchReplace] = useState('')
-  const [searchShowReplace, setSearchShowReplace] = useState(false)
-  const [searchShowDetails, setSearchShowDetails] = useState(false)
-  const [searchIncludes, setSearchIncludes] = useState('')
-  const [searchExcludes, setSearchExcludes] = useState('')
-  const [searchOptions, setSearchOptions] = useState({ matchCase: false, wholeWord: false, isRegex: false })
   const [userSnippets, setUserSnippets] = useState<Snippet[]>(() => loadUserSnippets())
   const [snippetsOpen, setSnippetsOpen] = useState(false)
   const [settingsEditorOpen, setSettingsEditorOpen] = useState(false)
   const [settingsEditorQuery, setSettingsEditorQuery] = useState('')
   const [problemFilter, setProblemFilter] = useState('')
   const [problemSeverities, setProblemSeverities] = useState(MarkerSeverity.Error | MarkerSeverity.Warning | MarkerSeverity.Info)
-  const [nativeSearchResults, setNativeSearchResults] = useState<Array<{ path: string; line: number; column: number; preview: string }>>([])
-  const [searching, setSearching] = useState(false)
   const [externalChange, setExternalChange] = useState<string | null>(null)
   const [projectInfo, setProjectInfo] = useState<ProjectInfo>({ tasks: [{ label: 'npm: dev', command: 'npm run dev' }, { label: 'npm: build', command: 'npm run build' }], tests: [], frameworks: ['Vite'] })
   const [discoveredTests, setDiscoveredTests] = useState<Array<{ id: string; name: string; path: string; line: number; command: string }>>([])
@@ -513,14 +506,6 @@ export default function App() {
   const [remoteConnected, setRemoteConnected] = useState(false)
   const [sshConfig, setSshConfig] = useState({ host: '', port: '22', username: '', root: '/', password: '', privateKeyPath: '' })
   const [remoteProfiles, setRemoteProfiles] = useState<{ wsl: string[]; containers: Array<{ id: string; name: string; image: string }>; devcontainer: boolean }>({ wsl: [], containers: [], devcontainer: false })
-  const [collaborationOpen, setCollaborationOpen] = useState(false)
-  const [collaborationUrl, setCollaborationUrl] = useState('')
-  const [collaborationName, setCollaborationName] = useState('Developer')
-  const [collaborationActive, setCollaborationActive] = useState(false)
-  const [participants, setParticipants] = useState<string[]>([])
-  const [collaboratorCursors, setCollaboratorCursors] = useState<Record<string, { path: string; line: number; column: number }>>({})
-  const [comments, setComments] = useState<Array<{ name: string; text: string; path?: string; line?: number }>>([])
-  const [commentInput, setCommentInput] = useState('')
   const [projectTemplate, setProjectTemplate] = useState('web')
   const [projectName, setProjectName] = useState('my-tungsten-app')
   const [watchInput, setWatchInput] = useState('')
@@ -1009,28 +994,25 @@ export default function App() {
     notify('Remote workspace disconnected')
   }
 
-  const startCollaboration = async (join = false) => {
-    if (!window.tungsten) return notify('Live collaboration requires the desktop app')
-    try {
-      if (join) await window.tungsten.joinCollaboration(collaborationUrl, collaborationName)
-      else {
-        const room = await window.tungsten.hostCollaboration(collaborationName)
-        setCollaborationUrl(room.url)
-      }
-      setCollaborationActive(true)
-      setParticipants([collaborationName])
-      notify(join ? 'Joined collaboration room' : 'Collaboration room is ready')
-    } catch (error) {
-      notify(`Collaboration failed: ${(error as Error).message}`)
-    }
-  }
+  const search = useWorkspaceSearch({
+    files,
+    workspaceRoot,
+    notify,
+    updateFile: (path, content) => setFiles((current) => current.map((file) => (
+      file.path === path ? { ...file, content } : file
+    ))),
+  })
 
-  const sendComment = () => {
-    if (!commentInput.trim() || !window.tungsten) return
-    const comment = { type: 'comment' as const, name: collaborationName, text: commentInput.trim(), path: activeFile?.path, line: cursor.line }
-    void window.tungsten.sendCollaborationEvent(comment)
-    setCommentInput('')
-  }
+  const collaboration = useCollaboration({
+    activeFile,
+    activePath,
+    cursor,
+    notify,
+    applySharedFiles: (merge) => setFiles(merge),
+  })
+  const { active: collaborationActive, cursors: collaboratorCursors, displayName: collaborationName } = collaboration
+  // Stable, so the desktop subscriptions below are not rebuilt as the room changes.
+  const { handleEvent: handleRoomEvent, handleDocument: handleRoomDocument, setOpen: setCollaborationOpen } = collaboration
 
   const installExtension = async () => {
     if (!window.tungsten) {
@@ -1161,11 +1143,11 @@ export default function App() {
       { id: 'workbench.action.openSettings', label: 'Preferences: Open Settings', detail: `${Object.keys(configurationSchema).length} settings`, icon: Settings, action: () => { setSettingsEditorQuery(''); setSettingsEditorOpen(true) } },
       { id: 'workbench.action.openSnippets', label: 'Snippets: Browse Snippets', detail: `${activeSnippets.length} for ${activeFile?.language ?? 'this language'}`, icon: Code, action: () => setSnippetsOpen(true) },
       { id: 'workbench.action.insertSnippet', label: 'Snippets: Insert Snippet', detail: 'Pick a snippet to insert', icon: Code, when: 'editorIsOpen', action: () => setSnippetsOpen(true) },
-      { id: 'workbench.action.replaceInFiles', label: 'Search: Replace in Files', detail: 'Search and replace across the workspace', icon: Replace, action: () => { setActivity('search'); setSidebarVisible(true); setSearchShowReplace(true) } },
+      { id: 'workbench.action.replaceInFiles', label: 'Search: Replace in Files', detail: 'Search and replace across the workspace', icon: Replace, action: () => { setActivity('search'); setSidebarVisible(true); search.setShowReplace(true) } },
       { id: 'workbench.action.findInFiles', label: 'Search: Find in Files', detail: 'Full-text search with regex and globs', icon: Search, action: () => { setActivity('search'); setSidebarVisible(true) } },
-      { id: 'workbench.action.toggleSearchRegex', label: 'Search: Toggle Regular Expression', detail: searchOptions.isRegex ? 'Currently on' : 'Currently off', icon: Search, action: () => setSearchOptions((value) => ({ ...value, isRegex: !value.isRegex })) },
-      { id: 'workbench.action.toggleSearchCaseSensitive', label: 'Search: Toggle Match Case', detail: searchOptions.matchCase ? 'Currently on' : 'Currently off', icon: Search, action: () => setSearchOptions((value) => ({ ...value, matchCase: !value.matchCase })) },
-      { id: 'workbench.action.toggleSearchWholeWord', label: 'Search: Toggle Whole Word', detail: searchOptions.wholeWord ? 'Currently on' : 'Currently off', icon: Search, action: () => setSearchOptions((value) => ({ ...value, wholeWord: !value.wholeWord })) },
+      { id: 'workbench.action.toggleSearchRegex', label: 'Search: Toggle Regular Expression', detail: search.options.isRegex ? 'Currently on' : 'Currently off', icon: Search, action: () => search.toggleOption('isRegex') },
+      { id: 'workbench.action.toggleSearchCaseSensitive', label: 'Search: Toggle Match Case', detail: search.options.matchCase ? 'Currently on' : 'Currently off', icon: Search, action: () => search.toggleOption('matchCase') },
+      { id: 'workbench.action.toggleSearchWholeWord', label: 'Search: Toggle Whole Word', detail: search.options.wholeWord ? 'Currently on' : 'Currently off', icon: Search, action: () => search.toggleOption('wholeWord') },
       { id: 'workbench.action.zoomIn', label: 'View: Zoom In', detail: `Editor font ${settings.fontSize}px`, icon: Plus, action: () => setSettings((current) => ({ ...current, fontSize: Math.min(28, current.fontSize + 1) })) },
       { id: 'workbench.action.zoomOut', label: 'View: Zoom Out', detail: `Editor font ${settings.fontSize}px`, icon: Minus, action: () => setSettings((current) => ({ ...current, fontSize: Math.max(8, current.fontSize - 1) })) },
       { id: 'workbench.action.zoomReset', label: 'View: Reset Zoom', detail: 'Restore the default font size', icon: RotateCcw, action: () => setSettings((current) => ({ ...current, fontSize: defaultSettings.fontSize })) },
@@ -1210,7 +1192,7 @@ export default function App() {
       { id: 'workbench.action.tungsten.resetWorkspace', label: 'Workspace: Reset Starter', detail: 'Restore all starter files', icon: RotateCcw, action: resetWorkspace },
       { id: 'workbench.action.tungsten.welcome', label: 'Help: Welcome', detail: 'Open the welcome dashboard', icon: Hammer, action: () => setActivePath('') },
       { id: 'workbench.action.remote.connect', label: 'Remote: Connect over SSH', detail: 'Open the remote development dashboard', icon: SquareCode, action: () => { setRemoteModal(true); void window.tungsten?.remoteProfiles().then(setRemoteProfiles) } },
-      { id: 'workbench.action.collaboration.open', label: 'Collaboration: Open Live Share', detail: collaborationActive ? `${participants.length} participants connected` : 'Host or join a Yjs room', icon: UsersRound, action: () => setCollaborationOpen(true) },
+      { id: 'workbench.action.collaboration.open', label: 'Collaboration: Open Live Share', detail: collaborationActive ? `${collaboration.participants.length} participants connected` : 'Host or join a Yjs room', icon: UsersRound, action: () => setCollaborationOpen(true) },
       { id: 'workbench.extensions.action.installFromFolder', label: 'Extensions: Install From Folder', detail: 'Install a declarative Tungsten extension', icon: PackagePlus, action: () => { void installExtension() } },
       { id: 'update.checkForUpdate', label: 'Update: Check for Updates', detail: updateState, icon: Download, action: () => { void window.tungsten?.checkForUpdates().then((result) => notify(result.message || (result.available ? 'Update available' : 'Tungsten is up to date'))) } },
     ]
@@ -1233,7 +1215,7 @@ export default function App() {
     }
 
     return list
-  }, [activeFile, activePath, activeTerminalId, activeTheme.label, activityBarVisible, centeredLayout, closedTabs, collaborationActive, commitMessage, cursor.line, debug, dirty.size, editorInstance, discoveredTests.length, extensionCommands, extensions.length, gitInfo.branch, gitInfo.isRepository, keybindingRules.length, notify, openDesktopFolder, openTabs.length, panelOpen, panelTab, participants.length, problems.length, projectInfo.tasks, refreshWorkspace, runEditorAction, runProject, settings.fontSize, settings.minimap, settings.wordWrap, sidebarVisible, sidePreview, sourceChanges.length, symbols.length, terminalSplit, terminalTabs.length, updateState, workspaceRoots.length, zenMode])
+  }, [activeFile, activePath, activeTerminalId, activeTheme.label, activityBarVisible, centeredLayout, closedTabs, collaborationActive, commitMessage, cursor.line, debug, dirty.size, editorInstance, discoveredTests.length, extensionCommands, extensions.length, gitInfo.branch, gitInfo.isRepository, keybindingRules.length, notify, openDesktopFolder, openTabs.length, panelOpen, panelTab, collaboration, problems.length, projectInfo.tasks, refreshWorkspace, runEditorAction, runProject, settings.fontSize, settings.minimap, settings.wordWrap, sidebarVisible, sidePreview, sourceChanges.length, symbols.length, terminalSplit, terminalTabs.length, updateState, workspaceRoots.length, zenMode])
 
   /** Command lookup by id, used by keystroke dispatch and the menu bar. */
   const commandsById = useMemo(() => new Map(commands.map((command) => [command.id, command])), [commands])
@@ -1452,24 +1434,9 @@ export default function App() {
     if (!window.tungsten) return
     const unsubscribeWorkspace = window.tungsten.onWorkspaceFileEvent(({ path }) => setExternalChange(path))
     const unsubscribeRemote = window.tungsten.onRemoteStatus(({ connected, message }) => { setRemoteConnected(connected); notify(message) })
-    const unsubscribeCollaborationDocument = window.tungsten.onCollaborationDocument(({ files: sharedFiles }) => {
-      setFiles((current) => {
-        const known = new Map(current.map((file) => [file.path, file]))
-        Object.entries(sharedFiles).forEach(([path, content]) => known.set(path, { ...(known.get(path) || { path, language: languageForPath(path) }), content }))
-        return [...known.values()]
-      })
-    })
+    const unsubscribeCollaborationDocument = window.tungsten.onCollaborationDocument(({ files: sharedFiles }) => handleRoomDocument(sharedFiles))
     const unsubscribeExtension = window.tungsten.onExtensionEvent((message) => { if (message.type === 'error') notify(`${message.extensionId}: ${message.message}`) })
-    const unsubscribeCollaborationEvent = window.tungsten.onCollaborationEvent((message) => {
-      if (message.type === 'presence' && message.name) {
-        setParticipants((current) => message.state === 'disconnected' ? current.filter((name) => name !== message.name) : current.includes(message.name!) ? current : [...current, message.name!])
-        if (message.state === 'cursor' && message.name !== collaborationName && message.path && message.line && message.column) setCollaboratorCursors((current) => ({ ...current, [message.name!]: { path: message.path!, line: message.line!, column: message.column! } }))
-        if (message.state === 'reconnecting') notify('Collaboration connection lost; reconnecting…')
-        if (message.state === 'reconnected') notify('Collaboration reconnected')
-        if (message.state === 'disconnected') setCollaboratorCursors((current) => { const next = { ...current }; delete next[message.name!]; return next })
-      }
-      if (message.type === 'comment' && message.text) setComments((current) => [...current, { name: message.name || 'Collaborator', text: message.text!, path: message.path, line: message.line }])
-    })
+    const unsubscribeCollaborationEvent = window.tungsten.onCollaborationEvent(handleRoomEvent)
     const unsubscribeLanguage = window.tungsten.onLanguageNotification(({ language, message }) => {
       if (message.method !== 'textDocument/publishDiagnostics' || !monacoApi) return
       const diagnostics = message.params?.diagnostics || []
@@ -1499,7 +1466,7 @@ export default function App() {
       if (event === 'update-available') void window.tungsten?.downloadUpdate()
     })
     return () => { unsubscribeWorkspace(); unsubscribeRemote(); unsubscribeCollaborationDocument(); unsubscribeCollaborationEvent(); unsubscribeExtension(); unsubscribeLanguage(); unsubscribeStatus(); unsubscribeDebugMessage(); unsubscribeDebugOutput(); unsubscribeDebugExit(); unsubscribeUpdater() }
-  }, [collaborationName, handleDebugExit, handleDebugMessage, handleDebugOutput, notify])
+  }, [handleDebugExit, handleDebugMessage, handleDebugOutput, handleRoomDocument, handleRoomEvent, notify])
 
   useEffect(() => {
     if (!window.tungsten || !workspaceRoot || !dirty.size) return
@@ -1510,44 +1477,6 @@ export default function App() {
     return () => window.clearTimeout(timer)
   }, [dirty, files, workspaceRoot])
 
-  useEffect(() => {
-    if (!window.tungsten || !collaborationActive || !activeFile || activeFile.language === 'diff') return
-    const timer = window.setTimeout(() => { void window.tungsten!.publishCollaborationFile(activeFile.path, activeFile.content) }, 220)
-    return () => window.clearTimeout(timer)
-  }, [activeFile, collaborationActive])
-
-  /**
-   * Desktop-only ripgrep pass.
-   *
-   * The in-memory index is capped, so on a large repository some files are
-   * never loaded and the client-side matcher cannot see them. ripgrep covers
-   * the whole tree, so its hits are merged in for files outside the index.
-   * It only runs for plain literal queries: the native search does not
-   * understand our regex/whole-word options, so trusting it there would report
-   * matches that do not agree with the chosen options.
-   */
-  const nativeSearchUsable = Boolean(window.tungsten) && Boolean(workspaceRoot)
-    && !searchOptions.isRegex && !searchOptions.wholeWord && !searchOptions.matchCase
-
-  useEffect(() => {
-    if (!nativeSearchUsable || !searchQuery.trim()) {
-      setNativeSearchResults([])
-      setSearching(false)
-      return
-    }
-    let canceled = false
-    const timer = window.setTimeout(() => {
-      setSearching(true)
-      window.tungsten!.searchWorkspace(searchQuery, 500).then((results) => {
-        if (!canceled) setNativeSearchResults(results)
-      }).catch(() => {
-        if (!canceled) setNativeSearchResults([])
-      }).finally(() => {
-        if (!canceled) setSearching(false)
-      })
-    }, 180)
-    return () => { canceled = true; window.clearTimeout(timer) }
-  }, [nativeSearchUsable, searchQuery])
 
   useEffect(() => {
     localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
@@ -1558,12 +1487,6 @@ export default function App() {
   }, [userKeybindings])
 
   useEffect(() => {
-    if (!collaborationActive || !activePath || activePath === PREVIEW_PATH) return
-    const timer = window.setTimeout(() => { void window.tungsten?.sendCollaborationEvent({ type: 'presence', state: 'cursor', name: collaborationName, path: activePath, line: cursor.line, column: cursor.column }) }, 90)
-    return () => window.clearTimeout(timer)
-  }, [activePath, collaborationActive, collaborationName, cursor.column, cursor.line])
-
-  useEffect(() => {
     localStorage.setItem(WORKBENCH_LAYOUT_KEY, JSON.stringify({ sidebarVisible, sidebarWidth, panelOpen, panelHeight }))
   }, [panelHeight, panelOpen, sidebarVisible, sidebarWidth])
 
@@ -1572,7 +1495,7 @@ export default function App() {
     const decorations = [
       ...breakpoints.filter((point) => point.path === activeFile.path).map((point) => ({ range: new monacoApi.Range(point.line, 1, point.line, 1), options: { isWholeLine: true, glyphMarginClassName: 'debug-breakpoint-glyph', glyphMarginHoverMessage: { value: point.condition ? `Conditional breakpoint: ${point.condition}` : 'Breakpoint' } } })),
       ...(coverage[activeFile.path] || []).map((entry) => ({ range: new monacoApi.Range(entry.line, 1, entry.line, 1), options: { isWholeLine: true, linesDecorationsClassName: entry.hits > 0 ? 'coverage-hit-line' : 'coverage-miss-line', overviewRuler: { color: entry.hits > 0 ? '#628844' : '#a34e49', position: 1 } } })),
-      ...Object.entries(collaboratorCursors).filter(([, point]) => point.path === activeFile.path).map(([name, point]) => ({ range: new monacoApi.Range(point.line, point.column, point.line, point.column), options: { beforeContentClassName: 'collaboration-cursor', hoverMessage: { value: `${name} is editing here` } } })),
+      ...cursorsInFile(collaboratorCursors, activeFile.path).map(([name, point]) => ({ range: new monacoApi.Range(point.line, point.column, point.line, point.column), options: { beforeContentClassName: 'collaboration-cursor', hoverMessage: { value: `${name} is editing here` } } })),
       ...(debugFrames[0] && debugVariables.length && ((debugFrames[0].source?.path || debugFrames[0].source?.name || '').replaceAll('\\', '/').endsWith(activeFile.path) || activeFile.path.endsWith(debugFrames[0].source?.name || '__no_file__')) ? [{ range: new monacoApi.Range(debugFrames[0].line, 1, debugFrames[0].line, 1), options: { after: { content: `  ${debugVariables.slice(0, 6).map((variable) => `${variable.name} = ${variable.value}`).join('  ·  ')}`, inlineClassName: 'debug-inline-value' } } }] : []),
     ]
     const collection = editorInstance.createDecorationsCollection(decorations)
@@ -1815,114 +1738,32 @@ export default function App() {
   }
 
   /**
-   * Full-text search across the workspace, with the option set VS Code's
-   * search view exposes. Runs against the in-memory files so regex, whole-word
-   * and glob filters all behave identically on web and desktop.
-   */
-  const searchResultSet = useMemo(() => searchFiles(
-    files.map((file) => ({ path: file.path, content: file.content })),
-    {
-      pattern: searchQuery,
-      isRegex: searchOptions.isRegex,
-      matchCase: searchOptions.matchCase,
-      wholeWord: searchOptions.wholeWord,
-      includes: searchIncludes,
-      excludes: searchExcludes,
-      maxResults: 2000,
-    },
-  ), [files, searchQuery, searchOptions, searchIncludes, searchExcludes])
-
-  /** True when the user typed a regex that does not compile yet. */
-  const searchRegexError = useMemo(() => {
-    if (!searchOptions.isRegex || !searchQuery) return null
-    try {
-      buildSearchRegex({ pattern: searchQuery, isRegex: true })
-      return null
-    } catch (error) {
-      return (error as Error).message
-    }
-  }, [searchOptions.isRegex, searchQuery])
-
-  const searchResults = useMemo(() => {
-    const indexed = new Set(files.map((file) => file.path))
-    const local = searchResultSet.results.flatMap((result) => {
-      const file = files.find((item) => item.path === result.path)
-        || { path: result.path, content: '', language: languageForPath(result.path) }
-      return result.matches.map((match) => ({
-        file,
-        line: match.text,
-        index: match.line - 1,
-        column: match.start + 1,
-        match,
-      }))
-    })
-    if (!nativeSearchUsable) return local
-    // Only add ripgrep hits from files the in-memory index never loaded, so
-    // indexed files are not reported twice.
-    const extra = nativeSearchResults
-      .filter((result) => !indexed.has(result.path))
-      .map((result) => {
-        const start = Math.max(0, result.column - 1)
-        return {
-          file: { path: result.path, content: '', language: languageForPath(result.path) },
-          line: result.preview,
-          index: result.line - 1,
-          column: result.column,
-          match: { line: result.line, start, end: start + searchQuery.length, text: result.preview },
-        }
-      })
-    return [...local, ...extra]
-  }, [files, searchResultSet, nativeSearchUsable, nativeSearchResults, searchQuery])
-
-  /** Replaces every current match across the workspace. */
-  const replaceAllMatches = useCallback(async () => {
-    if (!searchQuery || searchResultSet.matchCount === 0) return
-    let changed = 0
-    for (const result of searchResultSet.results) {
-      const file = files.find((item) => item.path === result.path)
-      if (!file) continue
-      const next = replaceInFile(file.content, result.matches, searchReplace, Boolean(searchOptions.isRegex))
-      if (next === file.content) continue
-      changed += 1
-      setFiles((current) => current.map((item) => (item.path === file.path ? { ...item, content: next } : item)))
-      if (window.tungsten && workspaceRoot) {
-        try {
-          await window.tungsten.writeFile(file.path, next)
-        } catch (error) {
-          notify((error as Error).message)
-        }
-      }
-    }
-    notify(`Replaced ${searchResultSet.matchCount} occurrence${searchResultSet.matchCount === 1 ? '' : 's'} in ${changed} file${changed === 1 ? '' : 's'}`)
-  }, [files, notify, searchOptions.isRegex, searchQuery, searchReplace, searchResultSet, workspaceRoot])
-
-  /**
    * The sidebar. Each activity has its own view component; this only routes to
    * one and supplies it with workbench state and callbacks.
    */
   const sidebarContent = () => {
     if (activity === 'search') return (
       <SearchView
-        query={searchQuery}
-        replace={searchReplace}
-        showReplace={searchShowReplace}
-        showDetails={searchShowDetails}
-        includes={searchIncludes}
-        excludes={searchExcludes}
-        options={searchOptions}
-        regexError={searchRegexError}
-        searching={searching}
-        results={searchResults}
-        matchCount={searchResultSet.matchCount}
-        limitHit={searchResultSet.limitHit}
-        onQueryChange={setSearchQuery}
-        onReplaceChange={setSearchReplace}
-        onToggleReplace={() => setSearchShowReplace((value) => !value)}
-        onToggleDetails={() => setSearchShowDetails((value) => !value)}
-        onIncludesChange={setSearchIncludes}
-        onExcludesChange={setSearchExcludes}
-        onOptionsChange={setSearchOptions}
-        onReplaceAll={() => { void replaceAllMatches() }}
+        query={search.query}
+        replace={search.replace}
+        showReplace={search.showReplace}
+        showDetails={search.showDetails}
+        includes={search.includes}
+        excludes={search.excludes}
+        options={search.options}
+        regexError={search.regexError}
+        searching={search.searching}
+        results={search.results}
+        matchCount={search.matchCount}
+        limitHit={search.limitHit}
+        onQueryChange={search.setQuery}
+        onReplaceChange={search.setReplace}
+        onToggleReplace={() => search.setShowReplace(!search.showReplace)}
+        onToggleDetails={() => search.setShowDetails(!search.showDetails)}
+        onIncludesChange={search.setIncludes}
+        onExcludesChange={search.setExcludes}
+        onOptionsChange={search.setOptions}
+        onReplaceAll={() => { void search.replaceAll() }}
         onOpenResult={(path, line, column) => {
           openFile(path)
           setCursor({ line, column })
@@ -2279,7 +2120,7 @@ export default function App() {
     openRemoteDialog: () => setRemoteModal(true),
     openCollaborationDialog: () => setCollaborationOpen(true),
     openProjectDialog: () => setProjectModal(true),
-  }), [buildPreview, closeTabIn, notify, openDesktopFolder, openFile, openNewFileDialog, resolveGitConflict, runProject, stageGitHunk, updateFileAt])
+  }), [buildPreview, closeTabIn, notify, openDesktopFolder, openFile, openNewFileDialog, resolveGitConflict, runProject, setCollaborationOpen, stageGitHunk, updateFileAt])
 
 
   return (
@@ -2291,7 +2132,7 @@ export default function App() {
         onOpenMenuChange={setMenuOpen}
         onOpenCommandCentre={() => setPalette({ open: true, mode: 'commands' })}
         collaborationActive={collaborationActive}
-        participantCount={participants.length}
+        participantCount={collaboration.participants.length}
         onOpenCollaboration={() => setCollaborationOpen(true)}
         sidebarVisible={sidebarVisible}
         onToggleSidebar={() => setSidebarVisible((value) => !value)}
@@ -2468,33 +2309,26 @@ export default function App() {
         />
       )}
 
-      {collaborationOpen && (
+      {collaboration.open && (
         <CollaborationDialog
           displayName={collaborationName}
-          onDisplayNameChange={setCollaborationName}
-          roomUrl={collaborationUrl}
-          onRoomUrlChange={setCollaborationUrl}
+          onDisplayNameChange={collaboration.setDisplayName}
+          roomUrl={collaboration.roomUrl}
+          onRoomUrlChange={collaboration.setRoomUrl}
           active={collaborationActive}
-          participants={participants}
-          comments={comments}
-          commentInput={commentInput}
-          onCommentInputChange={setCommentInput}
-          onHost={() => { void startCollaboration(false) }}
-          onJoin={() => { void startCollaboration(true) }}
-          onLeave={() => {
-            void window.tungsten?.leaveCollaboration()
-            setCollaborationActive(false)
-            setParticipants([])
-          }}
-          onSendComment={sendComment}
+          participants={collaboration.participants}
+          comments={collaboration.comments}
+          commentInput={collaboration.commentInput}
+          onCommentInputChange={collaboration.setCommentInput}
+          onHost={() => { void collaboration.host() }}
+          onJoin={() => { void collaboration.join() }}
+          onLeave={collaboration.leave}
+          onSendComment={collaboration.sendComment}
           onOpenComment={(comment) => {
             if (comment.path) openFile(comment.path)
             if (comment.line) window.setTimeout(() => editorInstance?.setPosition({ lineNumber: comment.line!, column: 1 }), 30)
           }}
-          onAnnounceVoice={() => {
-            void window.tungsten?.sendCollaborationEvent({ type: 'signal', name: collaborationName, action: 'voice-ready' })
-            notify('Voice-room signaling announced; media permission remains under your control')
-          }}
+          onAnnounceVoice={collaboration.announceVoice}
           onClose={() => setCollaborationOpen(false)}
         />
       )}

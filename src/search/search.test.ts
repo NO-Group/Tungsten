@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { defaultSearchExcludes, isExcluded, matchGlob, matchesGlobExpression, parseGlobList } from './glob'
-import { applyReplacement, buildSearchRegex, escapeRegExp, replaceInFile, searchFiles, type SearchableFile } from './textSearch'
+import { applyReplacement, buildSearchRegex, escapeRegExp, replaceInFile, searchFiles, toSearchRows, type SearchableFile } from './textSearch'
 
 describe('glob matching', () => {
   it('matches a literal path', () => {
@@ -205,5 +205,43 @@ describe('search and replace', () => {
     const content = 'aa aa aa'
     const { results } = searchFiles([{ path: 'a.ts', content }], { pattern: 'aa' })
     expect(replaceInFile(content, results[0].matches, 'bbb', false)).toBe('bbb bbb bbb')
+  })
+})
+
+describe('search view rows', () => {
+  const files = [
+    { path: 'src/a.ts', content: 'const total = 1\nconst other = total', language: 'typescript' },
+    { path: 'src/b.ts', content: 'no hits here', language: 'typescript' },
+  ]
+  const languageOf = (path: string) => (path.endsWith('.py') ? 'python' : 'plaintext')
+  const rows = (native: Parameters<typeof toSearchRows>[2] = []) =>
+    toSearchRows(searchFiles(files, { pattern: 'total' }), files, native, languageOf, 'total')
+
+  it('turns every match into a row that points at its file', () => {
+    const result = rows()
+    expect(result).toHaveLength(2)
+    expect(result[0].file.path).toBe('src/a.ts')
+    // Rows are one-based for display but zero-based for keying.
+    expect(result[0].index).toBe(0)
+    expect(result[0].column).toBe(7)
+    expect(result[1].index).toBe(1)
+  })
+
+  it('adds native hits from files the index never loaded', () => {
+    const result = rows([{ path: 'vendor/huge.py', line: 40, column: 3, preview: 'total = 2' }])
+    expect(result).toHaveLength(3)
+    expect(result[2].file).toEqual({ path: 'vendor/huge.py', content: '', language: 'python' })
+    expect(result[2].index).toBe(39)
+    expect(result[2].match).toEqual({ line: 40, start: 2, end: 7, text: 'total = 2' })
+  })
+
+  it('never lists an indexed file twice', () => {
+    const result = rows([{ path: 'src/a.ts', line: 1, column: 7, preview: 'const total = 1' }])
+    expect(result).toHaveLength(2)
+  })
+
+  it('survives a native hit reported at column zero', () => {
+    const result = rows([{ path: 'other.txt', line: 1, column: 0, preview: 'total' }])
+    expect(result[2].match.start).toBe(0)
   })
 })

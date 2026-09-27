@@ -34,6 +34,7 @@ const workbench = [
   ...Object.values(panelSource),
   ...Object.values(dialogSource),
 ].join('\n')
+const workspaceSearch = readFileSync(new URL('./search/useWorkspaceSearch.ts', import.meta.url), 'utf8')
 const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8')
 
 describe('desktop bridge contract', () => {
@@ -133,7 +134,8 @@ describe('desktop bridge contract', () => {
   it('wires snippets, search, markers, and configuration into the workbench', () => {
     // Each engine must actually be consumed by the UI, not merely exist.
     expect(renderer).toContain('registerSnippetProvider')
-    expect(renderer).toContain('searchFiles(')
+    expect(renderer).toContain('useWorkspaceSearch({')
+    expect(workspaceSearch).toContain('searchFiles(')
     expect(renderer).toContain('groupMarkersByResource')
     expect(renderer).toContain('configurationByCategory')
   })
@@ -141,8 +143,10 @@ describe('desktop bridge contract', () => {
   it('keeps the native ripgrep path for files outside the in-memory index', () => {
     // The client-side matcher only sees indexed files, so dropping ripgrep
     // would silently lose results on large desktop workspaces.
-    expect(renderer).toContain('searchWorkspace')
-    expect(renderer).toContain('nativeSearchUsable')
+    expect(workspaceSearch).toContain('searchWorkspace')
+    expect(workspaceSearch).toContain('nativeUsable')
+    // Native hits are only merged for files the in-memory index never loaded.
+    expect(readFileSync(new URL('./search/textSearch.ts', import.meta.url), 'utf8')).toContain('!indexed.has(hit.path)')
   })
 
   it('exposes the search options VS Code offers', () => {
@@ -228,6 +232,18 @@ describe('desktop bridge contract', () => {
     expect(code(session)).toContain('reduceDebugMessage(sessionRef.current')
     expect(code(renderer)).not.toContain('sendDebug')
     expect(code(renderer)).not.toContain('startDebug(')
+  })
+
+  it('keeps room traffic in the collaboration service', () => {
+    const model = readFileSync(new URL('./collaboration/collaborationModel.ts', import.meta.url), 'utf8')
+    const service = readFileSync(new URL('./collaboration/useCollaboration.ts', import.meta.url), 'utf8')
+    expect(renderer).toContain('const collaboration = useCollaboration({')
+    expect(code(renderer)).not.toContain('sendCollaborationEvent')
+    expect(code(renderer)).not.toContain('publishCollaborationFile')
+    expect(code(service)).toContain('reduceCollaborationEvent(roomRef.current')
+    // Presence, cursors and comments fold into the room by pure rules.
+    expect(code(model)).not.toContain('window.tungsten')
+    expect(code(model)).not.toContain('useState')
   })
 
   it('draws the activity bar and panel header from components', () => {
