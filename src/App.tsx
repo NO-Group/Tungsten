@@ -1,10 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Archive,
-  Bell,
   Blocks,
   Bot,
-  Box,
   BugPlay,
   Braces,
   Check,
@@ -34,16 +32,13 @@ import {
   Layers,
   ListChecks,
   Maximize2,
-  Menu,
   Minus,
   PackagePlus,
-  PanelBottomClose,
   PanelBottomOpen,
   PanelLeftClose,
   Pause,
   Play,
   Plus,
-  Radio,
   Rocket,
   RefreshCw,
   RotateCcw,
@@ -58,13 +53,26 @@ import {
   Trash2,
   Undo2,
   UsersRound,
-  Mic,
   X,
   Zap,
 } from 'lucide-react'
 import { PREVIEW_PATH, defaultFiles, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
 import { TipButton } from './components/TipButton'
 import { EditorGroup } from './components/EditorGroup'
+import { ContextMenu } from './components/ContextMenu'
+import { TitleBar, type Menu as AppMenu } from './components/TitleBar'
+import { StatusBar } from './components/StatusBar'
+import { CommandPalette, type PaletteEntry, type PaletteMode } from './components/dialogs/CommandPalette'
+import { ThemePicker } from './components/dialogs/ThemePicker'
+import { SettingsEditor } from './components/dialogs/SettingsEditor'
+import { SettingsDialog } from './components/dialogs/SettingsDialog'
+import { SnippetsDialog } from './components/dialogs/SnippetsDialog'
+import { KeybindingsEditor } from './components/dialogs/KeybindingsEditor'
+import { CollaborationDialog } from './components/dialogs/CollaborationDialog'
+import { RemoteDialog } from './components/dialogs/RemoteDialog'
+import { NewProjectDialog } from './components/dialogs/NewProjectDialog'
+import { NewFileDialog } from './components/dialogs/NewFileDialog'
+import { defaultSettings, type SettingsState } from './settings'
 import { ProblemsPanel } from './components/panel/ProblemsPanel'
 import { SearchView } from './components/sidebar/SearchView'
 import { SourceControlView } from './components/sidebar/SourceControlView'
@@ -99,7 +107,7 @@ import {
   saveThemeId,
   themes,
 } from './theme/themeService'
-import { prepareQuery, scoreItem, type Match } from './quickopen/fuzzyScorer'
+import { prepareQuery, scoreItem } from './quickopen/fuzzyScorer'
 import { buildSearchRegex, replaceInFile, searchFiles } from './search/textSearch'
 import { MarkerSeverity, MarkerService, filterMarkers, groupMarkersByResource } from './markers/markerService'
 import { builtinSnippets, parseSnippetFile, resolveSnippet, snippetsForLanguage, type Snippet } from './snippets/snippetService'
@@ -109,6 +117,9 @@ import { chordFromEvent, createResolver, keybindingLabel, parseKeybinding, type 
 import defaultKeybindingRules from './keybinding/defaults'
 import { parseWhenClause, type Context as WhenContext } from './keybinding/contextkey'
 import './styles.css'
+
+/** Menu bar order, as read left to right. */
+const MENU_ORDER = ['File', 'Edit', 'Selection', 'View', 'Go', 'Run', 'Terminal', 'Help']
 
 type Activity = 'explorer' | 'search' | 'source' | 'debug' | 'tests' | 'extensions'
 type TerminalProfile = { kind: 'wsl' | 'container'; id: string; label?: string }
@@ -124,33 +135,6 @@ type CommandItem = {
   action: () => void | Promise<void>
 }
 
-/** Quick-access modes, mirroring VS Code's quick-open prefixes. */
-type PaletteMode = 'commands' | 'files' | 'symbols' | 'line'
-
-/** A scored row in quick access, carrying fuzzy highlight ranges. */
-type PaletteEntry = {
-  id: string
-  label: string
-  detail: string
-  icon: typeof File
-  action: () => void | Promise<void>
-  labelMatch: Match[]
-  detailMatch: Match[]
-  keybinding?: string
-}
-type SettingsState = {
-  fontSize: number
-  wordWrap: boolean
-  minimap: boolean
-  autosave: boolean
-  stickyScroll: boolean
-  renderWhitespace: boolean
-  reducedMotion: boolean
-  highContrast: boolean
-  screenReaderOptimized: boolean
-  telemetry: boolean
-  crashReports: boolean
-}
 
 const WORKSPACE_KEY = 'tungsten.workspace.v1'
 const SETTINGS_KEY = 'tungsten.settings.v1'
@@ -377,20 +361,6 @@ function registerLanguageProviders(monaco: any) {
   }
 }
 
-const defaultSettings: SettingsState = {
-  fontSize: 13,
-  wordWrap: false,
-  minimap: true,
-  autosave: false,
-  stickyScroll: true,
-  renderWhitespace: false,
-  reducedMotion: false,
-  highContrast: false,
-  screenReaderOptimized: false,
-  telemetry: false,
-  crashReports: true,
-}
-
 function loadFiles() {
   try {
     const stored = localStorage.getItem(WORKSPACE_KEY)
@@ -440,23 +410,6 @@ function mergeKeybindings(overrides: Record<string, string>): KeybindingRule[] {
     if (key) rules.push({ command, key, isUser: true })
   }
   return rules
-}
-
-/**
- * Render text with the fuzzy-matched characters emphasised, the way VS Code
- * highlights quick-open results.
- */
-function Highlight({ text, matches }: { text: string; matches: Match[] }) {
-  if (!matches.length) return <>{text}</>
-  const parts: React.ReactNode[] = []
-  let cursor = 0
-  matches.forEach((match, index) => {
-    if (match.start > cursor) parts.push(text.slice(cursor, match.start))
-    parts.push(<mark key={`${match.start}-${index}`}>{text.slice(match.start, match.end)}</mark>)
-    cursor = match.end
-  })
-  if (cursor < text.length) parts.push(text.slice(cursor))
-  return <>{parts}</>
 }
 
 const activityItems = [
@@ -519,6 +472,19 @@ export default function App() {
   const [userKeybindings, setUserKeybindings] = useState<Record<string, string>>(loadUserKeybindings)
   const [themeId, setThemeId] = useState<string>(loadThemeId)
   const [themePickerOpen, setThemePickerOpen] = useState(false)
+  /**
+   * The theme that was active when the picker opened.
+   *
+   * Arrowing through the list applies each theme to the real workbench, so
+   * dismissing the picker has to put the original back -- otherwise a glance
+   * at the list would silently change the user's theme.
+   */
+  const themeBeforePickerRef = useRef(themeId)
+  const liveThemeIdRef = useRef(themeId)
+  useEffect(() => { liveThemeIdRef.current = themeId })
+  useEffect(() => {
+    if (themePickerOpen) themeBeforePickerRef.current = liveThemeIdRef.current
+  }, [themePickerOpen])
   /** Chords entered so far in a multi-chord sequence such as `ctrl+k ctrl+s`. */
   const [pendingChords, setPendingChords] = useState<string[]>([])
   /** Which surface has focus, used for `when` clauses like `terminalFocus`. */
@@ -618,7 +584,6 @@ export default function App() {
   const [historyIndex, setHistoryIndex] = useState(-1)
   const terminalEndRef = useRef<HTMLDivElement>(null)
   const terminalInputRef = useRef<HTMLInputElement>(null)
-  const paletteInputRef = useRef<HTMLInputElement>(null)
   const newFileInputRef = useRef<HTMLInputElement>(null)
   const restoredWorkspaceRef = useRef(false)
   const watchEvaluationQueueRef = useRef<string[]>([])
@@ -1919,10 +1884,6 @@ export default function App() {
   }, [terminalLines])
 
   useEffect(() => {
-    if (palette.open) window.setTimeout(() => paletteInputRef.current?.focus(), 20)
-  }, [palette.open])
-
-  useEffect(() => {
     if (newFileOpen) window.setTimeout(() => newFileInputRef.current?.focus(), 20)
   }, [newFileOpen])
 
@@ -1936,9 +1897,11 @@ export default function App() {
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if (event.key === 'Escape') {
+        // Dialogs close themselves -- Modal handles Escape and stops the event
+        // -- so only the surfaces that are not modal are left here.
         if (pendingChords.length) { setPendingChords([]); return }
-        setPalette((current) => ({ ...current, open: false })); setSettingsOpen(false); setKeybindingsOpen(false)
-        setNewFileOpen(false); setRenameTarget(null); setMenuOpen(null); setContextMenu(null); setThemePickerOpen(false)
+        setMenuOpen(null)
+        setContextMenu(null)
         return
       }
 
@@ -2043,11 +2006,6 @@ export default function App() {
       .map((group) => ({ ...group, keys: group.keys.filter((key) => matches.has(key)) }))
       .filter((group) => group.keys.length > 0)
   }, [settingsEditorQuery])
-
-  const settingsEditorCount = useMemo(
-    () => settingsEditorGroups.reduce((sum, group) => sum + group.keys.length, 0),
-    [settingsEditorGroups],
-  )
 
   /**
    * Imports a VS Code `*.code-snippets` / `<language>.json` snippet file.
@@ -2577,6 +2535,36 @@ export default function App() {
     ],
   }
 
+  /**
+   * The menu bar, resolved against the command table.
+   *
+   * Each entry is reduced to what the title bar needs -- a label, a keystroke
+   * and whether it is currently allowed -- so menu state and command state can
+   * never drift apart. The order is fixed here rather than taken from the
+   * object above, because that is the order people expect to read.
+   */
+  const menuBar: AppMenu[] = MENU_ORDER.filter((name) => menus[name]).map((name) => ({
+    name,
+    entries: menus[name].map((item) => {
+      const command = item.command ? commandsById.get(item.command) : undefined
+      return {
+        id: item.command || item.label || name,
+        // Palette labels are prefixed with their category ("File: Save"), which
+        // is redundant once the entry is sitting under the File menu.
+        label: item.label || command?.label.replace(/^[^:]+:\s*/, '') || item.command || '',
+        shortcut: item.command ? shortcutFor(item.command) : '',
+        detail: command?.detail,
+        enabled: !command?.when || parseWhenClause(command.when).evaluate(whenContext),
+        divider: item.divider,
+        run: () => {
+          if (item.action) item.action()
+          else if (item.command) void runCommandById(item.command)
+        },
+      }
+    }),
+  }))
+
+
 
 
   /**
@@ -2640,49 +2628,22 @@ export default function App() {
 
   return (
     <div className={`ide ${settings.reducedMotion ? 'reduced-motion' : ''} ${settings.highContrast ? 'high-contrast' : ''}`} onClick={() => { if (menuOpen) setMenuOpen(null); if (contextMenu) setContextMenu(null) }}>
-      <header className="titlebar">
-        <div className="brand-mark" title="Tungsten"><Hammer size={15} strokeWidth={2.4} /></div>
-        <button className="menu-mobile"><Menu size={15} /></button>
-        <nav className="app-menu" aria-label="Application menu">
-          {['File', 'Edit', 'Selection', 'View', 'Go', 'Run', 'Terminal', 'Help'].map((name) => (
-            <div className="menu-wrap" key={name}>
-              <button onClick={(event) => { event.stopPropagation(); if (menus[name]) setMenuOpen(menuOpen === name ? null : name) }}>{name}</button>
-              {menuOpen === name && menus[name] && <div className="menu-dropdown" onClick={(event) => event.stopPropagation()}>
-                {menus[name].map((item, index) => {
-                  const command = item.command ? commandsById.get(item.command) : undefined
-                  const label = item.label || command?.label.replace(/^[^:]+:\s*/, '') || item.command || ''
-                  const enabled = !command?.when || parseWhenClause(command.when).evaluate(whenContext)
-                  return (
-                    <button
-                      key={item.command || item.label}
-                      className={`${item.divider && index ? 'with-divider' : ''} ${enabled ? '' : 'disabled'}`}
-                      disabled={!enabled}
-                      title={command?.detail}
-                      onClick={() => {
-                        setMenuOpen(null)
-                        if (item.action) item.action()
-                        else if (item.command) void runCommandById(item.command)
-                      }}
-                    >
-                      <span>{label}</span>
-                      <kbd>{item.command ? shortcutFor(item.command) : ''}</kbd>
-                    </button>
-                  )
-                })}
-              </div>}
-            </div>
-          ))}
-        </nav>
-        <button className="command-center" onClick={() => setPalette({ open: true, mode: 'commands' })}>
-          <Search size={12} /><span>{workspaceName} — Tungsten</span><kbd>⌘ K</kbd>
-        </button>
-        <div className="title-actions">
-          <TipButton label={collaborationActive ? `${participants.length} collaborators connected` : 'Live collaboration'} active={collaborationActive} onClick={() => setCollaborationOpen(true)}><UsersRound size={15} /></TipButton><TipButton label="Tungsten Copilot"><Bot size={15} /></TipButton>
-          <TipButton label={sidebarVisible ? 'Hide primary sidebar' : 'Show primary sidebar'} active={sidebarVisible} onClick={() => setSidebarVisible((value) => !value)}><PanelLeftClose size={15} /></TipButton>
-          <TipButton label={panelOpen ? 'Hide panel' : 'Show panel'} active={panelOpen} onClick={() => setPanelOpen((value) => !value)}><PanelBottomClose size={15} /></TipButton>
-          <TipButton label="Toggle side preview" active={sidePreview} onClick={() => setSidePreview((value) => !value)}><Columns2 size={15} /></TipButton>
-        </div>
-      </header>
+      <TitleBar
+        title={`${workspaceName} — Tungsten`}
+        menus={menuBar}
+        openMenu={menuOpen}
+        onOpenMenuChange={setMenuOpen}
+        onOpenCommandCentre={() => setPalette({ open: true, mode: 'commands' })}
+        collaborationActive={collaborationActive}
+        participantCount={participants.length}
+        onOpenCollaboration={() => setCollaborationOpen(true)}
+        sidebarVisible={sidebarVisible}
+        onToggleSidebar={() => setSidebarVisible((value) => !value)}
+        panelOpen={panelOpen}
+        onTogglePanel={() => setPanelOpen((value) => !value)}
+        sidePreview={sidePreview}
+        onToggleSidePreview={() => setSidePreview((value) => !value)}
+      />
 
       <main className="workbench">
         <aside className="activitybar">
@@ -2744,345 +2705,241 @@ export default function App() {
         </section>
       </main>
 
-      <footer className="statusbar">
-        <div>
-          <button title={remoteConnected ? 'Manage remote connection' : 'Open a remote workspace'} className={`remote-status ${remoteConnected ? 'connected' : ''}`} onClick={() => { setRemoteModal(true); void window.tungsten?.remoteProfiles().then(setRemoteProfiles) }}><SquareCode size={13} /><span>{remoteConnected ? 'SSH' : ''}</span></button>
-          <button title="Current branch" onClick={() => { setActivity('source'); setSidebarVisible(true); void refreshGit() }}><GitBranch size={13} /><span>{gitInfo.branch || 'main'}{sourceChanges.length ? '*' : ''}</span></button>
-          <button title="Refresh source control" onClick={refreshGit}><RefreshCw size={11} /><span>{sourceChanges.length}</span></button>
-          <button title={`${problems.length} language diagnostics`} onClick={() => { setPanelOpen(true); setPanelTab('PROBLEMS') }}><X size={12} /><span>{problems.filter((problem) => problem.severity === 1).length}</span><CircleAlert size={12} /><span>{problems.filter((problem) => problem.severity !== 1).length}</span></button>
-          {pendingChords.length > 0 && <button className="chord-indicator" title="Waiting for the next key in the sequence"><Keyboard size={12} /><span>({keybindingLabel(pendingChords)}) was pressed. Waiting for second key…</span></button>}
-        </div>
-        <div>
-          <button title={workspaceRoot || 'Tungsten demo workspace'}><Radio size={11} /><span>{workspaceName}</span></button>
-          <button title={window.tungsten ? `Desktop app · ${window.tungsten.platform}` : 'Browser workspace'}><Box size={11} /><span>{window.tungsten ? 'Desktop' : 'Web'}</span></button>
-          {activePath !== PREVIEW_PATH && <><button title={`Go to line (${shortcutFor('workbench.action.gotoLine')})`} onClick={() => { setPalette({ open: true, mode: 'line' }); setPaletteQuery(':') }}>Ln {cursor.line}, Col {cursor.column}</button><button>Spaces: 2</button><button>UTF-8</button><button>LF</button><button>{activeFile?.language || 'Plain Text'}</button></>}
-          <button title={`Color theme: ${activeTheme.label} — click to change`} onClick={() => { setThemePickerOpen(true); setPaletteQuery('') }}><Eye size={12} /><span>{activeTheme.label}</span></button>
-          <button title={lspState.message} className={lspState.running ? 'service-running' : ''}><Zap size={12} /><span>{lspState.running ? `${lspState.language} LSP` : 'Syntax'}</span></button>
-          <button title={updateState} onClick={() => { if (updateState === 'Restart to update') void window.tungsten?.installUpdate(); else void window.tungsten?.checkForUpdates() }}><Download size={12} /><span>{updateState}</span></button>
-          <button title="Notifications"><Bell size={13} /></button>
-        </div>
-      </footer>
+      <StatusBar
+        remoteConnected={remoteConnected}
+        onOpenRemote={() => {
+          setRemoteModal(true)
+          void window.tungsten?.remoteProfiles().then(setRemoteProfiles)
+        }}
+        branch={gitInfo.branch}
+        changeCount={sourceChanges.length}
+        onOpenSourceControl={() => { setActivity('source'); setSidebarVisible(true); void refreshGit() }}
+        onRefreshGit={refreshGit}
+        errorCount={problems.filter((problem) => problem.severity === 1).length}
+        warningCount={problems.filter((problem) => problem.severity !== 1).length}
+        onOpenProblems={() => { setPanelOpen(true); setPanelTab('PROBLEMS') }}
+        pendingChord={pendingChords.length ? keybindingLabel(pendingChords) : ''}
+        workspaceName={workspaceName}
+        workspaceRoot={workspaceRoot}
+        platform={window.tungsten?.platform ?? ''}
+        showEditorStatus={activePath !== PREVIEW_PATH}
+        cursor={cursor}
+        language={activeFile?.language ?? ''}
+        gotoLineShortcut={shortcutFor('workbench.action.gotoLine')}
+        onGotoLine={() => { setPalette({ open: true, mode: 'line' }); setPaletteQuery(':') }}
+        themeLabel={activeTheme.label}
+        onPickTheme={() => { setThemePickerOpen(true); setPaletteQuery('') }}
+        lsp={lspState}
+        updateState={updateState}
+        onUpdate={() => {
+          if (updateState === 'Restart to update') void window.tungsten?.installUpdate()
+          else void window.tungsten?.checkForUpdates()
+        }}
+      />
 
-      {palette.open && <div className="overlay palette-overlay" onMouseDown={() => setPalette((current) => ({ ...current, open: false }))}>
-        <div className="command-palette" onMouseDown={(event) => event.stopPropagation()}>
-          <div className="palette-input">
-            <Command size={17} />
-            <input
-              ref={paletteInputRef}
-              value={paletteQuery}
-              onChange={(event) => { setPaletteQuery(event.target.value); setPaletteIndex(0) }}
-              placeholder={paletteModePlaceholder}
-              aria-label="Quick access"
-              aria-activedescendant={paletteItems[paletteIndex] ? `palette-item-${paletteIndex}` : undefined}
-              onKeyDown={(event) => {
-                if (event.key === 'ArrowDown') { event.preventDefault(); setPaletteIndex((index) => paletteItems.length ? (index + 1) % paletteItems.length : 0) }
-                else if (event.key === 'ArrowUp') { event.preventDefault(); setPaletteIndex((index) => paletteItems.length ? (index - 1 + paletteItems.length) % paletteItems.length : 0) }
-                else if (event.key === 'Home') { event.preventDefault(); setPaletteIndex(0) }
-                else if (event.key === 'End') { event.preventDefault(); setPaletteIndex(Math.max(0, paletteItems.length - 1)) }
-                else if (event.key === 'Enter') { event.preventDefault(); const item = paletteItems[paletteIndex]; if (item) executePaletteItem(item) }
-              }}
-            />
-            <kbd>ESC</kbd>
-          </div>
-          <div className="palette-label">{paletteModeLabel} · {paletteItems.length} result{paletteItems.length === 1 ? '' : 's'}</div>
-          <div className="palette-list" role="listbox">
-            {paletteItems.slice(0, 100).map((item, index) => {
-              const Icon = item.icon
-              return (
-                <button
-                  key={item.id}
-                  id={`palette-item-${index}`}
-                  role="option"
-                  aria-selected={index === paletteIndex}
-                  ref={index === paletteIndex ? (node) => node?.scrollIntoView({ block: 'nearest' }) : undefined}
-                  className={index === paletteIndex ? 'selected' : ''}
-                  onMouseMove={() => setPaletteIndex(index)}
-                  onClick={() => executePaletteItem(item)}
-                >
-                  <Icon size={16} />
-                  <div>
-                    <strong><Highlight text={item.label} matches={item.labelMatch} /></strong>
-                    <span><Highlight text={item.detail} matches={item.detailMatch} /></span>
-                  </div>
-                  {item.keybinding ? <div className="shortcut-keys"><kbd>{item.keybinding}</kbd></div> : null}
-                </button>
-              )
-            })}
-            {!paletteItems.length && <div className="no-results">No matching {paletteModeLabel.toLowerCase()}</div>}
-          </div>
-          <footer>
-            <span><kbd>↑↓</kbd> navigate</span><span><kbd>↵</kbd> select</span><span><kbd>esc</kbd> close</span>
-            <span className="palette-hints"><kbd>&gt;</kbd> commands <kbd>@</kbd> symbols <kbd>:</kbd> line</span>
-          </footer>
-        </div>
-      </div>}
+      {palette.open && (
+        <CommandPalette
+          query={paletteQuery}
+          onQueryChange={setPaletteQuery}
+          items={paletteItems}
+          index={paletteIndex}
+          onIndexChange={setPaletteIndex}
+          modeLabel={paletteModeLabel}
+          placeholder={paletteModePlaceholder}
+          onRun={executePaletteItem}
+          onClose={() => setPalette((current) => ({ ...current, open: false }))}
+        />
+      )}
 
-      {settingsEditorOpen && <div className="overlay" onMouseDown={() => setSettingsEditorOpen(false)}>
-        <div className="settings-editor" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-label="Settings">
-          <div className="settings-editor-head">
-            <div className="search-box-wrap">
-              <Search size={13} />
-              <input autoFocus value={settingsEditorQuery} onChange={(event) => setSettingsEditorQuery(event.target.value)} placeholder="Search settings" aria-label="Search settings" />
-            </div>
-            <button className="icon-button" onClick={() => setSettingsEditorOpen(false)} aria-label="Close settings"><X size={15} /></button>
-          </div>
-          <div className="settings-editor-body">
-            {settingsEditorGroups.length === 0 && <div className="settings-empty">No settings match “{settingsEditorQuery}”.</div>}
-            {settingsEditorGroups.map((group) => (
-              <section key={group.category}>
-                <h3>{group.category}</h3>
-                {group.keys.map((key) => {
-                  const schema = configurationSchema[key]
-                  return (
-                    <div className="settings-row" key={key}>
-                      <div className="settings-row-label">
-                        <code>{key}</code>
-                        <p>{schema.description}</p>
-                      </div>
-                      <div className="settings-row-control">
-                        {schema.type === 'boolean' && <span className="settings-readonly">{String(schema.default)}</span>}
-                        {schema.type === 'enum' && <span className="settings-readonly">{String(schema.default)}</span>}
-                        {(schema.type === 'number' || schema.type === 'string') && <span className="settings-readonly">{String(schema.default)}</span>}
-                        {(schema.type === 'array' || schema.type === 'object') && <span className="settings-readonly">{JSON.stringify(schema.default)}</span>}
-                      </div>
-                    </div>
-                  )
-                })}
-              </section>
-            ))}
-          </div>
-          <div className="settings-editor-foot">
-            <span>{settingsEditorCount} setting{settingsEditorCount === 1 ? '' : 's'} · defaults shown</span>
-            <span className="settings-hint">Edit live values from the Settings dialog</span>
-          </div>
-        </div>
-      </div>}
+      {settingsEditorOpen && (
+        <SettingsEditor
+          query={settingsEditorQuery}
+          onQueryChange={setSettingsEditorQuery}
+          groups={settingsEditorGroups}
+          schema={configurationSchema}
+          onClose={() => setSettingsEditorOpen(false)}
+        />
+      )}
 
-      {snippetsOpen && <div className="overlay" onMouseDown={() => setSnippetsOpen(false)}>
-        <div className="snippets-modal" onMouseDown={(event) => event.stopPropagation()} role="dialog" aria-label="Snippets">
-          <div className="modal-head">
-            <strong>Snippets</strong>
-            <button className="snippets-import" onClick={() => importSnippetsFile()}>Import snippets file…</button>
-            {userSnippets.length > 0 && <button className="snippets-import" onClick={() => { setUserSnippets([]); window.localStorage.removeItem(SNIPPETS_KEY); notify('Removed user snippets') }}>Clear user snippets</button>}
-            <button className="icon-button" onClick={() => setSnippetsOpen(false)} aria-label="Close snippets"><X size={15} /></button>
-          </div>
-          <div className="snippets-meta">{activeSnippets.length} available for {activeFile?.language ?? 'this language'} · type a prefix in the editor to insert</div>
-          <div className="snippets-list">
-            {activeSnippets.map((snippet) => (
-              <button
-                key={snippet.id}
-                onClick={() => {
-                  if (!editorInstance) return
-                  // Let Monaco's snippet controller run the body so tabstops work.
-                  const contribution = editorInstance.getContribution('snippetController2')
-                  editorInstance.focus()
-                  if (contribution?.insert) contribution.insert(snippet.body)
-                  else editorInstance.trigger('tungsten', 'type', { text: resolveSnippet(snippet.body, snippetContextRef.current).text })
-                  setSnippetsOpen(false)
-                  notify(`Inserted ${snippet.name}`)
-                }}
-              >
-                <div className="snippets-row-head">
-                  <kbd>{snippet.prefix}</kbd>
-                  <strong>{snippet.name}</strong>
-                  <span className={`snippets-source ${snippet.source}`}>{snippet.source}</span>
-                </div>
-                <pre>{resolveSnippet(snippet.body, { ...snippetContextRef.current, languageId: snippet.languageId === '*' ? activeFile?.language : snippet.languageId }).text}</pre>
-              </button>
-            ))}
-          </div>
-        </div>
-      </div>}
+      {snippetsOpen && (
+        <SnippetsDialog
+          snippets={activeSnippets}
+          languageId={activeFile?.language}
+          hasUserSnippets={userSnippets.length > 0}
+          preview={(snippet) => resolveSnippet(snippet.body, {
+            ...snippetContextRef.current,
+            languageId: snippet.languageId === '*' ? activeFile?.language : snippet.languageId,
+          }).text}
+          onInsert={(snippet) => {
+            if (!editorInstance) return
+            // Let Monaco's snippet controller run the body so tabstops work.
+            const contribution = editorInstance.getContribution('snippetController2')
+            editorInstance.focus()
+            if (contribution?.insert) contribution.insert(snippet.body)
+            else editorInstance.trigger('tungsten', 'type', { text: resolveSnippet(snippet.body, snippetContextRef.current).text })
+            setSnippetsOpen(false)
+            notify(`Inserted ${snippet.name}`)
+          }}
+          onImport={importSnippetsFile}
+          onClearUserSnippets={() => {
+            setUserSnippets([])
+            window.localStorage.removeItem(SNIPPETS_KEY)
+            notify('Removed user snippets')
+          }}
+          onClose={() => setSnippetsOpen(false)}
+        />
+      )}
 
-      {themePickerOpen && <div className="overlay palette-overlay" onMouseDown={() => { setThemePickerOpen(false); setThemeId(themeId) }}>
-        <div className="command-palette theme-picker" onMouseDown={(event) => event.stopPropagation()}>
-          <div className="palette-input">
-            <Eye size={17} />
-            <input
-              autoFocus
-              value={paletteQuery}
-              onChange={(event) => setPaletteQuery(event.target.value)}
-              placeholder="Select a color theme (arrow keys preview instantly)"
-              aria-label="Select color theme"
-              onKeyDown={(event) => {
-                const list = filteredThemes
-                if (!list.length) return
-                const index = Math.max(0, list.findIndex((theme) => theme.id === themeId))
-                if (event.key === 'ArrowDown') { event.preventDefault(); setThemeId(list[(index + 1) % list.length].id) }
-                else if (event.key === 'ArrowUp') { event.preventDefault(); setThemeId(list[(index - 1 + list.length) % list.length].id) }
-                else if (event.key === 'Enter') { event.preventDefault(); setThemePickerOpen(false); notify(`Color theme: ${getTheme(themeId).label}`) }
-              }}
-            />
-            <kbd>ESC</kbd>
-          </div>
-          <div className="palette-label">COLOR THEMES · imported from Visual Studio Code</div>
-          <div className="palette-list" role="listbox">
-            {filteredThemes.map((theme) => (
-              <button
-                key={theme.id}
-                role="option"
-                aria-selected={theme.id === themeId}
-                className={theme.id === themeId ? 'selected' : ''}
-                onMouseEnter={() => setThemeId(theme.id)}
-                onClick={() => { setThemeId(theme.id); setThemePickerOpen(false); notify(`Color theme: ${theme.label}`) }}
-              >
-                <span className="theme-swatch" style={{ background: theme.workbench.background, borderColor: theme.workbench.border }}>
-                  <i style={{ background: theme.workbench.accent }} />
-                  <i style={{ background: theme.workbench.added }} />
-                  <i style={{ background: theme.workbench.error }} />
-                </span>
-                <div>
-                  <strong>{theme.label}</strong>
-                  <span>{theme.kind === 'hc-dark' || theme.kind === 'hc-light' ? 'High contrast' : theme.kind === 'light' ? 'Light' : 'Dark'} · {theme.rules.length} token rules</span>
-                </div>
-                {theme.id === themeId && <Check size={14} />}
-              </button>
-            ))}
-            {!filteredThemes.length && <div className="no-results">No themes match “{paletteQuery}”</div>}
-          </div>
-          <footer><span><kbd>↑↓</kbd> preview</span><span><kbd>↵</kbd> apply</span><span><kbd>esc</kbd> close</span></footer>
-        </div>
-      </div>}
+      {themePickerOpen && (
+        <ThemePicker
+          themes={filteredThemes}
+          activeId={themeId}
+          query={paletteQuery}
+          onQueryChange={setPaletteQuery}
+          onPreview={setThemeId}
+          onApply={(theme) => { setThemeId(theme.id); setThemePickerOpen(false); notify(`Color theme: ${theme.label}`) }}
+          onCancel={() => { setThemePickerOpen(false); setThemeId(themeBeforePickerRef.current) }}
+        />
+      )}
 
-      {collaborationOpen && <div className="overlay" onMouseDown={() => setCollaborationOpen(false)}>
-        <section className="collaboration-modal" onMouseDown={(event) => event.stopPropagation()}>
-          <header><span className="modal-icon"><UsersRound size={18} /></span><div><h2>Live collaboration</h2><p>Shared Yjs editing, presence, review comments, and encrypted-room signaling foundations.</p></div><button onClick={() => setCollaborationOpen(false)}><X size={16} /></button></header>
-          <div className="collaboration-connect"><label>Display name<input value={collaborationName} onChange={(event) => setCollaborationName(event.target.value)} /></label><label>Room URL<input value={collaborationUrl} placeholder="ws://host:port/token" onChange={(event) => setCollaborationUrl(event.target.value)} /></label><button onClick={() => { void startCollaboration(false) }}>Host</button><button disabled={!collaborationUrl} onClick={() => { void startCollaboration(true) }}>Join</button></div>
-          <div className="collaboration-body"><section><div className="section-heading"><span>PRESENCE</span><span className="count-pill">{participants.length}</span></div>{participants.map((name) => <div className="participant" key={name}><CircleUserRound size={14} /><span>{name}</span><i /></div>)}<button className="voice-foundation" disabled={!collaborationActive} onClick={() => { void window.tungsten?.sendCollaborationEvent({ type: 'signal', name: collaborationName, action: 'voice-ready' }); notify('Voice-room signaling announced; media permission remains under your control') }}><Mic size={13} /> Voice room ready</button></section><section><div className="section-heading"><span>REVIEW COMMENTS</span><span className="count-pill">{comments.length}</span></div><div className="comment-list">{comments.map((comment, index) => <button key={index} onClick={() => { if (comment.path) openFile(comment.path); if (comment.line) window.setTimeout(() => editorInstance?.setPosition({ lineNumber: comment.line!, column: 1 }), 30) }}><strong>{comment.name}</strong><span>{comment.text}</span><small>{comment.path}{comment.line ? `:${comment.line}` : ''}</small></button>)}</div><div className="comment-input"><input value={commentInput} placeholder="Comment on the current line" onChange={(event) => setCommentInput(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') sendComment() }} /><button disabled={!collaborationActive} onClick={sendComment}><Plus size={12} /></button></div></section></div>
-          <footer>{collaborationActive && <button className="secondary" onClick={() => { void window.tungsten?.leaveCollaboration(); setCollaborationActive(false); setParticipants([]) }}>Leave room</button>}<span /><button className="primary" onClick={() => setCollaborationOpen(false)}>Done</button></footer>
-        </section>
-      </div>}
+      {collaborationOpen && (
+        <CollaborationDialog
+          displayName={collaborationName}
+          onDisplayNameChange={setCollaborationName}
+          roomUrl={collaborationUrl}
+          onRoomUrlChange={setCollaborationUrl}
+          active={collaborationActive}
+          participants={participants}
+          comments={comments}
+          commentInput={commentInput}
+          onCommentInputChange={setCommentInput}
+          onHost={() => { void startCollaboration(false) }}
+          onJoin={() => { void startCollaboration(true) }}
+          onLeave={() => {
+            void window.tungsten?.leaveCollaboration()
+            setCollaborationActive(false)
+            setParticipants([])
+          }}
+          onSendComment={sendComment}
+          onOpenComment={(comment) => {
+            if (comment.path) openFile(comment.path)
+            if (comment.line) window.setTimeout(() => editorInstance?.setPosition({ lineNumber: comment.line!, column: 1 }), 30)
+          }}
+          onAnnounceVoice={() => {
+            void window.tungsten?.sendCollaborationEvent({ type: 'signal', name: collaborationName, action: 'voice-ready' })
+            notify('Voice-room signaling announced; media permission remains under your control')
+          }}
+          onClose={() => setCollaborationOpen(false)}
+        />
+      )}
 
-      {remoteModal && <div className="overlay" onMouseDown={() => setRemoteModal(false)}>
-        <section className="remote-modal" onMouseDown={(event) => event.stopPropagation()}>
-          <header><span className="modal-icon"><SquareCode size={18} /></span><div><h2>Remote development</h2><p>Open code and terminals over SSH, WSL, or a development container.</p></div><button onClick={() => setRemoteModal(false)}><X size={16} /></button></header>
-          <div className="remote-form"><label>Host<input value={sshConfig.host} placeholder="dev.example.com" onChange={(event) => setSshConfig((config) => ({ ...config, host: event.target.value }))} /></label><label>Port<input value={sshConfig.port} inputMode="numeric" onChange={(event) => setSshConfig((config) => ({ ...config, port: event.target.value }))} /></label><label>Username<input value={sshConfig.username} autoComplete="username" onChange={(event) => setSshConfig((config) => ({ ...config, username: event.target.value }))} /></label><label>Remote folder<input value={sshConfig.root} onChange={(event) => setSshConfig((config) => ({ ...config, root: event.target.value }))} /></label><label>Password (optional)<input type="password" value={sshConfig.password} autoComplete="current-password" onChange={(event) => setSshConfig((config) => ({ ...config, password: event.target.value }))} /></label><label>Private key path (optional)<input value={sshConfig.privateKeyPath} placeholder="~/.ssh/id_ed25519" onChange={(event) => setSshConfig((config) => ({ ...config, privateKeyPath: event.target.value }))} /></label></div>
-          <div className="remote-profiles"><div><strong>WSL distributions</strong>{remoteProfiles.wsl.length ? remoteProfiles.wsl.map((distribution) => <button key={distribution} onClick={() => { newTerminal({ kind: 'wsl', id: distribution, label: `WSL: ${distribution}` }); setRemoteModal(false) }}>{distribution}</button>) : <span>No distributions detected</span>}</div><div><strong>Running containers</strong>{remoteProfiles.containers.length ? remoteProfiles.containers.map((container) => <button key={container.id} onClick={() => { newTerminal({ kind: 'container', id: container.id, label: container.name }); setRemoteModal(false) }}>{container.name} · {container.image}</button>) : <span>No containers detected</span>}</div><div><strong>Dev Container</strong><span>{remoteProfiles.devcontainer ? '.devcontainer/devcontainer.json detected; use a running container terminal below.' : 'No configuration in this workspace'}</span></div></div>
-          <footer>{remoteConnected && <button className="secondary" onClick={() => { void disconnectRemoteWorkspace() }}>Disconnect</button>}<span /><button className="secondary" onClick={() => setRemoteModal(false)}>Cancel</button><button className="primary" disabled={!sshConfig.host || !sshConfig.username} onClick={() => { void connectRemote() }}>Connect SSH</button></footer>
-        </section>
-      </div>}
+      {remoteModal && (
+        <RemoteDialog
+          config={sshConfig}
+          onConfigChange={setSshConfig}
+          profiles={remoteProfiles}
+          connected={remoteConnected}
+          onConnect={() => { void connectRemote() }}
+          onDisconnect={() => { void disconnectRemoteWorkspace() }}
+          onOpenWsl={(distribution) => {
+            newTerminal({ kind: 'wsl', id: distribution, label: `WSL: ${distribution}` })
+            setRemoteModal(false)
+          }}
+          onOpenContainer={(container) => {
+            newTerminal({ kind: 'container', id: container.id, label: container.name })
+            setRemoteModal(false)
+          }}
+          onClose={() => setRemoteModal(false)}
+        />
+      )}
 
-      {projectModal && <div className="overlay" onMouseDown={() => setProjectModal(false)}>
-        <section className="project-modal" onMouseDown={(event) => event.stopPropagation()}>
-          <header><span className="modal-icon"><Rocket size={18} /></span><div><h2>Forge a new project</h2><p>Start with a clean, portable foundation.</p></div><button onClick={() => setProjectModal(false)}><X size={16} /></button></header>
-          <div className="project-form">
-            <label>PROJECT NAME<input value={projectName} onChange={(event) => setProjectName(event.target.value)} /></label>
-            <span className="field-label">TEMPLATE</span>
-            <div className="template-grid">
-              {[
-                ['web', 'Web app', 'HTML, CSS and JavaScript', '<>'],
-                ['node', 'Node.js', 'Modern ESM application', 'JS'],
-                ['python', 'Python', 'Package with pytest', 'PY'],
-                ['rust', 'Rust', 'Cargo binary crate', 'RS'],
-                ['go', 'Go', 'Go module and main package', 'GO'],
-              ].map(([id, name, detail, icon]) => <button key={id} className={projectTemplate === id ? 'active' : ''} onClick={() => setProjectTemplate(id)}><span>{icon}</span><div><strong>{name}</strong><small>{detail}</small></div>{projectTemplate === id && <Check size={14} />}</button>)}
-            </div>
-          </div>
-          <footer><button onClick={() => setProjectModal(false)}>Cancel</button><button className="primary" disabled={!projectName.trim()} onClick={() => { void createProjectFromTemplate() }}><Rocket size={13} /> Create project</button></footer>
-        </section>
-      </div>}
+      {projectModal && (
+        <NewProjectDialog
+          name={projectName}
+          onNameChange={setProjectName}
+          template={projectTemplate}
+          onTemplateChange={setProjectTemplate}
+          onCreate={() => { void createProjectFromTemplate() }}
+          onClose={() => setProjectModal(false)}
+        />
+      )}
 
-      {settingsOpen && <div className="overlay" onMouseDown={() => setSettingsOpen(false)}>
-        <section className="settings-modal" onMouseDown={(event) => event.stopPropagation()}>
-          <header><div><span className="modal-icon"><Settings size={17} /></span><div><h2>Editor settings</h2><p>Make the forge yours.</p></div></div><button onClick={() => setSettingsOpen(false)}><X size={17} /></button></header>
-          <div className="settings-body">
-            <div className="settings-profiles"><div><strong>Workspace profiles</strong><span>Apply a focused settings preset.</span></div><button onClick={() => setSettings({ ...defaultSettings })}>Focus</button><button onClick={() => setSettings({ ...defaultSettings, highContrast: true, reducedMotion: true, screenReaderOptimized: true })}>Accessible</button><button onClick={() => setSettings({ ...defaultSettings, fontSize: 17, minimap: false })}>Presentation</button></div>
-            <label className="range-setting"><div><strong>Font size</strong><span>Controls the editor text size.</span></div><div><input type="range" min="11" max="19" value={settings.fontSize} onChange={(event) => setSettings({ ...settings, fontSize: Number(event.target.value) })} /><output>{settings.fontSize}px</output></div></label>
-            {[
-              ['Word wrap', 'Wrap long lines at the editor viewport.', 'wordWrap'],
-              ['Minimap', 'Show a compact overview of the active file.', 'minimap'],
-              ['Sticky scroll', 'Keep surrounding scopes visible while scrolling.', 'stickyScroll'],
-              ['Visible whitespace', 'Reveal spaces and tabs in selected text.', 'renderWhitespace'],
-              ['Auto save', 'Save changes after a short delay.', 'autosave'],
-              ['Reduced motion', 'Disable non-essential motion and smooth scrolling.', 'reducedMotion'],
-              ['High contrast', 'Increase workbench borders and focus visibility.', 'highContrast'],
-              ['Screen reader mode', 'Optimize editor accessibility and ARIA output.', 'screenReaderOptimized'],
-              ['Product telemetry', 'Share anonymous feature usage; disabled by default.', 'telemetry'],
-              ['Crash reports', 'Allow packaged builds to create local crash diagnostics.', 'crashReports'],
-            ].map(([title, description, key]) => <label className="toggle-setting" key={key}><div><strong>{title}</strong><span>{description}</span></div><input type="checkbox" checked={settings[key as keyof SettingsState] as boolean} onChange={(event) => setSettings({ ...settings, [key]: event.target.checked })} /><span className="toggle-track"><i /></span></label>)}
-            <div className="keybinding-editor"><div><strong>Keyboard shortcuts</strong><span>Search and execute all commands from the palette.</span></div><button onClick={() => { setSettingsOpen(false); setKeybindingsOpen(true) }}>Open keybinding editor <kbd>{shortcutFor('workbench.action.openGlobalKeybindings')}</kbd></button></div>
-          </div>
-          <footer><button onClick={() => setSettings(defaultSettings)}>Reset defaults</button><button className="primary" onClick={() => setSettingsOpen(false)}>Done</button></footer>
-        </section>
-      </div>}
+      {settingsOpen && (
+        <SettingsDialog
+          settings={settings}
+          onChange={setSettings}
+          keybindingShortcut={shortcutFor('workbench.action.openGlobalKeybindings')}
+          onOpenKeybindings={() => { setSettingsOpen(false); setKeybindingsOpen(true) }}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
 
-      {keybindingsOpen && <div className="overlay" onMouseDown={() => setKeybindingsOpen(false)}>
-        <section className="keybindings-modal" onMouseDown={(event) => event.stopPropagation()}>
-          <header>
-            <div><span className="modal-icon"><Keyboard size={17} /></span><div><h2>Keyboard shortcuts</h2><p>Select a command, then press the keys you want. Backspace removes a binding; Escape cancels.</p></div></div>
-            <button onClick={() => { setKeybindingsOpen(false); setRecordingCommand(null) }}><X size={17} /></button>
-          </header>
-          <div className="search-box-wrap keybinding-filter"><Search size={13} /><input autoFocus value={keybindingFilter} onChange={(event) => setKeybindingFilter(event.target.value)} placeholder="Search commands and keybindings" /></div>
-          <div className="keybindings-table" role="table">
-            <div className="keybindings-head" role="row"><span>Command</span><span>Keybinding</span><span>When</span><span /></div>
-            {filteredKeybindings.map(({ command, binding }) => {
-              const isRecording = recordingCommand === command.id
-              const custom = Object.prototype.hasOwnProperty.call(userKeybindings, command.id)
-              return (
-                <div className={`keybindings-row ${custom ? 'custom' : ''}`} role="row" key={command.id}>
-                  <span className="keybinding-command" title={command.id}>{command.label}</span>
-                  <button
-                    className={`keybinding-input ${isRecording ? 'recording' : ''}`}
-                    onClick={() => setRecordingCommand(isRecording ? null : command.id)}
-                    onKeyDown={(event) => {
-                      if (!isRecording) return
-                      event.preventDefault()
-                      event.stopPropagation()
-                      if (event.key === 'Escape') { setRecordingCommand(null); return }
-                      if (event.key === 'Backspace' || event.key === 'Delete') {
-                        setUserKeybindings((current) => ({ ...current, [command.id]: '' }))
-                        setRecordingCommand(null)
-                        notify(`${command.label} unbound`)
-                        return
-                      }
-                      const chord = chordFromEvent(event)
-                      if (!chord) return
-                      const conflicting = keybindingResolver.conflicts(parseKeybinding(chord), whenContext, command.id)
-                      setUserKeybindings((current) => ({ ...current, [command.id]: chord }))
-                      setRecordingCommand(null)
-                      notify(conflicting.length
-                        ? `${keybindingLabel(chord)} also runs ${conflicting.length} other command${conflicting.length === 1 ? '' : 's'}`
-                        : `${command.label} bound to ${keybindingLabel(chord)}`)
-                    }}
-                  >
-                    {isRecording ? 'Press keys…' : binding ? <kbd>{keybindingLabel(binding.chords)}</kbd> : <em>Unassigned</em>}
-                  </button>
-                  <span className="keybinding-when">{binding?.when || '—'}</span>
-                  <span className="keybinding-actions">
-                    {custom && <button title="Restore the default binding" onClick={() => { setUserKeybindings((current) => { const next = { ...current }; delete next[command.id]; return next }); notify(`${command.label} reset`) }}><RotateCcw size={12} /></button>}
-                  </span>
-                </div>
-              )
-            })}
-            {!filteredKeybindings.length && <div className="no-results">No commands match “{keybindingFilter}”</div>}
-          </div>
-          <footer>
-            <span className="keybinding-count">{Object.keys(userKeybindings).length} customised · {keybindingRules.length} active bindings</span>
-            <button onClick={() => { setUserKeybindings({}); notify('Keyboard shortcuts reset to defaults') }}>Reset all</button>
-            <button className="primary" onClick={() => { setKeybindingsOpen(false); setRecordingCommand(null) }}>Done</button>
-          </footer>
-        </section>
-      </div>}
+      {keybindingsOpen && (
+        <KeybindingsEditor
+          rows={filteredKeybindings}
+          filter={keybindingFilter}
+          onFilterChange={setKeybindingFilter}
+          recording={recordingCommand}
+          onRecordingChange={setRecordingCommand}
+          customised={Object.keys(userKeybindings)}
+          activeBindingCount={keybindingRules.length}
+          onBind={(commandId, chord) => {
+            // A chord that already runs something else still binds, but the
+            // user is told, the way VS Code reports "keybinding conflicts".
+            const conflicting = keybindingResolver.conflicts(parseKeybinding(chord), whenContext, commandId)
+            const label = commands.find((command) => command.id === commandId)?.label ?? commandId
+            setUserKeybindings((current) => ({ ...current, [commandId]: chord }))
+            setRecordingCommand(null)
+            notify(conflicting.length
+              ? `${keybindingLabel(chord)} also runs ${conflicting.length} other command${conflicting.length === 1 ? '' : 's'}`
+              : `${label} bound to ${keybindingLabel(chord)}`)
+          }}
+          onUnbind={(commandId) => {
+            setUserKeybindings((current) => ({ ...current, [commandId]: '' }))
+            setRecordingCommand(null)
+            notify(`${commands.find((command) => command.id === commandId)?.label ?? commandId} unbound`)
+          }}
+          onReset={(commandId) => {
+            setUserKeybindings((current) => {
+              const next = { ...current }
+              delete next[commandId]
+              return next
+            })
+            notify(`${commands.find((command) => command.id === commandId)?.label ?? commandId} reset`)
+          }}
+          onResetAll={() => { setUserKeybindings({}); notify('Keyboard shortcuts reset to defaults') }}
+          onClose={() => { setKeybindingsOpen(false); setRecordingCommand(null) }}
+        />
+      )}
 
-      {newFileOpen && <div className="overlay" onMouseDown={() => { setNewFileOpen(false); setRenameTarget(null) }}>
-        <section className="new-file-modal" onMouseDown={(event) => event.stopPropagation()}>
-          <div className="new-file-icon"><FileCode2 size={20} /></div><div><h2>{renameTarget ? 'Rename file' : 'Create a new file'}</h2><p>{renameTarget ? 'Change the file name or move it to another folder.' : 'Use a path to place it inside a folder.'}</p></div>
-          <label>FILE PATH<input ref={newFileInputRef} value={newFileName} onChange={(event) => setNewFileName(event.target.value)} onKeyDown={(event) => { if (event.key === 'Enter') void createFile() }} placeholder="src/components/button.tsx" /></label>
-          <footer><button onClick={() => { setNewFileOpen(false); setRenameTarget(null) }}>Cancel</button><button className="primary" disabled={!newFileName.trim()} onClick={() => { void createFile() }}>{renameTarget ? 'Rename file' : 'Create file'}</button></footer>
-        </section>
-      </div>}
+      {newFileOpen && (
+        <NewFileDialog
+          renameTarget={renameTarget}
+          value={newFileName}
+          onChange={setNewFileName}
+          onSubmit={() => { void createFile() }}
+          onCancel={() => { setNewFileOpen(false); setRenameTarget(null) }}
+          inputRef={newFileInputRef}
+        />
+      )}
 
-      {contextMenu && <div
-        className="context-menu"
-        style={{ left: Math.min(contextMenu.x, window.innerWidth - 190), top: Math.min(contextMenu.y, window.innerHeight - 220) }}
-        onClick={(event) => event.stopPropagation()}
-      >
-        <button onClick={() => { openFile(contextMenu.path); setContextMenu(null) }}><FileCode2 size={14} /><span>Open</span><kbd>Enter</kbd></button>
-        <button onClick={() => renameFile(contextMenu.path)}><Braces size={14} /><span>Rename…</span><kbd>F2</kbd></button>
-        <button onClick={() => { void navigator.clipboard.writeText(contextMenu.path); setContextMenu(null); notify('Relative path copied') }}><Copy size={14} /><span>Copy relative path</span></button>
-        {window.tungsten && <button onClick={() => { void window.tungsten!.revealPath(contextMenu.path); setContextMenu(null) }}><FolderOpen size={14} /><span>Reveal in file manager</span></button>}
-        <button className="danger" onClick={() => { void deleteFile(contextMenu.path) }}><Trash2 size={14} /><span>Delete</span></button>
-      </div>}
+      {contextMenu && (
+        <ContextMenu
+          x={contextMenu.x}
+          y={contextMenu.y}
+          path={contextMenu.path}
+          canReveal={Boolean(window.tungsten)}
+          onOpen={() => { openFile(contextMenu.path); setContextMenu(null) }}
+          onRename={() => renameFile(contextMenu.path)}
+          onCopyPath={() => {
+            void navigator.clipboard.writeText(contextMenu.path)
+            setContextMenu(null)
+            notify('Relative path copied')
+          }}
+          onReveal={() => { void window.tungsten?.revealPath(contextMenu.path); setContextMenu(null) }}
+          onDelete={() => { void deleteFile(contextMenu.path) }}
+        />
+      )}
 
       {toast && <div className="toast"><CircleCheck size={15} /><span>{toast}</span></div>}
     </div>

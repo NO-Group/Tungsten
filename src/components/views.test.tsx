@@ -19,6 +19,8 @@ import { DebugView } from './sidebar/DebugView'
 import { TestingView } from './sidebar/TestingView'
 import { ExtensionsView } from './sidebar/ExtensionsView'
 import { ExplorerView } from './sidebar/ExplorerView'
+import { TitleBar, type Menu } from './TitleBar'
+import { StatusBar } from './StatusBar'
 import { ProblemsPanel } from './panel/ProblemsPanel'
 import { TerminalPanel } from './panel/TerminalPanel'
 import { MarkerSeverity } from '../markers/markerService'
@@ -312,5 +314,107 @@ describe('terminal panel', () => {
     act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })) })
     expect(onHistoryIndexChange).toHaveBeenCalledWith(0)
     expect(onInputChange).toHaveBeenCalledWith('npm run dev')
+  })
+})
+
+describe('title bar', () => {
+  const menus: Menu[] = [
+    {
+      name: 'File',
+      entries: [
+        { id: 'save', label: 'Save', shortcut: 'Ctrl+S', enabled: true, run: () => {} },
+        { id: 'saveAll', label: 'Save All', shortcut: '', enabled: false, divider: true, run: () => {} },
+      ],
+    },
+    { name: 'Help', entries: [{ id: 'about', label: 'About', shortcut: '', enabled: true, run: () => {} }] },
+  ]
+  const props = {
+    title: 'tungsten — Tungsten', menus, openMenu: null as string | null, onOpenMenuChange: noop,
+    onOpenCommandCentre: noop, collaborationActive: false, participantCount: 0, onOpenCollaboration: noop,
+    sidebarVisible: true, onToggleSidebar: noop, panelOpen: false, onTogglePanel: noop,
+    sidePreview: false, onToggleSidePreview: noop,
+  }
+
+  it('opens a menu and runs an entry', () => {
+    const onOpenMenuChange = vi.fn()
+    render(<TitleBar {...props} onOpenMenuChange={onOpenMenuChange} />)
+    expect(container.querySelector('.menu-dropdown')).toBeNull()
+    click('File')
+    expect(onOpenMenuChange).toHaveBeenCalledWith('File')
+
+    const run = vi.fn()
+    const opened: Menu[] = [{ ...menus[0], entries: [{ ...menus[0].entries[0], run }] }, menus[1]]
+    render(<TitleBar {...props} menus={opened} openMenu="File" onOpenMenuChange={onOpenMenuChange} />)
+    click('Save')
+    expect(run).toHaveBeenCalled()
+    // Running an entry also dismisses the menu.
+    expect(onOpenMenuChange).toHaveBeenLastCalledWith(null)
+  })
+
+  it('disables entries whose when-clause does not hold', () => {
+    render(<TitleBar {...props} openMenu="File" />)
+    expect((button('Save All') as HTMLButtonElement).disabled).toBe(true)
+    expect((button('Save') as HTMLButtonElement).disabled).toBe(false)
+    expect(button('File').getAttribute('aria-expanded')).toBe('true')
+  })
+
+  it('switches menus on hover once one is open', () => {
+    const onOpenMenuChange = vi.fn()
+    render(<TitleBar {...props} openMenu="File" onOpenMenuChange={onOpenMenuChange} />)
+    act(() => { button('Help').dispatchEvent(new MouseEvent('mouseover', { bubbles: true })) })
+    expect(onOpenMenuChange).toHaveBeenCalledWith('Help')
+  })
+})
+
+describe('status bar', () => {
+  const props = {
+    remoteConnected: false, onOpenRemote: noop,
+    branch: 'main', changeCount: 2, onOpenSourceControl: noop, onRefreshGit: noop,
+    errorCount: 1, warningCount: 3, onOpenProblems: noop, pendingChord: '',
+    workspaceName: 'tungsten', workspaceRoot: '/src/tungsten', platform: '',
+    showEditorStatus: true, cursor: { line: 12, column: 4 }, language: 'typescript',
+    gotoLineShortcut: 'Ctrl+G', onGotoLine: noop,
+    themeLabel: 'Graphene Dark', onPickTheme: noop,
+    lsp: { running: true, language: 'TypeScript', message: 'ready' },
+    updateState: 'Up to date', onUpdate: noop,
+  }
+
+  it('marks a dirty branch and opens source control', () => {
+    const onOpenSourceControl = vi.fn()
+    render(<StatusBar {...props} onOpenSourceControl={onOpenSourceControl} />)
+    expect(container.textContent).toContain('main*')
+    click('Current branch')
+    expect(onOpenSourceControl).toHaveBeenCalled()
+  })
+
+  it('separates errors from warnings', () => {
+    const onOpenProblems = vi.fn()
+    render(<StatusBar {...props} onOpenProblems={onOpenProblems} />)
+    const problems = button('4 language diagnostics')
+    expect(problems.textContent).toBe('13')
+    act(() => { problems.click() })
+    expect(onOpenProblems).toHaveBeenCalled()
+  })
+
+  it('hides the text-editor items for non-text editors', () => {
+    render(<StatusBar {...props} showEditorStatus={false} />)
+    expect(container.textContent).not.toContain('Ln 12')
+    render(<StatusBar {...props} />)
+    expect(container.textContent).toContain('Ln 12, Col 4')
+    expect(container.textContent).toContain('typescript')
+  })
+
+  it('shows a chord in progress only while one is pending', () => {
+    render(<StatusBar {...props} />)
+    expect(container.querySelector('.chord-indicator')).toBeNull()
+    render(<StatusBar {...props} pendingChord="Ctrl+K" />)
+    expect(container.textContent).toContain('(Ctrl+K) was pressed. Waiting for second key…')
+  })
+
+  it('reports the browser build as Web', () => {
+    render(<StatusBar {...props} />)
+    expect(container.textContent).toContain('Web')
+    render(<StatusBar {...props} platform="linux" />)
+    expect(container.textContent).toContain('Desktop')
   })
 })

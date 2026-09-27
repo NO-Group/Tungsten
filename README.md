@@ -144,9 +144,13 @@ Installers are written to `out/`. Build on each target OS or use the included `B
 | Editor | `components/EditorGroup.tsx`, `components/ConfiguredEditor.tsx`, `components/Preview.tsx` |
 | Sidebar | `components/sidebar/` — `ExplorerView`, `SearchView`, `SourceControlView`, `DebugView`, `TestingView`, `ExtensionsView` |
 | Panel | `components/panel/` — `ProblemsPanel`, `TerminalPanel` |
-| Shared | `components/FileGlyph.tsx`, `components/TipButton.tsx` |
+| Chrome | `components/TitleBar.tsx`, `components/StatusBar.tsx`, `components/ContextMenu.tsx` |
+| Dialogs | `components/dialogs/` — command palette, theme picker, settings, settings editor, snippets, keyboard shortcuts, collaboration, remote, new project, new file |
+| Shared | `components/Modal.tsx`, `components/FileGlyph.tsx`, `components/TipButton.tsx`, `components/Highlight.tsx` |
 
-None of these components reads `localStorage` or calls `window.tungsten`: desktop capability arrives as a prop, so every view renders in the browser build and in jsdom. `src/components/views.test.tsx` mounts each one and drives it, and `src/platform.test.ts` enforces the boundary.
+Every dialog is built on one `Modal` shell, so backdrop dismissal, Escape, the dialog role and an accessible name are implemented once and none can be missing. The title bar renders a menu model the workbench resolves from the command table, so a menu entry cannot disagree with the command it invokes.
+
+None of these components reads `localStorage` or calls `window.tungsten`: desktop capability arrives as a prop, so every view renders in the browser build and in jsdom. `src/components/views.test.tsx` and `src/components/dialogs.test.tsx` mount each one and drive it, and `src/platform.test.ts` enforces the boundary.
 
 ## Validation
 

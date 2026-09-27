@@ -12,6 +12,14 @@ const sidebarSource = Object.fromEntries(sidebarViews.map((name) => [
   name,
   readFileSync(new URL(`./components/sidebar/${name}.tsx`, import.meta.url), 'utf8'),
 ])) as Record<string, string>
+const dialogNames = [
+  'CommandPalette', 'ThemePicker', 'SettingsEditor', 'SettingsDialog', 'SnippetsDialog',
+  'KeybindingsEditor', 'CollaborationDialog', 'RemoteDialog', 'NewProjectDialog', 'NewFileDialog',
+]
+const dialogSource = Object.fromEntries(dialogNames.map((name) => [
+  name,
+  readFileSync(new URL(`./components/dialogs/${name}.tsx`, import.meta.url), 'utf8'),
+])) as Record<string, string>
 const panelSource = Object.fromEntries(['ProblemsPanel', 'TerminalPanel'].map((name) => [
   name,
   readFileSync(new URL(`./components/panel/${name}.tsx`, import.meta.url), 'utf8'),
@@ -19,7 +27,13 @@ const panelSource = Object.fromEntries(['ProblemsPanel', 'TerminalPanel'].map((n
 /** Strips comments so prose about an API is not mistaken for a call to it. */
 const code = (source: string) => source.replace(/\/\*[\s\S]*?\*\//g, '').replace(/^\s*\/\/.*$/gm, '')
 /** Everything the workbench renders, whichever file it now lives in. */
-const workbench = [renderer, editorGroup, ...Object.values(sidebarSource), ...Object.values(panelSource)].join('\n')
+const workbench = [
+  renderer,
+  editorGroup,
+  ...Object.values(sidebarSource),
+  ...Object.values(panelSource),
+  ...Object.values(dialogSource),
+].join('\n')
 const styles = readFileSync(new URL('./styles.css', import.meta.url), 'utf8')
 
 describe('desktop bridge contract', () => {
@@ -154,6 +168,38 @@ describe('desktop bridge contract', () => {
     // The one exception is the file tree, which owns its own expansion state.
     expect(sidebarSource.ExplorerView).not.toContain('useState')
     expect(sidebarSource.SourceControlView).not.toContain('useState')
+  })
+
+  it('renders its chrome from components rather than inline markup', () => {
+    // The title bar resolves menus from the command table, so a menu entry
+    // cannot disagree with the command it invokes about labels or keystrokes.
+    expect(renderer).toContain('<TitleBar')
+    expect(renderer).toContain('<StatusBar')
+    expect(renderer).toContain('const menuBar: AppMenu[]')
+    const titleBar = readFileSync(new URL('./components/TitleBar.tsx', import.meta.url), 'utf8')
+    const statusBar = readFileSync(new URL('./components/StatusBar.tsx', import.meta.url), 'utf8')
+    for (const source of [titleBar, statusBar]) {
+      expect(code(source)).not.toContain('window.tungsten')
+      expect(code(source)).not.toContain('useState')
+    }
+    expect(code(titleBar)).not.toContain('parseWhenClause')
+  })
+
+  it('builds every dialog on one modal shell', () => {
+    // Backdrop dismissal, Escape, the dialog role and the accessible name are
+    // implemented once, so no dialog can be missing one of them.
+    for (const [name, source] of Object.entries(dialogSource)) {
+      expect(renderer, name).toContain(`<${name}`)
+      expect(source, name).toContain('<Modal')
+      expect(code(source), name).not.toContain('className="overlay"')
+    }
+    const modal = readFileSync(new URL('./components/Modal.tsx', import.meta.url), 'utf8')
+    expect(modal).toContain("role=\"dialog\"")
+    expect(modal).toContain('aria-modal')
+    expect(modal).toContain("event.key !== 'Escape'")
+    // The workbench no longer needs to know which dialogs are open to close
+    // them; only the non-modal surfaces are left in the global handler.
+    expect(renderer).not.toContain('setKeybindingsOpen(false); setNewFileOpen(false)')
   })
 
   it('splits the panel into problems and terminal components', () => {
