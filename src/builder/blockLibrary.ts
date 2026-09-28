@@ -17,6 +17,91 @@ function quote(value: string): string {
   return JSON.stringify(value)
 }
 
+/**
+ * Splits an argument list on the commas that are actually separators.
+ *
+ * `db.select("users", { id: 1 })` has two arguments, not three: commas
+ * inside brackets or a string belong to the argument they sit in.
+ */
+export function splitArguments(text: string): string[] {
+  const parts: string[] = []
+  let depth = 0
+  let quoteChar = ''
+  let current = ''
+
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (quoteChar) {
+      current += character
+      if (character === quoteChar && text[index - 1] !== '\\') quoteChar = ''
+      continue
+    }
+    if (character === '"' || character === "'" || character === '`') {
+      quoteChar = character
+      current += character
+      continue
+    }
+    if ('([{'.includes(character)) depth += 1
+    if (')]}'.includes(character)) depth -= 1
+    if (character === ',' && depth === 0) {
+      parts.push(current.trim())
+      current = ''
+      continue
+    }
+    current += character
+  }
+
+  const last = current.trim()
+  if (last) parts.push(last)
+  return parts
+}
+
+/** The arguments of `callee(...)`, or undefined when the text is something else. */
+function callArguments(statement: string, callee: string): string[] | undefined {
+  if (!statement.startsWith(`${callee}(`) || !statement.endsWith(')')) return undefined
+  return splitArguments(statement.slice(callee.length + 1, -1))
+}
+
+/** The `{ key: value }` pairs of an object literal argument. */
+function objectFields(text: string): Record<string, string> | undefined {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('{') || !trimmed.endsWith('}')) return undefined
+  const fields: Record<string, string> = {}
+  for (const entry of splitArguments(trimmed.slice(1, -1))) {
+    const colon = entry.indexOf(':')
+    if (colon < 0) continue
+    fields[entry.slice(0, colon).trim()] = entry.slice(colon + 1).trim()
+  }
+  return fields
+}
+
+/** Builds a parser for a call whose arguments are positional. */
+function parseCall(callee: string, ports: string[]) {
+  return (statement: string) => {
+    const args = callArguments(statement, callee)
+    if (!args) return undefined
+    const inputs: Record<string, string> = {}
+    ports.forEach((port, index) => {
+      if (args[index] !== undefined) inputs[port] = args[index]
+    })
+    return { inputs }
+  }
+}
+
+/** Builds a parser for a call taking a single options object. */
+function parseOptions(callee: string, ports: Record<string, string>) {
+  return (statement: string) => {
+    const args = callArguments(statement, callee)
+    const fields = args?.length === 1 ? objectFields(args[0]) : undefined
+    if (!fields) return undefined
+    const inputs: Record<string, string> = {}
+    for (const [key, port] of Object.entries(ports)) {
+      if (fields[key] !== undefined) inputs[port] = fields[key]
+    }
+    return { inputs }
+  }
+}
+
 // ---------------------------------------------------------------- Events
 
 const onAppStart = defineBlock({
@@ -55,6 +140,7 @@ const uiButton = defineBlock({
   ],
   outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
   generate: ({ input }) => `render.button({ id: ${input('id')}, text: ${input('text')} })`,
+  parse: parseOptions('render.button', { id: 'id', text: 'text' }),
 })
 
 const uiText = defineBlock({
@@ -68,6 +154,7 @@ const uiText = defineBlock({
   ],
   outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
   generate: ({ input }) => `render.text(${input('value')})`,
+  parse: parseCall('render.text', ['value']),
 })
 
 const uiInput = defineBlock({
@@ -86,6 +173,7 @@ const uiInput = defineBlock({
   ],
   generate: ({ input, symbol }) =>
     `const ${symbol} = render.input({ id: ${input('id')}, placeholder: ${input('placeholder')} })`,
+  parse: parseOptions('render.input', { id: 'id', placeholder: 'placeholder' }),
 })
 
 // ----------------------------------------------------------------- Logic
@@ -112,6 +200,19 @@ const logicIf = defineBlock({
     const head = `if (${input('condition')}) ${block(body('body'))}`
     return otherwise ? `${head} else ${block(otherwise)}` : head
   },
+  parse: (statement) => {
+    // Three shapes reach here: an open branch, an empty one, and an empty
+    // one whose “otherwise” is where the blocks actually are.
+    const match = /^if \((.*?)\) \{(\}( else \{)?)?$/.exec(statement)
+    if (!match) return undefined
+    const empty = Boolean(match[2])
+    const otherwise = Boolean(match[3])
+    return {
+      inputs: { condition: match[1] },
+      opensBody: otherwise ? 'else' : empty ? undefined : 'body',
+      elseSlot: otherwise ? undefined : 'else',
+    }
+  },
 })
 
 const logicForEach = defineBlock({
@@ -131,6 +232,11 @@ const logicForEach = defineBlock({
   generate: ({ input, body, symbol, indent }) => {
     const lines = body('body')
     return `for (const ${symbol} of ${input('list')}) ${lines ? `{\n${lines}\n${indent}}` : '{}'}`
+  },
+  parse: (statement) => {
+    const match = /^for \(const [A-Za-z0-9_$]+ of (.*?)\) \{(\})?$/.exec(statement)
+    if (!match) return undefined
+    return { inputs: { list: match[1] }, opensBody: match[2] ? undefined : 'body' }
   },
 })
 
@@ -186,6 +292,7 @@ const logicLog = defineBlock({
   ],
   outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
   generate: ({ input }) => `console.log(${input('value')})`,
+  parse: parseCall('console.log', ['value']),
 })
 
 // ------------------------------------------------------------------ Data
@@ -211,6 +318,7 @@ const dataQuery = defineBlock({
       : ''
     return `const ${symbol} = await db.select(${input('table')}${where})`
   },
+  parse: parseCall('await db.select', ['table', 'where']),
 })
 
 const dataInsert = defineBlock({
@@ -229,6 +337,7 @@ const dataInsert = defineBlock({
     { id: 'saved', label: 'Saved row', type: 'Object' },
   ],
   generate: ({ input, symbol }) => `const ${symbol} = await db.insert(${input('table')}, ${input('row')})`,
+  parse: parseCall('await db.insert', ['table', 'row']),
 })
 
 const dataVariable = defineBlock({
@@ -274,6 +383,7 @@ const networkFetch = defineBlock({
   ],
   generate: ({ input, symbol }) =>
     `const ${symbol} = await http.request({ url: ${input('url')}, method: ${input('method')}, body: ${input('body')} })`,
+  parse: parseOptions('await http.request', { url: 'url', method: 'method', body: 'body' }),
 })
 
 // ------------------------------------------------------------------ Auth
@@ -294,6 +404,7 @@ const authSignUp = defineBlock({
     { id: 'user', label: 'User', type: 'Object' },
   ],
   generate: ({ input, symbol }) => `const ${symbol} = await auth.signUp(${input('email')}, ${input('password')})`,
+  parse: parseCall('await auth.signUp', ['email', 'password']),
 })
 
 const authSession = defineBlock({
@@ -308,6 +419,7 @@ const authSession = defineBlock({
     { id: 'user', label: 'User', type: 'Object' },
   ],
   generate: ({ symbol }) => `const ${symbol} = await auth.session()`,
+  parse: parseCall('await auth.session', []),
 })
 
 // --------------------------------------------------------------- Storage
@@ -328,6 +440,7 @@ const storageUpload = defineBlock({
     { id: 'url', label: 'URL', type: 'String' },
   ],
   generate: ({ input, symbol }) => `const ${symbol} = await storage.upload(${input('bucket')}, ${input('file')})`,
+  parse: parseCall('await storage.upload', ['bucket', 'file']),
 })
 
 export const builtinBlocks: BlockDefinition[] = [

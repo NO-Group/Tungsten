@@ -64,6 +64,27 @@ export type BlockDefinition = {
   slots?: Port[]
   /** Turns the node into source text: a statement, or an expression. */
   generate: (context: GenerateContext) => string
+  /**
+   * Recognises this block's own generated statement, for the other
+   * direction: text back into blocks.
+   *
+   * It is handed one statement with any `const x = ` binding already
+   * stripped, and returns the raw expression text for each input port, or
+   * `undefined` if the statement is not this block. A block without a
+   * parser simply cannot be recovered from hand-written code -- the graph
+   * still generates it, the text just does not round-trip.
+   */
+  parse?: (statement: string) => ParsedStatement | undefined
+}
+
+/** What a block's parser recovers from one line of source. */
+export type ParsedStatement = {
+  /** Raw expression text per input port id. */
+  inputs: Record<string, string>
+  /** The slot this statement opens, when it ends in an opening brace. */
+  opensBody?: string
+  /** The slot a following `} else {` switches to. */
+  elseSlot?: string
 }
 
 /**

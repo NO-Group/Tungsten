@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it } from 'vitest'
 
 import { builtinBlocks } from './blockLibrary'
 import { createRegistry, defineBlock, isAssignable, type BlockGraph } from './blockSchema'
-import { generateProgram, lineOfNode, nodeAtLine, symbolFor } from './codeGenerator'
+import { generateProgram, lineOfNode, nodeAtLine } from './codeGenerator'
 import { checkIntegrity, diagnosticsByNode } from './integrity'
+import { parseProgram } from './codeParser'
 import {
   addNode,
   canConnect,
@@ -234,10 +235,10 @@ describe('code generator', () => {
         ['1', 'rows', '2', 'value'],
       ],
     )
-    const symbol = symbolFor(nodeById(graph, ids[1])!)
-    const { code } = generateProgram(graph, registry)
-    expect(code).toContain(`const ${symbol} = await db`)
-    expect(code).toContain(`console.log(${symbol})`)
+    const { code, symbols } = generateProgram(graph, registry)
+    expect(symbols[ids[1]]).toBe('query1')
+    expect(code).toContain('const query1 = await db')
+    expect(code).toContain('console.log(query1)')
   })
 
   it('awaits async blocks inside the handler', () => {
@@ -318,8 +319,13 @@ describe('code generator', () => {
     expect(nodeAtLine(program, line)).toBe(ids[1])
   })
 
-  it('turns a node id into a usable identifier', () => {
-    expect(symbolFor({ id: '9-odd id', type: 't', position: { x: 0, y: 0 }, values: {} })).toBe('_9_odd_id')
+  it('numbers variables by position, so two of a kind do not collide', () => {
+    const { graph } = build(
+      [['event.start'], ['data.query'], ['data.query']],
+      [['0', 'exec', '1', 'exec'], ['1', 'exec', '2', 'exec']],
+    )
+    const { symbols } = generateProgram(graph, registry)
+    expect(Object.values(symbols).sort()).toEqual(['query1', 'query2'])
   })
 })
 
@@ -519,5 +525,153 @@ describe('integrity checker', () => {
       connections: [{ id: 'a', from: { node: 'gone', port: 'exec' }, to: { node: 'also-gone', port: 'exec' } }],
     }
     expect(() => checkIntegrity(graph, registry)).not.toThrow()
+  })
+})
+
+describe('code parser', () => {
+  /** Generate, parse, generate again: the text has to survive the trip. */
+  function roundTrip(graph: BlockGraph) {
+    const before = generateProgram(graph, registry).code
+    const parsed = parseProgram(before, registry)
+    if (!parsed.ok) throw new Error(`${parsed.reason} (line ${parsed.line})`)
+    return { before, after: generateProgram(parsed.graph, registry).code, graph: parsed.graph }
+  }
+
+  it('reads an empty program', () => {
+    const parsed = parseProgram('// nothing here\n', registry)
+    expect(parsed.ok && parsed.graph.nodes).toEqual([])
+  })
+
+  it('rebuilds an event and its chain', () => {
+    const { graph } = build(
+      [['event.start'], ['logic.log'], ['ui.text']],
+      [['0', 'exec', '1', 'exec'], ['1', 'exec', '2', 'exec']],
+    )
+    const trip = roundTrip(graph)
+    expect(trip.after).toBe(trip.before)
+    expect(trip.graph.nodes.map((node) => node.type)).toEqual(['event.start', 'logic.log', 'ui.text'])
+  })
+
+  it('keeps the element id of a click handler', () => {
+    const { graph, ids } = build([['event.click']])
+    const trip = roundTrip(setNodeValue(graph, ids[0], 'target', 'save-button'))
+    expect(trip.after).toBe(trip.before)
+    expect(trip.graph.nodes[0].values.target).toBe('save-button')
+  })
+
+  it('restores a link from a variable back to the block that assigned it', () => {
+    const { graph } = build(
+      [['event.start'], ['data.query'], ['logic.log']],
+      [
+        ['0', 'exec', '1', 'exec'],
+        ['1', 'exec', '2', 'exec'],
+        ['1', 'rows', '2', 'value'],
+      ],
+    )
+    const trip = roundTrip(graph)
+    expect(trip.after).toBe(trip.before)
+    const query = trip.graph.nodes.find((node) => node.type === 'data.query')!
+    const log = trip.graph.nodes.find((node) => node.type === 'logic.log')!
+    expect(trip.graph.connections).toContainEqual(
+      expect.objectContaining({
+        from: { node: query.id, port: 'rows' },
+        to: { node: log.id, port: 'value' },
+      }),
+    )
+  })
+
+  it('rebuilds a nested branch', () => {
+    const { graph } = build(
+      [['event.start'], ['logic.if'], ['logic.log'], ['ui.text']],
+      [
+        ['0', 'exec', '1', 'exec'],
+        ['1', 'body', '2', 'exec'],
+        ['1', 'else', '3', 'exec'],
+      ],
+    )
+    const trip = roundTrip(graph)
+    expect(trip.after).toBe(trip.before)
+    const branch = trip.graph.nodes.find((node) => node.type === 'logic.if')!
+    expect(trip.graph.connections.filter((link) => link.from.node === branch.id)).toHaveLength(2)
+  })
+
+  it('rebuilds a loop over a list', () => {
+    const { graph } = build(
+      [['event.start'], ['data.query'], ['logic.forEach'], ['logic.log']],
+      [
+        ['0', 'exec', '1', 'exec'],
+        ['1', 'exec', '2', 'exec'],
+        ['1', 'rows', '2', 'list'],
+        ['2', 'body', '3', 'exec'],
+      ],
+    )
+    expect(roundTrip(graph).after).toBe(roundTrip(graph).before)
+  })
+
+  it('survives a chain of every async block in the library', () => {
+    const { graph } = build(
+      [['event.start'], ['auth.session'], ['network.fetch'], ['storage.upload'], ['data.insert']],
+      [
+        ['0', 'exec', '1', 'exec'],
+        ['1', 'exec', '2', 'exec'],
+        ['2', 'exec', '3', 'exec'],
+        ['3', 'exec', '4', 'exec'],
+      ],
+    )
+    expect(roundTrip(graph).after).toBe(roundTrip(graph).before)
+  })
+
+  it('turns an inline literal into a value on the port', () => {
+    const { graph, ids } = build(
+      [['event.start'], ['logic.log'], ['data.text']],
+      [['0', 'exec', '1', 'exec'], ['2', 'value', '1', 'value']],
+    )
+    const trip = roundTrip(setNodeValue(graph, ids[2], 'value', 'hello'))
+    const log = trip.graph.nodes.find((node) => node.type === 'logic.log')!
+    expect(log.values.value).toBe('hello')
+    expect(trip.after).toBe(trip.before)
+  })
+
+  it('keeps commas inside an argument out of the split', () => {
+    const parsed = parseProgram(
+      'app.onStart(async () => {\n  console.log("one, two")\n})\n',
+      registry,
+    )
+    expect(parsed.ok && parsed.graph.nodes[1].values.value).toBe('one, two')
+  })
+
+  it('refuses a line it does not recognise, and says which', () => {
+    const parsed = parseProgram('app.onStart(async () => {\n  launchMissiles()\n})\n', registry)
+    expect(parsed.ok).toBe(false)
+    expect(!parsed.ok && parsed.line).toBe(2)
+    expect(!parsed.ok && parsed.reason).toContain('launchMissiles()')
+  })
+
+  it('refuses a statement outside any handler', () => {
+    const parsed = parseProgram('console.log("stray")\n', registry)
+    expect(!parsed.ok && parsed.reason).toContain('top level')
+  })
+
+  it('refuses a file that ends mid-block', () => {
+    const parsed = parseProgram('app.onStart(async () => {\n  console.log("x")\n', registry)
+    expect(!parsed.ok && parsed.reason).toContain('still open')
+  })
+
+  it('refuses an unbalanced closing brace', () => {
+    const parsed = parseProgram('}\n', registry)
+    expect(!parsed.ok && parsed.line).toBe(1)
+  })
+
+  it('produces a graph the checker is happy with', () => {
+    const { graph } = build(
+      [['event.start'], ['data.query'], ['logic.log']],
+      [
+        ['0', 'exec', '1', 'exec'],
+        ['1', 'exec', '2', 'exec'],
+        ['1', 'rows', '2', 'value'],
+      ],
+    )
+    const parsed = parseProgram(generateProgram(graph, registry).code, registry)
+    expect(parsed.ok && checkIntegrity(parsed.graph, registry).compilable).toBe(true)
   })
 })

@@ -22,6 +22,8 @@ export type GeneratedProgram = {
   code: string
   /** One entry per emitted statement, by 1-based line. */
   sourceMap: SourceMapEntry[]
+  /** The variable each statement block assigned, by node id. */
+  symbols: Record<string, string>
 }
 
 /** A run of emitted lines, with the block each one started at. */
@@ -31,10 +33,29 @@ type Fragment = {
   map: Array<{ offset: number; nodeId: string }>
 }
 
-/** A node id turned into something that can be a variable name. */
-export function symbolFor(node: BlockNode): string {
-  const cleaned = node.id.replace(/[^A-Za-z0-9_$]/g, '_')
-  return /^[0-9]/.test(cleaned) ? `_${cleaned}` : cleaned
+/**
+ * Hands out the variable names, by position in the program.
+ *
+ * Names come from where a block sits in the file rather than from its
+ * internal id, and that is load-bearing: parsing the text and regenerating
+ * it has to produce the same text, or the debounced round trip would
+ * rewrite every name on every keystroke.
+ */
+function createNamer() {
+  const assigned = new Map<string, string>()
+  const counts = new Map<string, number>()
+
+  return (node: BlockNode): string => {
+    const existing = assigned.get(node.id)
+    if (existing) return existing
+    const segment = node.type.split('.').pop() ?? 'value'
+    const base = segment.replace(/[^A-Za-z0-9_$]/g, '') || 'value'
+    const next = (counts.get(base) ?? 0) + 1
+    counts.set(base, next)
+    const name = /^[0-9]/.test(base) ? `_${base}${next}` : `${base}${next}`
+    assigned.set(node.id, name)
+    return name
+  }
 }
 
 /** A literal typed into a port, rendered as source. */
@@ -67,6 +88,8 @@ function indexOfRun(haystack: string[], needle: string[]): number {
 export function generateProgram(graph: BlockGraph, registry: BlockRegistry): GeneratedProgram {
   /** Guards the recursion against a cycle the checker has already reported. */
   const inFlight = new Set<string>()
+  const symbolFor = createNamer()
+  const symbols: Record<string, string> = {}
 
   /** The expression text for whatever feeds a port. */
   function expressionFor(nodeId: string, portId: string): string {
@@ -88,6 +111,7 @@ export function generateProgram(graph: BlockGraph, registry: BlockRegistry): Gen
     // outputs are read by name. A pure expression is inlined where it is used.
     const isStatement = sourceDefinition.inputs.some((port) => port.type === 'Exec')
     if (isStatement) return symbolFor(source)
+
 
     if (inFlight.has(source.id)) return 'undefined'
     inFlight.add(source.id)
@@ -117,6 +141,7 @@ export function generateProgram(graph: BlockGraph, registry: BlockRegistry): Gen
       // Bodies are generated first: the block wraps their text, and their
       // line attributions are folded in once the wrapper's shape is known.
       const bodies = new Map<string, Fragment>()
+      const assigned = symbolFor(node)
       const text = definition.generate({
         node,
         input: (port) => expressionFor(node.id, port),
@@ -125,9 +150,13 @@ export function generateProgram(graph: BlockGraph, registry: BlockRegistry): Gen
           bodies.set(port, body)
           return body.lines.join('\n')
         },
-        symbol: symbolFor(node),
+        symbol: assigned,
         indent,
       })
+
+      if (text.includes(`const ${assigned} =`) || text.includes(`const ${assigned} of`)) {
+        symbols[node.id] = assigned
+      }
 
       if (text) {
         const statement = text.split('\n')
@@ -158,7 +187,7 @@ export function generateProgram(graph: BlockGraph, registry: BlockRegistry): Gen
 
   if (!events.length) {
     lines.push('// No events yet. Add an “On App Start” or “On Click” block to begin.')
-    return { code: `${lines.join('\n')}\n`, sourceMap }
+    return { code: `${lines.join('\n')}\n`, sourceMap, symbols }
   }
 
   for (const event of events) {
@@ -183,7 +212,7 @@ export function generateProgram(graph: BlockGraph, registry: BlockRegistry): Gen
   }
 
   sourceMap.sort((a, b) => a.line - b.line || a.nodeId.localeCompare(b.nodeId))
-  return { code: `${lines.join('\n').replace(/\n+$/, '')}\n`, sourceMap }
+  return { code: `${lines.join('\n').replace(/\n+$/, '')}\n`, sourceMap, symbols }
 }
 
 /** The block a line of generated code came from, for error traceback. */
