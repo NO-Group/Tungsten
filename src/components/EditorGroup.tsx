@@ -55,15 +55,14 @@ const configuredEditor = () => import('./ConfiguredEditor')
 const Editor = lazy(configuredEditor)
 const DiffEditor = lazy(() => configuredEditor().then((module) => ({ default: module.DiffEditor })))
 
-/** The subset of workbench settings that affect how an editor renders. */
+/**
+ * The Monaco options this group renders with, already resolved from the
+ * configuration by `editorOptionsFromConfiguration`. The group does not read
+ * settings itself: it is handed what to draw with.
+ */
 export type EditorSettings = {
-  fontSize: number
-  minimap: boolean
-  wordWrap: boolean
-  renderWhitespace: boolean
-  stickyScroll: boolean
-  reducedMotion: boolean
-  screenReaderOptimized: boolean
+  editor: Record<string, unknown>
+  diff: Record<string, unknown>
 }
 
 /** The staged/unstaged comparison currently being reviewed, if any. */
@@ -132,7 +131,6 @@ export type EditorGroupProps = {
 
 export type { GitComparison }
 
-const EDITOR_FONT = "'JetBrains Mono', 'SFMono-Regular', Consolas, monospace"
 
 const loadingEditor = (
   <div className="editor-loading">
@@ -277,16 +275,7 @@ export function EditorGroup({
                 modified={gitComparison.after}
                 language={files.find((file) => file.path === gitComparison.path)?.language || 'plaintext'}
                 theme={monacoThemeName(theme)}
-                options={{
-                  readOnly: true,
-                  renderSideBySide: true,
-                  automaticLayout: true,
-                  minimap: { enabled: false },
-                  fontSize: settings.fontSize,
-                  fontFamily: EDITOR_FONT,
-                  originalEditable: false,
-                  scrollBeyondLastLine: false,
-                }}
+                options={settings.diff}
               />
             </div>
           ) : activeFile ? (
@@ -320,31 +309,7 @@ export function EditorGroup({
                 })
                 editor.focus()
               }}
-              options={{
-                fontFamily: EDITOR_FONT,
-                readOnly: activeFile.language === 'diff',
-                glyphMargin: true,
-                fontSize: settings.fontSize,
-                lineHeight: Math.round(settings.fontSize * 1.62),
-                fontLigatures: true,
-                minimap: { enabled: settings.minimap, maxColumn: 90, renderCharacters: false, scale: 1 },
-                wordWrap: settings.wordWrap ? 'on' : 'off',
-                renderWhitespace: settings.renderWhitespace ? 'selection' : 'none',
-                stickyScroll: { enabled: settings.stickyScroll },
-                padding: { top: 14, bottom: 20 },
-                smoothScrolling: !settings.reducedMotion,
-                cursorSmoothCaretAnimation: settings.reducedMotion ? 'off' : 'on',
-                accessibilitySupport: settings.screenReaderOptimized ? 'on' : 'auto',
-                cursorBlinking: 'smooth',
-                renderLineHighlight: 'all',
-                overviewRulerBorder: false,
-                hideCursorInOverviewRuler: true,
-                bracketPairColorization: { enabled: true },
-                guides: { bracketPairs: true, indentation: true },
-                scrollBeyondLastLine: false,
-                automaticLayout: true,
-                tabSize: 2,
-              }}
+              options={{ ...settings.editor, readOnly: activeFile.language === 'diff' }}
               loading={loadingEditor}
             />
           ) : (

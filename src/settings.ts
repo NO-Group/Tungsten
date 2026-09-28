@@ -1,10 +1,16 @@
 /**
  * Editor and workbench preferences.
  *
- * These live outside the renderer so the settings dialog, the persistence
- * layer and the editor options builder all agree on the shape and on what a
- * fresh install looks like.
+ * `SettingsState` is the handful of preferences the workbench itself reads
+ * every render -- the editor's font, the minimap, the accessibility
+ * switches. It is not a second store: each field is a view onto one key in
+ * the configuration registry, which is where preferences actually live.
+ * `settingsFromConfiguration` projects them out and `configurationPatch`
+ * writes them back, so the quick settings dialog and the full settings
+ * editor are always editing the same thing.
  */
+
+import { configurationSchema } from './configuration/configurationRegistry'
 
 export type SettingsState = {
   fontSize: number
@@ -58,3 +64,84 @@ export const settingToggles: Array<{ key: keyof SettingsState; title: string; de
   { key: 'telemetry', title: 'Product telemetry', description: 'Share anonymous feature usage; disabled by default.' },
   { key: 'crashReports', title: 'Crash reports', description: 'Allow packaged builds to create local crash diagnostics.' },
 ]
+
+/**
+ * The configuration key behind each workbench setting, with the conversion
+ * between the boolean the workbench wants and the value the schema declares.
+ */
+type Binding = {
+  key: string
+  read: (value: unknown) => unknown
+  write: (value: unknown) => unknown
+}
+
+const asBoolean = (fallback: boolean): Binding['read'] => (value) => (typeof value === 'boolean' ? value : fallback)
+const identity: Binding['write'] = (value) => value
+/** The schema stores a mode where the workbench wants a switch. */
+const isOn = (off: string): Binding['read'] => (value) => value !== off
+const toMode = (on: string, off: string): Binding['write'] => (value) => (value ? on : off)
+
+export const SETTINGS_BINDINGS: Record<keyof SettingsState, Binding> = {
+  fontSize: {
+    key: 'editor.fontSize',
+    read: (value) => (typeof value === 'number' ? value : defaultSettings.fontSize),
+    write: identity,
+  },
+  wordWrap: { key: 'editor.wordWrap', read: isOn('off'), write: toMode('on', 'off') },
+  minimap: { key: 'editor.minimap.enabled', read: asBoolean(true), write: identity },
+  autosave: { key: 'files.autoSave', read: isOn('off'), write: toMode('afterDelay', 'off') },
+  stickyScroll: { key: 'editor.stickyScroll.enabled', read: asBoolean(true), write: identity },
+  renderWhitespace: { key: 'editor.renderWhitespace', read: isOn('none'), write: toMode('selection', 'none') },
+  reducedMotion: { key: 'accessibility.reducedMotion', read: asBoolean(false), write: identity },
+  highContrast: { key: 'accessibility.highContrast', read: asBoolean(false), write: identity },
+  screenReaderOptimized: { key: 'accessibility.screenReaderOptimized', read: asBoolean(false), write: identity },
+  telemetry: { key: 'telemetry.telemetryLevel', read: isOn('off'), write: toMode('all', 'off') },
+  crashReports: { key: 'telemetry.crashReports', read: asBoolean(true), write: identity },
+}
+
+const bindings = Object.entries(SETTINGS_BINDINGS) as Array<[keyof SettingsState, Binding]>
+
+/** Reads the workbench settings out of a set of configuration values. */
+export function settingsFromConfiguration(values: Record<string, unknown>): SettingsState {
+  const out: Record<string, unknown> = {}
+  for (const [name, binding] of bindings) {
+    const value = binding.key in values ? values[binding.key] : configurationSchema[binding.key]?.default
+    out[name] = binding.read(value)
+  }
+  return out as SettingsState
+}
+
+/**
+ * Turns the workbench settings into configuration keys.
+ *
+ * Passing the previous settings narrows the result to what actually changed,
+ * so flipping one switch does not write ten keys into the user's overrides.
+ */
+export function configurationPatch(next: SettingsState, previous?: SettingsState): Record<string, unknown> {
+  const patch: Record<string, unknown> = {}
+  for (const [name, binding] of bindings) {
+    if (previous && previous[name] === next[name]) continue
+    patch[binding.key] = binding.write(next[name])
+  }
+  return patch
+}
+
+/**
+ * Reads whatever is in storage, including the flat settings object earlier
+ * versions wrote, and returns configuration keys.
+ */
+export function migrateStoredSettings(raw: string | null): Record<string, unknown> {
+  let stored: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(raw || '{}')
+    if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) stored = parsed as Record<string, unknown>
+  } catch {
+    return {}
+  }
+  const legacy = Object.keys(stored).some((key) => key in SETTINGS_BINDINGS)
+  if (!legacy) {
+    // Already configuration keys: keep the ones the schema still declares.
+    return Object.fromEntries(Object.entries(stored).filter(([key]) => key in configurationSchema))
+  }
+  return configurationPatch({ ...defaultSettings, ...stored } as SettingsState)
+}

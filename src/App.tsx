@@ -72,7 +72,7 @@ import { CollaborationDialog } from './components/dialogs/CollaborationDialog'
 import { RemoteDialog } from './components/dialogs/RemoteDialog'
 import { NewProjectDialog } from './components/dialogs/NewProjectDialog'
 import { NewFileDialog } from './components/dialogs/NewFileDialog'
-import { defaultSettings, type SettingsState } from './settings'
+import { defaultSettings } from './settings'
 import { ProblemsPanel } from './components/panel/ProblemsPanel'
 import { SearchView } from './components/sidebar/SearchView'
 import { SourceControlView } from './components/sidebar/SourceControlView'
@@ -126,6 +126,9 @@ import { registerLanguageProviders } from './languages/monacoLanguageClient'
 import { registerSnippetProvider } from './languages/monacoSnippetProvider'
 import { useDiagnostics } from './languages/useDiagnostics'
 import { useWorkbenchLayout } from './workbench/useWorkbenchLayout'
+import { useUserConfiguration } from './configuration/useUserConfiguration'
+import { diffEditorOptionsFromConfiguration, editorOptionsFromConfiguration } from './configuration/editorOptions'
+import { applySaveActions, saveOptionsFromConfiguration } from './configuration/saveActions'
 import { useTerminalSessions } from './terminal/useTerminalSessions'
 import { APP_VERSION } from './version'
 import './styles.css'
@@ -146,7 +149,6 @@ type CommandItem = {
 
 
 const WORKSPACE_KEY = 'tungsten.workspace.v1'
-const SETTINGS_KEY = 'tungsten.settings.v1'
 /** User keybinding overrides, keyed by command id. */
 const KEYBINDINGS_KEY = 'tungsten.keybindings.v2'
 const SNIPPETS_KEY = 'tungsten.snippets.v1'
@@ -172,14 +174,6 @@ function loadFiles() {
     // Fall back to the factory workspace.
   }
   return defaultFiles
-}
-
-function loadSettings() {
-  try {
-    return { ...defaultSettings, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) || '{}') }
-  } catch {
-    return defaultSettings
-  }
 }
 
 /** User overrides map a command id to a keybinding string ('' disables it). */
@@ -278,7 +272,13 @@ export default function App() {
   /** Command currently capturing keystrokes in the keybinding editor. */
   const [recordingCommand, setRecordingCommand] = useState<string | null>(null)
   const [keybindingFilter, setKeybindingFilter] = useState('')
-  const [settings, setSettings] = useState<SettingsState>(loadSettings)
+  const configuration = useUserConfiguration()
+  const { settings, setSettings } = configuration
+  /** Monaco's options, rebuilt whenever a setting changes. */
+  const editorOptions = useMemo(() => ({
+    editor: editorOptionsFromConfiguration(configuration.values),
+    diff: diffEditorOptionsFromConfiguration(configuration.values),
+  }), [configuration.values])
   const [newFileOpen, setNewFileOpen] = useState(false)
   const [newFileName, setNewFileName] = useState('')
   const [renameTarget, setRenameTarget] = useState<string | null>(null)
@@ -373,6 +373,23 @@ export default function App() {
 
   const save = useCallback(async (path?: string) => {
     const targets = path ? [path] : [...dirty]
+
+    // Formatting is Monaco's, and only the focused editor can do it; the text
+    // transforms are ours and apply to every file being written.
+    if (configuration.values['editor.formatOnSave'] && editorInstance) {
+      const formatting = editorInstance.getAction?.('editor.action.formatDocument')
+      if (formatting) await formatting.run().catch(() => undefined)
+    }
+    const saveOptions = saveOptionsFromConfiguration(configuration.values)
+    const cleaned = new Map(targets.map((target) => {
+      const file = files.find((item) => item.path === target)
+      return [target, file ? applySaveActions(file.content, saveOptions) : '']
+    }))
+    setFiles((current) => current.map((file) => (
+      cleaned.has(file.path) && cleaned.get(file.path) !== file.content
+        ? { ...file, content: cleaned.get(file.path)! }
+        : file
+    )))
     const finishSave = () => {
       if (path) {
         setDirty((current) => {
@@ -396,17 +413,19 @@ export default function App() {
       if (window.tungsten && workspaceRoot) {
         await Promise.all(targets.map((target) => {
           const file = files.find((item) => item.path === target)
-          return file ? window.tungsten!.writeFile(file.path, file.content) : Promise.resolve({ ok: true as const })
+          return file ? window.tungsten!.writeFile(file.path, cleaned.get(target) ?? file.content) : Promise.resolve({ ok: true as const })
         }))
       } else {
-        localStorage.setItem(WORKSPACE_KEY, JSON.stringify(files))
+        localStorage.setItem(WORKSPACE_KEY, JSON.stringify(
+          files.map((file) => (cleaned.has(file.path) ? { ...file, content: cleaned.get(file.path)! } : file)),
+        ))
       }
       finishSave()
     } catch (error) {
       notify(`Save failed: ${(error as Error).message}`)
       throw error
     }
-  }, [dirty, files, notify, workspaceRoot])
+  }, [configuration.values, dirty, editorInstance, files, notify, workspaceRoot])
 
   const openFile = useCallback((path: string) => {
     setOpenTabs((tabs) => tabs.includes(path) ? tabs : [...tabs, path])
@@ -1108,10 +1127,6 @@ export default function App() {
 
 
   useEffect(() => {
-    localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings))
-  }, [settings])
-
-  useEffect(() => {
     localStorage.setItem(KEYBINDINGS_KEY, JSON.stringify(userKeybindings))
   }, [userKeybindings])
 
@@ -1722,7 +1737,7 @@ export default function App() {
                   layout={layout}
                   files={files}
                   dirty={dirty}
-                  settings={settings}
+                  settings={editorOptions}
                   theme={activeTheme}
                   workspaceName={workspaceName}
                   gitComparison={gitComparison}
@@ -1811,6 +1826,10 @@ export default function App() {
           onQueryChange={setSettingsEditorQuery}
           groups={settingsEditorGroups}
           schema={configurationSchema}
+          values={configuration.values}
+          modified={configuration.modified}
+          onChange={configuration.set}
+          onReset={configuration.reset}
           onClose={() => setSettingsEditorOpen(false)}
         />
       )}

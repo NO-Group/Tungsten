@@ -1,12 +1,17 @@
 /**
- * The settings editor: a searchable browse of the configuration registry.
+ * The settings editor: every declared setting, searchable and editable.
  *
- * It shows the declared schema -- key, description and default -- rather than
- * live values, which is why every control renders read-only. Editing happens
- * in the settings dialog; this is the map of what exists.
+ * The control a row shows is decided by the schema -- a switch for a
+ * boolean, a menu for an enum, a bounded number field, a text field, and raw
+ * JSON for the array and object settings. A row the user has changed is
+ * marked, and can be put back to its default from the row itself.
+ *
+ * The dialog holds no state of its own beyond the text of a field being
+ * typed into: values come in resolved and changes go straight back out.
  */
 
-import { Search, X } from 'lucide-react'
+import { useState } from 'react'
+import { RotateCcw, Search, X } from 'lucide-react'
 import { Modal } from '../Modal'
 import type { ConfigurationPropertySchema } from '../../configuration/configurationRegistry'
 
@@ -16,18 +21,122 @@ export type SettingsEditorProps = {
   /** Matching keys, grouped by the category the registry declares. */
   groups: Array<{ category: string; keys: string[] }>
   schema: Record<string, ConfigurationPropertySchema>
+  /** Every setting, resolved: the user's value, or the default. */
+  values: Record<string, unknown>
+  /** The keys the user has changed. */
+  modified: Set<string>
+  onChange: (key: string, value: unknown) => void
+  onReset: (key: string) => void
   onClose: () => void
 }
 
-/** Defaults are rendered as text; objects and arrays need encoding first. */
-function defaultText(schema: ConfigurationPropertySchema) {
-  return schema.type === 'array' || schema.type === 'object'
-    ? JSON.stringify(schema.default)
-    : String(schema.default)
+/** Arrays and objects are edited as the JSON they are. */
+function asText(value: unknown) {
+  return typeof value === 'string' ? value : JSON.stringify(value)
 }
 
-export function SettingsEditor({ query, onQueryChange, groups, schema, onClose }: SettingsEditorProps) {
+type RowProps = {
+  settingKey: string
+  schema: ConfigurationPropertySchema
+  value: unknown
+  onChange: (value: unknown) => void
+}
+
+/** A JSON field keeps its own text so a half-typed value is not rejected. */
+function JsonField({ settingKey, value, onChange }: RowProps) {
+  const [draft, setDraft] = useState<string | null>(null)
+  const text = draft ?? asText(value)
+  let invalid = false
+  try {
+    JSON.parse(text)
+  } catch {
+    invalid = true
+  }
+
+  return (
+    <input
+      className="settings-json"
+      aria-label={settingKey}
+      aria-invalid={invalid || undefined}
+      value={text}
+      onChange={(event) => {
+        setDraft(event.target.value)
+        try {
+          onChange(JSON.parse(event.target.value))
+        } catch {
+          // Keep typing; the value is only written once it parses.
+        }
+      }}
+      onBlur={() => setDraft(null)}
+    />
+  )
+}
+
+function SettingControl(props: RowProps) {
+  const { settingKey, schema, value, onChange } = props
+
+  if (schema.type === 'boolean') {
+    return (
+      <label className="toggle-setting compact">
+        <input
+          type="checkbox"
+          aria-label={settingKey}
+          checked={Boolean(value)}
+          onChange={(event) => onChange(event.target.checked)}
+        />
+        <span className="toggle-track"><i /></span>
+      </label>
+    )
+  }
+
+  if (schema.type === 'enum') {
+    return (
+      <select aria-label={settingKey} value={String(value)} onChange={(event) => onChange(event.target.value)}>
+        {schema.enum?.map((option) => (
+          <option key={option} value={option}>{option === '\n' ? '\\n' : option === '\r\n' ? '\\r\\n' : option}</option>
+        ))}
+      </select>
+    )
+  }
+
+  if (schema.type === 'number') {
+    return (
+      <input
+        type="number"
+        aria-label={settingKey}
+        value={Number(value)}
+        min={schema.minimum}
+        max={schema.maximum}
+        onChange={(event) => {
+          const next = Number(event.target.value)
+          if (Number.isFinite(next)) onChange(next)
+        }}
+      />
+    )
+  }
+
+  if (schema.type === 'string') {
+    return (
+      <input
+        type="text"
+        aria-label={settingKey}
+        value={String(value ?? '')}
+        onChange={(event) => onChange(event.target.value)}
+      />
+    )
+  }
+
+  return <JsonField {...props} />
+}
+
+export function SettingsEditor({
+  query, onQueryChange, groups, schema, values, modified, onChange, onReset, onClose,
+}: SettingsEditorProps) {
   const count = groups.reduce((sum, group) => sum + group.keys.length, 0)
+  const changed = groups.reduce(
+    (sum, group) => sum + group.keys.filter((key) => modified.has(key)).length,
+    0,
+  )
 
   return (
     <Modal label="Settings" className="settings-editor" onClose={onClose}>
@@ -45,13 +154,28 @@ export function SettingsEditor({ query, onQueryChange, groups, schema, onClose }
           <section key={group.category}>
             <h3>{group.category}</h3>
             {group.keys.map((key) => (
-              <div className="settings-row" key={key}>
+              <div className={`settings-row ${modified.has(key) ? 'modified' : ''}`} key={key}>
                 <div className="settings-row-label">
                   <code>{key}</code>
                   <p>{schema[key].description}</p>
                 </div>
                 <div className="settings-row-control">
-                  <span className="settings-readonly">{defaultText(schema[key])}</span>
+                  <SettingControl
+                    settingKey={key}
+                    schema={schema[key]}
+                    value={values[key]}
+                    onChange={(value) => onChange(key, value)}
+                  />
+                  {modified.has(key) && (
+                    <button
+                      className="icon-button"
+                      aria-label={`Reset ${key}`}
+                      title={`Reset to ${asText(schema[key].default)}`}
+                      onClick={() => onReset(key)}
+                    >
+                      <RotateCcw size={13} />
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
@@ -60,8 +184,8 @@ export function SettingsEditor({ query, onQueryChange, groups, schema, onClose }
       </div>
 
       <div className="settings-editor-foot">
-        <span>{count} setting{count === 1 ? '' : 's'} · defaults shown</span>
-        <span className="settings-hint">Edit live values from the Settings dialog</span>
+        <span>{count} setting{count === 1 ? '' : 's'}{changed ? ` · ${changed} changed` : ''}</span>
+        <span className="settings-hint">Changes apply immediately and are kept</span>
       </div>
     </Modal>
   )

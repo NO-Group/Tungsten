@@ -249,6 +249,20 @@ describe('desktop bridge contract', () => {
     expect(code(model)).not.toContain('useState')
   })
 
+  it('keeps one store of preferences behind both settings dialogs', () => {
+    const service = readFileSync(new URL('./configuration/useUserConfiguration.ts', import.meta.url), 'utf8')
+    const options = readFileSync(new URL('./configuration/editorOptions.ts', import.meta.url), 'utf8')
+    expect(renderer).toContain('const configuration = useUserConfiguration()')
+    // The workbench settings are a projection of the configuration, not a
+    // second copy of it.
+    expect(code(service)).toContain('settingsFromConfiguration(')
+    expect(code(service)).toContain('configurationPatch(')
+    expect(code(renderer)).not.toContain('useState<SettingsState>')
+    // Monaco's options come from the configuration too.
+    expect(renderer).toContain('editorOptionsFromConfiguration(configuration.values)')
+    expect(code(options)).toContain("'editor.tabSize'")
+  })
+
   it('keeps the workbench layout, and its persistence, in one place', () => {
     const hook = readFileSync(new URL('./workbench/useWorkbenchLayout.ts', import.meta.url), 'utf8')
     expect(renderer).toContain('const workbench = useWorkbenchLayout()')

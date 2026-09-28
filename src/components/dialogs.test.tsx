@@ -191,16 +191,63 @@ describe('settings', () => {
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({ highContrast: true, reducedMotion: true, screenReaderOptimized: true }))
   })
 
+  const settingsEditorProps = {
+    query: '',
+    onQueryChange: noop,
+    schema: configurationSchema,
+    values: Object.fromEntries(Object.entries(configurationSchema).map(([key, schema]) => [key, schema.default])),
+    modified: new Set<string>(),
+    onChange: noop,
+    onReset: noop,
+    onClose: noop,
+  }
+
   it('browses the configuration registry and reports an empty search', () => {
     const key = Object.keys(configurationSchema)[0]
-    render(
-      <SettingsEditor query="" onQueryChange={noop} groups={[{ category: 'Editor', keys: [key] }]} schema={configurationSchema} onClose={noop} />,
-    )
+    render(<SettingsEditor {...settingsEditorProps} groups={[{ category: 'Editor', keys: [key] }]} />)
     expect(container.textContent).toContain(key)
-    expect(container.textContent).toContain('1 setting · defaults shown')
+    expect(container.textContent).toContain('1 setting')
 
-    render(<SettingsEditor query="zzz" onQueryChange={noop} groups={[]} schema={configurationSchema} onClose={noop} />)
+    render(<SettingsEditor {...settingsEditorProps} query="zzz" groups={[]} />)
     expect(container.textContent).toContain('No settings match')
+  })
+
+  it('edits a setting with the control its schema calls for', () => {
+    const onChange = vi.fn()
+    render(
+      <SettingsEditor
+        {...settingsEditorProps}
+        onChange={onChange}
+        groups={[{ category: 'Editor', keys: ['editor.minimap.enabled', 'editor.fontSize', 'editor.wordWrap'] }]}
+      />,
+    )
+
+    const minimap = container.querySelector<HTMLInputElement>('input[aria-label="editor.minimap.enabled"]')!
+    expect(minimap.type).toBe('checkbox')
+    act(() => { minimap.click() })
+    expect(onChange).toHaveBeenCalledWith('editor.minimap.enabled', false)
+
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="editor.fontSize"]')?.type).toBe('number')
+    // An enum is a menu of exactly the values the schema allows.
+    const wordWrap = container.querySelector<HTMLSelectElement>('select[aria-label="editor.wordWrap"]')!
+    expect([...wordWrap.options].map((option) => option.value)).toEqual(['off', 'on', 'wordWrapColumn', 'bounded'])
+  })
+
+  it('marks a changed setting and offers to put it back', () => {
+    const onReset = vi.fn()
+    render(
+      <SettingsEditor
+        {...settingsEditorProps}
+        modified={new Set(['editor.fontSize'])}
+        onReset={onReset}
+        groups={[{ category: 'Editor', keys: ['editor.fontSize'] }]}
+      />,
+    )
+    expect(container.querySelector('.settings-row.modified')).not.toBeNull()
+    expect(container.textContent).toContain('1 changed')
+
+    act(() => { container.querySelector<HTMLButtonElement>('[aria-label="Reset editor.fontSize"]')!.click() })
+    expect(onReset).toHaveBeenCalledWith('editor.fontSize')
   })
 })
 

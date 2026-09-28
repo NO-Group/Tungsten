@@ -43,7 +43,7 @@ export const configurationSchema: ConfigurationSchema = {
   'editor.wordWrap': { type: 'enum', enum: ['off', 'on', 'wordWrapColumn', 'bounded'], default: 'off', description: 'Controls how lines should wrap.', category: 'Editor', order: 6 },
   'editor.minimap.enabled': { type: 'boolean', default: true, description: 'Controls whether the minimap is shown.', category: 'Editor', order: 7 },
   'editor.stickyScroll.enabled': { type: 'boolean', default: true, description: 'Shows the nested current scopes at the top of the editor.', category: 'Editor', order: 8 },
-  'editor.renderWhitespace': { type: 'enum', enum: ['none', 'boundary', 'selection', 'trailing', 'all'], default: 'selection', description: 'Controls how whitespace characters are rendered.', category: 'Editor', order: 9 },
+  'editor.renderWhitespace': { type: 'enum', enum: ['none', 'boundary', 'selection', 'trailing', 'all'], default: 'none', description: 'Controls how whitespace characters are rendered.', category: 'Editor', order: 9 },
   'editor.cursorBlinking': { type: 'enum', enum: ['blink', 'smooth', 'phase', 'expand', 'solid'], default: 'blink', description: 'Controls the cursor animation style.', category: 'Editor', order: 10 },
   'editor.cursorStyle': { type: 'enum', enum: ['line', 'block', 'underline', 'line-thin', 'block-outline', 'underline-thin'], default: 'line', description: 'Controls the cursor style.', category: 'Editor', order: 11 },
   'editor.bracketPairColorization.enabled': { type: 'boolean', default: true, description: 'Controls whether bracket pair colorization is enabled.', category: 'Editor', order: 12 },
@@ -105,6 +105,7 @@ export const configurationSchema: ConfigurationSchema = {
 
   // Telemetry
   'telemetry.telemetryLevel': { type: 'enum', enum: ['all', 'error', 'crash', 'off'], default: 'off', description: 'Controls what data is sent to the telemetry endpoint.', category: 'Telemetry', order: 1 },
+  'telemetry.crashReports': { type: 'boolean', default: true, description: 'Allow packaged builds to write local crash diagnostics.', category: 'Telemetry', order: 2 },
 }
 
 export interface ConfigurationLayers {

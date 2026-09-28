@@ -16,12 +16,13 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+// A textarea stands in for Monaco: it is controlled the same way, so typing
+// into it exercises the real change, dirty and save path.
 vi.mock('./components/ConfiguredEditor', () => ({
-  ConfiguredEditor: ({ path, value }: { path: string; value: string }) => (
-    <div data-testid="editor" data-path={path}>{value}</div>
+  DiffEditor: () => <div data-testid="diff-editor" />,
+  default: ({ path, value, onChange }: { path: string; value: string; onChange?: (value: string) => void }) => (
+    <textarea data-testid="editor" data-path={path} value={value ?? ''} onChange={(event) => onChange?.(event.target.value)} />
   ),
-  ConfiguredDiffEditor: () => <div data-testid="diff-editor" />,
-  default: () => <div data-testid="editor" />,
 }))
 
 vi.mock('./components/DesktopTerminal', () => ({
@@ -54,6 +55,16 @@ function buttonsLabelled(label: string) {
 
 function click(element: Element) {
   act(() => { element.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+}
+
+/** Types into the stand-in editor, which marks the file dirty. */
+function typeInEditor(value: string) {
+  const editor = container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!
+  const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+  act(() => {
+    setter?.call(editor, value)
+    editor.dispatchEvent(new Event('input', { bubbles: true }))
+  })
 }
 
 /**
@@ -211,7 +222,7 @@ describe('the workbench', () => {
 
   it('opens the settings editor', () => {
     run('preferences open settings')
-    expect(container.querySelector('.settings-editor')?.textContent).toContain('Settings')
+    expect(container.querySelector('.settings-editor')?.textContent).toContain('editor.fontSize')
   })
 
   it('changes a setting, and keeps it across a restart', () => {
@@ -222,7 +233,8 @@ describe('the workbench', () => {
     const before = minimap!.checked
 
     click(minimap!)
-    expect(JSON.parse(localStorage.getItem('tungsten.settings.v1') || '{}').minimap).toBe(!before)
+    // Preferences are stored as configuration keys, whichever dialog set them.
+    expect(JSON.parse(localStorage.getItem('tungsten.settings.v1') || '{}')['editor.minimap.enabled']).toBe(!before)
 
     act(() => { root.unmount() })
     container.remove()
@@ -250,6 +262,65 @@ describe('the workbench', () => {
     expect(option).toBeDefined()
     click(option!)
     expect(localStorage.getItem('tungsten.theme.v1')).toBeTruthy()
+  })
+
+  it('edits the same preferences from both dialogs', () => {
+    // Quick settings turns the minimap off...
+    run('quick settings')
+    const minimap = [...container.querySelectorAll<HTMLInputElement>('.settings-modal .toggle-setting input')]
+      .find((input) => input.closest('label')?.textContent?.toLowerCase().includes('minimap'))!
+    click(minimap)
+    click(buttonsLabelled('Done')[0])
+
+    // ...and the settings editor shows it off, marked as changed.
+    run('preferences open settings')
+    const editorInput = container.querySelector<HTMLInputElement>('input[aria-label="editor.minimap.enabled"]')
+    expect(editorInput?.checked).toBe(false)
+    expect(container.querySelector('.settings-row.modified')).not.toBeNull()
+
+    // Resetting it there puts the quick settings toggle back too.
+    click(container.querySelector('[aria-label="Reset editor.minimap.enabled"]')!)
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="editor.minimap.enabled"]')?.checked).toBe(true)
+    expect(localStorage.getItem('tungsten.settings.v1')).toBe('{}')
+  })
+
+  it('changes a setting the quick dialog does not offer', () => {
+    run('preferences open settings')
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search settings"]')!
+    type(search, 'tabsize')
+    const tabSize = container.querySelector<HTMLInputElement>('input[aria-label="editor.tabSize"]')!
+    type(tabSize, '8')
+    expect(JSON.parse(localStorage.getItem('tungsten.settings.v1') || '{}')['editor.tabSize']).toBe(8)
+  })
+
+  it('marks an edited file dirty, and saves what was typed', async () => {
+    await act(async () => undefined)
+    const path = container.querySelector('[data-testid="editor"]')!.getAttribute('data-path')!.replace('file:///', '')
+
+    typeInEditor('# Edited\n')
+    expect(container.querySelector('.editor-tab.active .tab-dirty')).not.toBeNull()
+
+    run('save all')
+    const stored = JSON.parse(localStorage.getItem('tungsten.workspace.v1') || '[]') as Array<{ path: string; content: string }>
+    expect(stored.find((file) => file.path === path)?.content).toBe('# Edited\n')
+    expect(container.querySelector('.editor-tab.active .tab-dirty')).toBeNull()
+  })
+
+  it('applies the on-save settings to the file it writes', async () => {
+    await act(async () => undefined)
+    const path = container.querySelector('[data-testid="editor"]')!.getAttribute('data-path')!.replace('file:///', '')
+
+    run('preferences open settings')
+    const search = container.querySelector<HTMLInputElement>('input[aria-label="Search settings"]')!
+    type(search, 'trimTrailing')
+    click(container.querySelector('input[aria-label="files.trimTrailingWhitespace"]')!)
+    click(buttonsLabelled('Close settings')[0])
+
+    typeInEditor('const a = 1   \nconst b = 2\t\n')
+    run('save all')
+
+    const stored = JSON.parse(localStorage.getItem('tungsten.workspace.v1') || '[]') as Array<{ path: string; content: string }>
+    expect(stored.find((file) => file.path === path)?.content).toBe('const a = 1\nconst b = 2\n')
   })
 
   it('reports a clean problem count until a server says otherwise', () => {
