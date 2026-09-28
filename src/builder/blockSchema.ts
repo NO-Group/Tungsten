@@ -90,6 +90,13 @@ export type BlockDefinition = {
 export type ParsedStatement = {
   /** Raw expression text per input port id. */
   inputs: Record<string, string>
+  /**
+   * A name this statement introduces that later lines can read.
+   *
+   * `const x = …` is recognised by the parser itself; this is for the
+   * statements that bind a name some other way, like a loop variable.
+   */
+  binds?: string
   /** The slot this statement opens, when it ends in an opening brace. */
   opensBody?: string
   /** The slot a following `} else {` switches to. */

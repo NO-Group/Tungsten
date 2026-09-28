@@ -1620,3 +1620,54 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .builder-node.snapping { outline: 1px solid var(--accent); }
 .builder-node-header { cursor: grab; }
 .builder-node-header:active { cursor: grabbing; }
+
+/* -- Builder: recipes and the quick-add menu ----------------------------- */
+
+.block-palette-item.recipe {
+  border-left: 2px solid var(--accent);
+  background: var(--raised);
+}
+
+.block-palette-item.recipe .block-palette-label { color: var(--strong); }
+
+.builder-quick-add {
+  position: absolute;
+  z-index: 6;
+  width: 260px;
+  background: var(--raised);
+  border: 1px solid var(--bright);
+  border-radius: 6px;
+  box-shadow: 0 12px 32px #000a;
+  overflow: hidden;
+}
+
+.builder-quick-add-filter {
+  width: 100%;
+  padding: 7px 9px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--input-bg);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11.5px;
+  outline: none;
+}
+
+.builder-quick-add-list { max-height: 230px; overflow-y: auto; }
+
+.builder-quick-add-list button {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  padding: 5px 9px;
+  border: none;
+  background: none;
+  text-align: left;
+  cursor: pointer;
+}
+
+.builder-quick-add-list button:hover { background: var(--list-active); }
+.builder-quick-add-list button span { color: var(--strong); font-size: 11.5px; }
+.builder-quick-add-list button small { color: var(--muted); font-size: 10px; line-height: 1.35; }
+.builder-quick-add-list p { margin: 0; padding: 10px; color: var(--muted); font-size: 11px; }

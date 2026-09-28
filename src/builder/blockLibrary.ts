@@ -56,6 +56,42 @@ export function splitArguments(text: string): string[] {
   return parts
 }
 
+/**
+ * Reads `(left OP right)` back, respecting nesting and quotes.
+ *
+ * Splitting on the first operator found in the raw string would cut
+ * `(items[a - 1] === "x - y")` in the wrong place twice over, so the scan
+ * skips anything inside brackets or a string, exactly as `splitArguments`
+ * does for commas.
+ */
+export function splitBinary(text: string, operators: string[]) {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith('(') || !trimmed.endsWith(')')) return undefined
+  const inner = trimmed.slice(1, -1)
+
+  let depth = 0
+  let quoteChar = ''
+  for (let index = 0; index < inner.length; index += 1) {
+    const character = inner[index]
+    if (quoteChar) {
+      if (character === quoteChar && inner[index - 1] !== '\\') quoteChar = ''
+      continue
+    }
+    if (character === '"' || character === "'" || character === '`') { quoteChar = character; continue }
+    if ('([{'.includes(character)) { depth += 1; continue }
+    if (')]}'.includes(character)) { depth -= 1; continue }
+    if (depth !== 0) continue
+    for (const operator of operators) {
+      if (!inner.startsWith(` ${operator} `, index)) continue
+      const left = inner.slice(0, index).trim()
+      const right = inner.slice(index + operator.length + 2).trim()
+      if (!left || !right) return undefined
+      return { left, operator, right }
+    }
+  }
+  return undefined
+}
+
 /** The arguments of `callee(...)`, or undefined when the text is something else. */
 function callArguments(statement: string, callee: string): string[] | undefined {
   if (!statement.startsWith(`${callee}(`) || !statement.endsWith(')')) return undefined
@@ -250,9 +286,11 @@ const logicForEach = defineBlock({
     return `for (const ${symbol} of ${input('list')}) ${lines ? `{\n${lines}\n${indent}}` : '{}'}`
   },
   parse: (statement) => {
-    const match = /^for \(const [A-Za-z0-9_$]+ of (.*?)\) \{(\})?$/.exec(statement)
+    const match = /^for \(const ([A-Za-z0-9_$]+) of (.*?)\) \{(\})?$/.exec(statement)
     if (!match) return undefined
-    return { inputs: { list: match[1] }, opensBody: match[2] ? undefined : 'body' }
+    // The loop variable is this block's Item output. Naming it here is what
+    // lets the blocks inside the loop read the item back after a round trip.
+    return { inputs: { list: match[2] }, binds: match[1], opensBody: match[3] ? undefined : 'body' }
   },
 })
 
@@ -276,6 +314,11 @@ const logicCompare = defineBlock({
     const operator = allowed.includes(raw) ? raw : '==='
     return `(${input('left')} ${operator} ${input('right')})`
   },
+  // Longest first: `<=` must win over `<`, or the halves come out wrong.
+  parse: (statement) => {
+    const split = splitBinary(statement, ['===', '!==', '<=', '>=', '<', '>'])
+    return split && { inputs: { left: split.left, operator: `"${split.operator}"`, right: split.right } }
+  },
 })
 
 const logicMath = defineBlock({
@@ -294,6 +337,26 @@ const logicMath = defineBlock({
     const raw = String(node.values.operator ?? '+')
     const operator = allowed.includes(raw) ? raw : '+'
     return `(${input('left')} ${operator} ${input('right')})`
+  },
+  parse: (statement) => {
+    const split = splitBinary(statement, ['+', '-', '*', '/', '%'])
+    return split && { inputs: { left: split.left, operator: `"${split.operator}"`, right: split.right } }
+  },
+})
+
+const logicExists = defineBlock({
+  type: 'logic.exists',
+  label: 'Has a Value',
+  category: 'Logic',
+  description: 'True when a value is present: not null, not undefined.',
+  inputs: [{ id: 'value', label: 'Value', type: 'Any', required: true }],
+  outputs: [{ id: 'result', label: 'Result', type: 'Boolean' }],
+  // `!= null` rather than `!== null` on purpose: it is the one place loose
+  // equality is the right tool, because it catches undefined as well.
+  generate: ({ input }) => `(${input('value')} != null)`,
+  parse: (statement) => {
+    const split = splitBinary(statement, ['!='])
+    return split && split.right === 'null' ? { inputs: { value: split.left } } : undefined
   },
 })
 
@@ -397,8 +460,13 @@ const networkFetch = defineBlock({
     { id: 'exec', label: 'Then', type: 'Exec' },
     { id: 'response', label: 'Response', type: 'Object' },
   ],
-  generate: ({ input, symbol }) =>
-    `const ${symbol} = await http.request({ url: ${input('url')}, method: ${input('method')}, body: ${input('body')} })`,
+  generate: ({ input, node, symbol }) => {
+    // An unset body is left out rather than written as `undefined`: the
+    // generated file is something people read, and `body: undefined` reads
+    // like a bug even though it runs.
+    const body = node.values.body === undefined ? '' : `, body: ${input('body')}`
+    return `const ${symbol} = await http.request({ url: ${input('url')}, method: ${input('method')}${body} })`
+  },
   parse: parseOptions('await http.request', { url: 'url', method: 'method', body: 'body' }),
 })
 
@@ -492,7 +560,7 @@ const storageUpload = defineBlock({
 export const builtinBlocks: BlockDefinition[] = [
   onAppStart, onClick,
   uiButton, uiText, uiInput, uiValue,
-  logicIf, logicForEach, logicCompare, logicMath, logicLog,
+  logicIf, logicForEach, logicCompare, logicMath, logicExists, logicLog,
   dataQuery, dataInsert, dataVariable, dataNumber,
   networkFetch,
   authSignUp, authOauth, authSession,

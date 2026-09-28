@@ -236,6 +236,9 @@ export function parseProgram(code: string, registry: BlockRegistry): ParseResult
     const node = add(matched.definition.type, frame.depth)
     chain(frame, node.id)
     if (binding) symbols.set(binding[1], node.id)
+    // A block can name something the plain `const x =` scan cannot see -- a
+    // loop variable, for one -- so the definition gets to say so.
+    if (matched.parsed.binds) symbols.set(matched.parsed.binds, node.id)
     for (const [portId, text] of Object.entries(matched.parsed.inputs)) {
       applyInput(node, portId, text, frame.depth)
     }

@@ -7,8 +7,10 @@
  * what is there right now would compile.
  */
 
-import { useMemo, useState } from 'react'
-import { AlertTriangle, Code2, Eraser, FileDown, Hammer, Info, Play, X } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  AlertTriangle, Code2, Copy, Eraser, FileDown, Hammer, Info, Play, Redo2, Undo2, X,
+} from 'lucide-react'
 
 import Editor from '../ConfiguredEditor'
 import { BuilderCanvas } from './BuilderCanvas'
@@ -49,6 +51,64 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onBuild, 
   const [bottomPane, setBottomPane] = useState<'integrity' | 'data'>('integrity')
   const [target, setTarget] = useState<CompileTarget>('web')
 
+  /**
+   * The keys that make a canvas quick.
+   *
+   * Bound on the document rather than the canvas so they work wherever the
+   * focus happens to be in the builder -- except in a field, where every one
+   * of these means something else to the person typing.
+   */
+  const { selected, removeBlock, duplicateBlock, moveBlock, undo, redo } = builder
+  const selectedNode = useMemo(
+    () => graph.nodes.find((node) => node.id === selected),
+    [graph.nodes, selected],
+  )
+
+  useEffect(() => {
+    const handle = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const typing = target instanceof HTMLElement
+        && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+      if (typing) return
+
+      const accel = event.metaKey || event.ctrlKey
+      if (accel && event.key.toLowerCase() === 'z') {
+        event.preventDefault()
+        if (event.shiftKey) redo()
+        else undo()
+        return
+      }
+      if (accel && event.key.toLowerCase() === 'y') { event.preventDefault(); redo(); return }
+      if (!selectedNode) return
+
+      if (accel && event.key.toLowerCase() === 'd') {
+        event.preventDefault()
+        duplicateBlock(selectedNode.id)
+        return
+      }
+      if (event.key === 'Delete' || event.key === 'Backspace') {
+        event.preventDefault()
+        removeBlock(selectedNode.id)
+        return
+      }
+
+      // Arrows nudge: a grid step, or a coarse one with shift.
+      const step = event.shiftKey ? 32 : 8
+      const nudge: Record<string, [number, number]> = {
+        ArrowLeft: [-step, 0], ArrowRight: [step, 0], ArrowUp: [0, -step], ArrowDown: [0, step],
+      }
+      const delta = nudge[event.key]
+      if (!delta) return
+      event.preventDefault()
+      moveBlock(selectedNode.id, {
+        x: Math.max(0, selectedNode.position.x + delta[0]),
+        y: Math.max(0, selectedNode.position.y + delta[1]),
+      })
+    }
+    document.addEventListener('keydown', handle)
+    return () => document.removeEventListener('keydown', handle)
+  }, [duplicateBlock, moveBlock, redo, removeBlock, selectedNode, undo])
+
   const errors = report.diagnostics.filter((entry) => entry.severity === 'error')
   const warnings = report.diagnostics.filter((entry) => entry.severity === 'warning')
   const blocked = Boolean(parseError) || !report.compilable
@@ -70,6 +130,21 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onBuild, 
         </span>
 
         <span className="builder-toolbar-spacer" />
+
+        <button aria-label="Undo" title="Undo (Ctrl+Z)" onClick={undo} disabled={!builder.canUndo}>
+          <Undo2 size={13} />
+        </button>
+        <button aria-label="Redo" title="Redo (Ctrl+Shift+Z)" onClick={redo} disabled={!builder.canRedo}>
+          <Redo2 size={13} />
+        </button>
+        <button
+          aria-label="Duplicate block"
+          title="Duplicate the selected block (Ctrl+D)"
+          onClick={() => selectedNode && duplicateBlock(selectedNode.id)}
+          disabled={!selectedNode}
+        >
+          <Copy size={13} />
+        </button>
 
         <select
           aria-label="Compile target"
@@ -110,6 +185,7 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onBuild, 
             readOnly={Boolean(parseError)}
             onSelect={builder.select}
             onDropBlock={(type, position) => builder.addBlock(type, position)}
+        onQuickAdd={builder.addConnectedBlock}
         onMove={builder.moveBlock}
             onRemove={builder.removeBlock}
             onValue={builder.setValue}

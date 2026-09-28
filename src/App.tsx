@@ -1665,6 +1665,7 @@ export default function App() {
         pluginProblems={pluginLoad.problems}
         disabled={Boolean(builder.parseError)}
         onAdd={(type) => { setBuilderOpen(true); builder.addBlock(type) }}
+        onAddRecipe={(id) => { setBuilderOpen(true); builder.addRecipe(id) }}
         onAddExamplePlugin={createExamplePlugin}
       />
     )

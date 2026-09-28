@@ -18,6 +18,8 @@ import { builtinBlocks } from './blockLibrary'
 import { createRegistry, type BlockDefinition, type BlockGraph, type Connection } from './blockSchema'
 import { generateProgram, type GeneratedProgram } from './codeGenerator'
 import { parseProgram, type ParseFailure } from './codeParser'
+import { EMPTY_HISTORY, canRedo, canUndo, record, redo, undo, type History } from './history'
+import { instantiate, recipeById } from './recipes'
 import { checkIntegrity, type IntegrityReport } from './integrity'
 import { compile, type CompileResult, type CompileTarget } from './compile'
 import { EMPTY_SCHEMA, type Column, type DataSchema, type Table } from './dataSchema'
@@ -76,6 +78,23 @@ export type BuilderState = {
   /** The block the traceback last pointed at, for the canvas to reveal. */
   revealed?: string
   addBlock: (type: string, position?: { x: number; y: number }) => void
+  /**
+   * Creates a block already wired to the pin a wire was dragged from: one
+   * gesture where placing and connecting used to be three.
+   */
+  addConnectedBlock: (
+    type: string,
+    position: { x: number; y: number },
+    link: { node: string; port: string; side: 'in' | 'out' },
+  ) => void
+  /** Copies a block, values and all, just below itself. */
+  duplicateBlock: (id: string) => void
+  /** Drops a whole working feature onto the canvas. */
+  addRecipe: (id: string) => void
+  undo: () => void
+  redo: () => void
+  canUndo: boolean
+  canRedo: boolean
   moveBlock: (id: string, position: { x: number; y: number }) => void
   removeBlock: (id: string) => void
   setValue: (id: string, portId: string, value: string | number | boolean) => void
@@ -130,6 +149,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [parseError, setParseError] = useState<ParseFailure | undefined>(undefined)
   const [selected, setSelected] = useState<string | undefined>(undefined)
   const [revealed, setRevealed] = useState<string | undefined>(undefined)
+  const [history, setHistory] = useState<History>(EMPTY_HISTORY)
   const [logs, setLogs] = useState<string[]>([])
   const [failure, setFailure] = useState<Traceback | undefined>(undefined)
 
@@ -175,13 +195,34 @@ export function useBuilder(host: BuilderHost): BuilderState {
     }
   }, [persisted])
 
-  /** Applies a canvas edit, and rewrites the text to match it. */
-  const apply = useCallback((next: BlockGraph) => {
+  /**
+   * Applies a canvas edit, records the graph it replaced, and rewrites the
+   * text to match.
+   *
+   * `coalesce` names the gesture: a drag or a run of keystrokes in one field
+   * shares a key, so the whole gesture undoes in one step rather than fifty.
+   */
+  const apply = useCallback((next: BlockGraph, coalesce?: string) => {
     if (timer.current) clearTimeout(timer.current)
+    setHistory((current) => record(current, graph, { coalesce }))
     setGraph(next)
     setCode(generateProgram(next, registry).code)
     setParseError(undefined)
+  }, [graph, registry])
+
+  /** Restores a graph from the history stacks. */
+  const restore = useCallback((step: { history: History; graph: BlockGraph } | undefined) => {
+    if (!step) return
+    if (timer.current) clearTimeout(timer.current)
+    setHistory(step.history)
+    setGraph(step.graph)
+    setCode(generateProgram(step.graph, registry).code)
+    setParseError(undefined)
+    setSelected((current) => (step.graph.nodes.some((node) => node.id === current) ? current : undefined))
   }, [registry])
+
+  const undoAction = useCallback(() => restore(undo(history, graph)), [graph, history, restore])
+  const redoAction = useCallback(() => restore(redo(history, graph)), [graph, history, restore])
 
   const addBlock = useCallback((type: string, position?: { x: number; y: number }) => {
     if (!registry.get(type)) return
@@ -192,8 +233,72 @@ export function useBuilder(host: BuilderHost): BuilderState {
     setSelected(node.id)
   }, [apply, graph, registry])
 
+  /**
+   * The quick add: a block created and connected in the same gesture.
+   *
+   * The link is attempted after the block exists, and a refusal is reported
+   * rather than swallowed -- dragging a String output into a List input
+   * should say so, not quietly leave an unconnected block behind.
+   */
+  const addConnectedBlock = useCallback((
+    type: string,
+    position: { x: number; y: number },
+    to: { node: string; port: string; side: 'in' | 'out' },
+  ) => {
+    const definition = registry.get(type)
+    if (!definition) return
+    const node = createNode(type, position)
+    const withNode = addNode(graph, node)
+
+    // Take the first port on the new block the drag could legally reach, so
+    // dragging an Exec pin lands on Run and a String output lands on the
+    // first String input rather than on nothing.
+    const candidates = to.side === 'out'
+      ? definition.inputs
+      : [...definition.outputs, ...(definition.slots ?? [])]
+
+    let next = withNode
+    let linked = false
+    for (const port of candidates) {
+      const attempt = to.side === 'out'
+        ? connectPortsIn(withNode, registry, { node: to.node, port: to.port }, { node: node.id, port: port.id })
+        : connectPortsIn(withNode, registry, { node: node.id, port: port.id }, { node: to.node, port: to.port })
+      if (attempt.rejected) continue
+      next = attempt.graph
+      linked = true
+      break
+    }
+
+    apply(next)
+    setSelected(node.id)
+    if (!linked) notify(`${definition.label} has no port that fits that connection`)
+  }, [apply, graph, notify, registry])
+
+  const duplicateBlock = useCallback((id: string) => {
+    const node = graph.nodes.find((candidate) => candidate.id === id)
+    if (!node) return
+    const copy = createNode(node.type, { x: node.position.x + 32, y: node.position.y + 32 })
+    copy.values = { ...node.values }
+    apply(addNode(graph, copy))
+    setSelected(copy.id)
+  }, [apply, graph])
+
+  /** Drops a whole feature in, already wired. */
+  const addRecipe = useCallback((id: string) => {
+    const recipe = recipeById(id)
+    if (!recipe) return
+    const result = instantiate(recipe, graph, registry)
+    apply(result.graph)
+    setSelected(result.added[0])
+    notify(
+      result.rejected.length
+        ? `${recipe.name} added, but ${result.rejected.length} link was refused`
+        : `Added ${recipe.outcome}`,
+    )
+  }, [apply, graph, notify, registry])
+
   const moveBlock = useCallback((id: string, position: { x: number; y: number }) => {
-    apply(moveNode(graph, id, position))
+    apply(moveNode(graph, id, position), `move:${id}`)
   }, [apply, graph])
 
   const removeBlock = useCallback((id: string) => {
@@ -202,7 +307,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   }, [apply, graph])
 
   const setValue = useCallback((id: string, portId: string, value: string | number | boolean) => {
-    apply(setNodeValue(graph, id, portId, value))
+    apply(setNodeValue(graph, id, portId, value), `value:${id}:${portId}`)
   }, [apply, graph])
 
   const link = useCallback((from: Connection['from'], to: Connection['to']) => {
@@ -344,6 +449,13 @@ export function useBuilder(host: BuilderHost): BuilderState {
     selected,
     revealed,
     addBlock,
+    addConnectedBlock,
+    duplicateBlock,
+    addRecipe,
+    undo: undoAction,
+    redo: redoAction,
+    canUndo: canUndo(history),
+    canRedo: canRedo(history),
     moveBlock,
     removeBlock,
     setValue,

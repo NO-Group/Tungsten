@@ -257,7 +257,11 @@ None of these components reads `localStorage` or calls `window.tungsten`: deskto
 Open it from the activity bar. Drag a block out of the library onto the canvas,
 drag a wire from one pin to another — or push two blocks together until they
 snap onto the same execution chain — and the code writes itself in the pane
-beside the canvas. Edit that code by hand and the blocks follow, 300ms after
+beside the canvas. Start from a recipe when the shape is a familiar one: a
+sign-in form, an OAuth button, a list drawn from a table, an API call, all
+wired in a click. Drag a wire into empty space and the quick-add menu offers
+only the blocks that fit it, then creates and connects one in the same
+gesture. Ctrl+Z undoes a whole gesture, Ctrl+D duplicates, the arrows nudge. Edit that code by hand and the blocks follow, 300ms after
 you stop typing; break the syntax and the canvas goes read-only with a banner
 instead of guessing. An integrity checker refuses to compile a graph with a
 type mismatch, a cycle or an unreachable read, and every diagnostic names the

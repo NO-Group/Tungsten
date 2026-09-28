@@ -10,6 +10,7 @@ import { useMemo, useState } from 'react'
 
 import type { BlockRegistry } from '../../builder/blockSchema'
 import { BLOCK_DRAG_TYPE } from '../../builder/canvasLayout'
+import { recipes } from '../../builder/recipes'
 
 export type BlockPaletteProps = {
   registry: BlockRegistry
@@ -19,11 +20,15 @@ export type BlockPaletteProps = {
   pluginProblems?: Array<{ path: string; message: string }>
   disabled?: boolean
   onAdd: (type: string) => void
+  /** Drops a whole feature onto the canvas, wired and ready to run. */
+  onAddRecipe?: (id: string) => void
   onAddExamplePlugin?: () => void
 }
 
 export function BlockPalette(props: BlockPaletteProps) {
-  const { registry, pluginCount = 0, pluginProblems = [], disabled, onAdd, onAddExamplePlugin } = props
+  const {
+    registry, pluginCount = 0, pluginProblems = [], disabled, onAdd, onAddRecipe, onAddExamplePlugin,
+  } = props
   const [query, setQuery] = useState('')
   const needle = query.trim().toLowerCase()
 
@@ -54,6 +59,31 @@ export function BlockPalette(props: BlockPaletteProps) {
       />
 
       <div className="block-palette-groups">
+        {/*
+          Recipes come first because they are the fastest way to a running
+          app: one click for the nine blocks a sign-in form would take.
+        */}
+        {Boolean(onAddRecipe) && !needle && (
+          <section>
+            <div className="section-heading">
+              <span>START FROM</span>
+              <span className="count-pill">{recipes.length}</span>
+            </div>
+            {recipes.map((recipe) => (
+              <button
+                key={recipe.id}
+                className="block-palette-item recipe"
+                disabled={disabled}
+                title={recipe.summary}
+                onClick={() => onAddRecipe?.(recipe.id)}
+              >
+                <span className="block-palette-label">{recipe.name}</span>
+                <span className="block-palette-detail">{recipe.summary}</span>
+              </button>
+            ))}
+          </section>
+        )}
+
         {groups.map((group) => (
           <section key={group.category}>
             <div className="section-heading">

@@ -14,6 +14,7 @@ import { PARSE_DEBOUNCE } from '../../builder/useBuilder'
 import { PREVIEW_CHANNEL } from '../../builder/previewRuntime'
 import { EXAMPLE_PLUGIN, loadPluginBlocks } from '../../builder/pluginBlocks'
 import { builtinBlocks } from '../../builder/blockLibrary'
+import { recipes } from '../../builder/recipes'
 import { BLOCK_DRAG_TYPE, GRID } from '../../builder/canvasLayout'
 
 // Monaco cannot run in jsdom; the code pane becomes a textarea that behaves
@@ -47,6 +48,7 @@ function Harness() {
         pluginCount={plugins.blocks.length}
         pluginProblems={plugins.problems}
         onAdd={builder.addBlock}
+        onAddRecipe={builder.addRecipe}
       />
       <BuilderView
         builder={builder}
@@ -141,6 +143,11 @@ function firePointer(target: Element | Window, kind: string, at: { x: number; y:
   act(() => { target.dispatchEvent(event) })
 }
 
+/** A key, on the document, the way the builder listens for it. */
+function press(key: string, modifiers: Partial<KeyboardEventInit> = {}) {
+  act(() => { document.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, ...modifiers })) })
+}
+
 function fireMouse(target: Element | Window, kind: string, at: { x: number; y: number }) {
   const event = new MouseEvent(kind, { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y })
   act(() => { target.dispatchEvent(event) })
@@ -170,10 +177,10 @@ describe('the builder surface', () => {
 
   it('lists every built-in block plus the workspace plugins, grouped', () => {
     // Counted against the library itself, so adding a block does not mean
-    // editing a number here.
-    expect(container.querySelectorAll('.block-palette-item').length)
+    // editing a number here. Recipes sit in their own section above them.
+    expect(container.querySelectorAll('.block-palette-item:not(.recipe)').length)
       .toBe(builtinBlocks.length + plugins.blocks.length)
-    expect(container.querySelectorAll('.block-palette-groups section').length).toBe(7)
+    expect(container.querySelectorAll('.block-palette-groups section').length).toBe(8)
     expect(container.querySelector('.block-palette-footer')?.textContent).toContain('1 from plugins')
   })
 
@@ -544,5 +551,144 @@ describe('pieces that snap together', () => {
     fireMouse(window, 'mouseup', { x: 620, y: 500 })
     expect(container.querySelectorAll('.builder-wire').length).toBe(0)
     expect(nodes()[1].style.left).toBe('600px')
+  })
+})
+
+describe('building at speed', () => {
+  it('drops a whole feature in one click, ready to compile', () => {
+    click(palette('Sign-in form'))
+
+    const recipe = recipes.find((entry) => entry.id === 'signin-form')!
+    expect(container.querySelectorAll('.builder-node')).toHaveLength(recipe.blocks.length)
+    expect(container.querySelectorAll('.builder-wire')).toHaveLength(recipe.links.length)
+    expect(code()).toContain('auth.signUp')
+    expect(code()).toContain('render.input')
+    expect(code()).toContain('email')
+    // Nothing red: a starter that arrives broken is worse than no starter.
+    expect(container.querySelector('.builder-state')?.textContent).toContain('Ready to compile')
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('sign-in form'))
+  })
+
+  it('stacks a second recipe under the first rather than on top of it', () => {
+    click(palette('Call an API'))
+    const firstLowest = Math.max(...nodes().map((node) => Number.parseInt(node.style.top, 10)))
+    const firstCount = nodes().length
+
+    click(palette('List a table'))
+    expect(nodes().length).toBeGreaterThan(firstCount)
+    expect(Math.max(...nodes().map((node) => Number.parseInt(node.style.top, 10)))).toBeGreaterThan(firstLowest)
+    expect(container.querySelector('.builder-state')?.textContent).toContain('Ready to compile')
+  })
+
+  it('offers only the blocks that fit, when a wire is dropped on empty canvas', () => {
+    click(palette('On App Start'))
+    firePointer(pin('Output Then of On App Start'), 'pointerdown', { x: 260, y: 60 })
+    firePointer(window, 'pointermove', { x: 520, y: 300 })
+    firePointer(window, 'pointerup', { x: 520, y: 300 })
+
+    const menu = container.querySelector('.builder-quick-add')
+    expect(menu).not.toBeNull()
+    const offered = [...menu!.querySelectorAll('.builder-quick-add-list button span')].map((item) => item.textContent)
+    // Exec out: only blocks with a Run pin. A pure value block has none.
+    expect(offered).toContain('Log')
+    expect(offered).not.toContain('Text Value')
+  })
+
+  it('creates the block and connects it in the same gesture', () => {
+    click(palette('On App Start'))
+    firePointer(pin('Output Then of On App Start'), 'pointerdown', { x: 260, y: 60 })
+    firePointer(window, 'pointermove', { x: 520, y: 300 })
+    firePointer(window, 'pointerup', { x: 520, y: 300 })
+
+    const log = [...container.querySelectorAll('.builder-quick-add-list button')]
+      .find((button) => button.querySelector('span')?.textContent === 'Log')!
+    click(log)
+
+    expect(nodes()).toHaveLength(2)
+    expect(container.querySelectorAll('.builder-wire')).toHaveLength(1)
+    expect(code()).toContain('console.log')
+    expect(container.querySelector('.builder-quick-add')).toBeNull()
+  })
+
+  it('filters the quick-add list, and Enter takes the first match', () => {
+    click(palette('On App Start'))
+    firePointer(pin('Output Then of On App Start'), 'pointerdown', { x: 260, y: 60 })
+    firePointer(window, 'pointermove', { x: 520, y: 300 })
+    firePointer(window, 'pointerup', { x: 520, y: 300 })
+
+    const filter = container.querySelector<HTMLInputElement>('[aria-label="Add a connected block"]')!
+    type(filter, 'http')
+    const offered = [...container.querySelectorAll('.builder-quick-add-list button span')].map((item) => item.textContent)
+    expect(offered).toEqual(['HTTP Request'])
+
+    act(() => { filter.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+    expect(code()).toContain('http.request')
+  })
+
+  it('undoes and redoes a whole gesture, not every frame of it', () => {
+    click(palette('On App Start'))
+    const node = nodes()[0]
+    const startLeft = node.style.left
+
+    fireMouse(node, 'mousedown', { x: 60, y: 20 })
+    for (let step = 0; step < 6; step += 1) fireMouse(window, 'mousemove', { x: 300 + step * 20, y: 400 })
+    fireMouse(window, 'mouseup', { x: 400, y: 400 })
+    expect(nodes()[0].style.left).not.toBe(startLeft)
+
+    press('z', { ctrlKey: true })
+    expect(nodes()[0].style.left).toBe(startLeft)
+
+    press('z', { ctrlKey: true, shiftKey: true })
+    expect(nodes()[0].style.left).not.toBe(startLeft)
+  })
+
+  it('undoes a recipe in one step', () => {
+    click(palette('Call an API'))
+    expect(nodes().length).toBeGreaterThan(3)
+    press('z', { ctrlKey: true })
+    expect(nodes()).toHaveLength(0)
+    expect(code()).toContain('No events yet')
+  })
+
+  it('duplicates the selected block with its values', () => {
+    click(palette('Text Value'))
+    type(container.querySelector<HTMLInputElement>('[aria-label="Value value"]')!, 'hello')
+    press('d', { ctrlKey: true })
+
+    expect(nodes()).toHaveLength(2)
+    const values = [...container.querySelectorAll<HTMLInputElement>('[aria-label="Value value"]')].map((input) => input.value)
+    expect(values).toEqual(['hello', 'hello'])
+  })
+
+  it('deletes the selected block with the keyboard, and undoes that too', () => {
+    click(palette('Log'))
+    press('Delete')
+    expect(nodes()).toHaveLength(0)
+    press('z', { ctrlKey: true })
+    expect(nodes()).toHaveLength(1)
+  })
+
+  it('nudges the selected block with the arrow keys', () => {
+    click(palette('Log'))
+    const before = Number.parseInt(nodes()[0].style.left, 10)
+    press('ArrowRight')
+    expect(Number.parseInt(nodes()[0].style.left, 10)).toBe(before + 8)
+    press('ArrowRight', { shiftKey: true })
+    expect(Number.parseInt(nodes()[0].style.left, 10)).toBe(before + 40)
+  })
+
+  it('leaves the keyboard alone while a field has focus', () => {
+    click(palette('Text Value'))
+    const field = container.querySelector<HTMLInputElement>('[aria-label="Value value"]')!
+    act(() => { field.focus() })
+    act(() => { field.dispatchEvent(new KeyboardEvent('keydown', { key: 'Delete', bubbles: true })) })
+    expect(nodes()).toHaveLength(1)
+  })
+
+  it('greys the undo button until there is something to undo', () => {
+    const undoButton = container.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!
+    expect(undoButton.disabled).toBe(true)
+    click(palette('Log'))
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.disabled).toBe(false)
   })
 })

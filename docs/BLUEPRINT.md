@@ -23,9 +23,25 @@ Three ways in, because different hands reach for different ones:
   the sequence, and snapping must never silently replace a connection you
   made on purpose.
 
-The geometry and the snapping rules are pure functions in
-`src/builder/canvasLayout.ts`, so they are tested as rules rather than through
-a rendered canvas.
+And once a canvas is moving, the things that make it fast:
+
+- **Start from a recipe.** Six of them ship — a sign-in form, OAuth, listing a
+  table, calling an API, sign-up writing a profile row, a session guard. One
+  click drops the whole feature in, wired, and `recipes.test.ts` holds every
+  one to the same bar as hand-built work: no refused link, no integrity
+  error, and a clean round trip through the parser.
+- **Quick add.** Drag a wire into empty space and a filtered menu opens
+  offering *only* the blocks that pin can legally reach. Pick one and it is
+  created, positioned and connected in a single gesture.
+- **Undo everything**, Ctrl+Z / Ctrl+Shift+Z, with gestures coalesced: a drag
+  is one step, not fifty frames.
+- **Keyboard**: Ctrl+D duplicates the selection with its values, Delete
+  removes it, the arrows nudge by a grid step and by four with Shift. Never
+  while a field has focus.
+
+The geometry, the snapping rules and the undo stack are pure functions in
+`src/builder/canvasLayout.ts` and `src/builder/history.ts`, so they are tested
+as rules rather than through a rendered canvas.
 
 ## Part 1 — Core engine and bidirectional sync
 
@@ -72,6 +88,7 @@ byte-stable for every block in the library.
 | Canvas pans to the faulty block, glowing red border | Yes | `src/builder/traceback.ts`, `BuilderView.tsx` |
 | Plain-English fix text | Yes — every diagnostic carries a mandatory `fix` | `integrity.ts` |
 | Plugin SDK: `defineBlock({ type, category, inputs, outputs, codeGenerator })` | Yes | `src/builder/blockSchema.ts` |
+| Undo, quick add, duplicate, recipes | Yes | `history.ts`, `recipes.ts`, `BuilderCanvas.tsx` |
 | Local plugins directory scanned and registered at startup | Yes, `plugins/*.block.json` | `src/builder/pluginBlocks.ts` |
 
 The eight integrity rules are `unknown-block`, `type-mismatch`,

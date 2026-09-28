@@ -17,10 +17,10 @@
  * Then pin and it snaps into place, connected, the way two pieces do.
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Trash2 } from 'lucide-react'
 
-import type { BlockGraph, BlockRegistry, Connection, Port } from '../../builder/blockSchema'
+import { isAssignable, type BlockGraph, type BlockRegistry, type Connection, type Port } from '../../builder/blockSchema'
 import type { BuilderDiagnostic, IntegrityReport } from '../../builder/integrity'
 import { incoming } from '../../builder/graph'
 import {
@@ -45,6 +45,12 @@ export type BuilderCanvasProps = {
   onUnlink: (connectionId: string) => void
   /** A block dragged out of the library and dropped on the canvas. */
   onDropBlock: (type: string, position: { x: number; y: number }) => void
+  /** A wire dropped on empty canvas: make this block and connect it. */
+  onQuickAdd: (
+    type: string,
+    position: { x: number; y: number },
+    link: { node: string; port: string; side: 'in' | 'out' },
+  ) => void
 }
 
 type Pending = { node: string; port: string; type: Port['type'] }
@@ -52,12 +58,13 @@ type Linking = Pending & { side: 'in' | 'out'; x: number; y: number }
 
 export function BuilderCanvas(props: BuilderCanvasProps) {
   const { graph, registry, report, diagnostics, selected, revealed, readOnly } = props
-  const { onSelect, onMove, onRemove, onValue, onLink, onUnlink, onDropBlock } = props
+  const { onSelect, onMove, onRemove, onValue, onLink, onUnlink, onDropBlock, onQuickAdd } = props
 
   const [pending, setPending] = useState<Pending | undefined>(undefined)
   const [linking, setLinking] = useState<Linking | undefined>(undefined)
   const [snap, setSnap] = useState<Snap | undefined>(undefined)
   const [dropHint, setDropHint] = useState<{ x: number; y: number } | undefined>(undefined)
+  const [quickAdd, setQuickAdd] = useState<(Linking & { query: string }) | undefined>(undefined)
 
   const surface = useRef<HTMLDivElement | null>(null)
   const drag = useRef<{ id: string; dx: number; dy: number; moved: boolean } | undefined>(undefined)
@@ -129,7 +136,14 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
       draggedWire.current = true
       setLinking((current) => (current ? { ...current, x: point.x, y: point.y } : current))
     }
-    const up = () => setLinking(undefined)
+    const up = () => {
+      // Released over a pin? That handler has already linked and cleared
+      // this. Released over nothing means "make me something to connect to".
+      setLinking((current) => {
+        if (current && draggedWire.current) setQuickAdd({ ...current, query: '' })
+        return undefined
+      })
+    }
     window.addEventListener('pointermove', move)
     window.addEventListener('pointerup', up)
     return () => {
@@ -143,6 +157,7 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
       if (event.key !== 'Escape') return
       setPending(undefined)
       setLinking(undefined)
+      setQuickAdd(undefined)
     }
     window.addEventListener('keydown', escape)
     return () => window.removeEventListener('keydown', escape)
@@ -181,6 +196,41 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
     setLinking(undefined)
     setPending(undefined)
   }, [linking, onLink])
+
+  /**
+   * What could go on the end of this wire.
+   *
+   * Only blocks with a port the dragged pin can legally reach: offering a
+   * block that would be refused the moment it is chosen is worse than not
+   * offering it.
+   */
+  const quickAddChoices = useMemo(() => {
+    if (!quickAdd) return []
+    const needle = quickAdd.query.trim().toLowerCase()
+    return registry.all().filter((definition) => {
+      const ports = quickAdd.side === 'out'
+        ? definition.inputs
+        : [...definition.outputs, ...(definition.slots ?? [])]
+      const fits = ports.some((port) => (quickAdd.side === 'out'
+        ? isAssignable(quickAdd.type, port.type)
+        : isAssignable(port.type, quickAdd.type)))
+      if (!fits) return false
+      return !needle
+        || definition.label.toLowerCase().includes(needle)
+        || definition.type.toLowerCase().includes(needle)
+        || definition.description.toLowerCase().includes(needle)
+    })
+  }, [quickAdd, registry])
+
+  const commitQuickAdd = useCallback((type: string) => {
+    if (!quickAdd) return
+    onQuickAdd(
+      type,
+      { x: round(quickAdd.x - (quickAdd.side === 'in' ? NODE_WIDTH + 40 : 0)), y: round(quickAdd.y - HEADER_HEIGHT) },
+      { node: quickAdd.node, port: quickAdd.port, side: quickAdd.side },
+    )
+    setQuickAdd(undefined)
+  }, [onQuickAdd, quickAdd])
 
   const linkSource = linking
     ? portPosition(graph, registry, linking.node, linking.port, linking.side)
@@ -340,6 +390,36 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
         <p className="builder-empty">
           Drag a block out of the library and drop it here. Events go first; everything else hangs off one.
         </p>
+      )}
+
+      {quickAdd && (
+        <div
+          className="builder-quick-add"
+          style={{ left: quickAdd.x, top: quickAdd.y }}
+          onMouseDown={(event) => event.stopPropagation()}
+        >
+          <input
+            autoFocus
+            className="builder-quick-add-filter"
+            aria-label="Add a connected block"
+            placeholder={`Connect ${quickAdd.type === 'Exec' ? 'the next step' : `a ${quickAdd.type}`}…`}
+            value={quickAdd.query}
+            onChange={(event) => setQuickAdd((current) => (current ? { ...current, query: event.target.value } : current))}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && quickAddChoices.length) commitQuickAdd(quickAddChoices[0].type)
+              if (event.key === 'Escape') setQuickAdd(undefined)
+            }}
+          />
+          <div className="builder-quick-add-list">
+            {quickAddChoices.map((definition) => (
+              <button key={definition.type} onClick={() => commitQuickAdd(definition.type)}>
+                <span>{definition.label}</span>
+                <small>{definition.description}</small>
+              </button>
+            ))}
+            {!quickAddChoices.length && <p>Nothing fits that connection.</p>}
+          </div>
+        </div>
       )}
 
       {(pending || linking) && (
