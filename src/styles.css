@@ -140,6 +140,24 @@ button:focus-visible, input:focus-visible, textarea:focus-visible { outline: 1px
 .ide.high-contrast { --border: var(--faint-bright); }
 .ide.high-contrast button:focus-visible, .ide.high-contrast input:focus-visible, .ide.high-contrast textarea:focus-visible, .ide.high-contrast select:focus-visible { outline: 2px solid var(--accent-bright) !important; outline-offset: -2px; }
 
+/*
+ * Zen mode removes the chrome rather than dimming it: the title bar, activity
+ * bar, side bar, panel and status bar are all unmounted, so the editor is the
+ * only thing on screen. The editor is centred too, because a full-width line
+ * of prose on a wide display is unreadable -- which is what centred layout
+ * does on its own.
+ */
+.ide.zen-mode .main-stage { padding: 0; }
+.ide.zen-mode .editor-tabs { background: var(--bg); }
+.ide.centered-layout .editor-area,
+.ide.zen-mode .editor-area {
+  max-width: 1120px;
+  width: 100%;
+  margin: 0 auto;
+}
+.ide.centered-layout .editor-area.with-side-preview,
+.ide.zen-mode .editor-area.with-side-preview { max-width: none; }
+
 /* Title bar */
 .titlebar {
   min-width: 0;

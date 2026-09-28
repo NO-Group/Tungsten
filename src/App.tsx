@@ -1677,8 +1677,8 @@ export default function App() {
 
 
   return (
-    <div className={`ide ${settings.reducedMotion ? 'reduced-motion' : ''} ${settings.highContrast ? 'high-contrast' : ''}`} onClick={() => { if (menuOpen) setMenuOpen(null); if (contextMenu) setContextMenu(null) }}>
-      <TitleBar
+    <div className={`ide ${zenMode ? 'zen-mode' : ''} ${centeredLayout ? 'centered-layout' : ''} ${settings.reducedMotion ? 'reduced-motion' : ''} ${settings.highContrast ? 'high-contrast' : ''}`} onClick={() => { if (menuOpen) setMenuOpen(null); if (contextMenu) setContextMenu(null) }}>
+      {!zenMode && <TitleBar
         title={`${workspaceName} — Tungsten`}
         menus={menuBar}
         openMenu={menuOpen}
@@ -1693,10 +1693,10 @@ export default function App() {
         onTogglePanel={() => setPanelOpen((value) => !value)}
         sidePreview={sidePreview}
         onToggleSidePreview={() => setSidePreview((value) => !value)}
-      />
+      />}
 
       <main className="workbench">
-        <ActivityBar
+        {activityBarVisible && !zenMode && <ActivityBar
           active={activity}
           sidebarVisible={sidebarVisible}
           badges={{ source: sourceChanges.length, tests: projectInfo.tests.length }}
@@ -1705,9 +1705,9 @@ export default function App() {
             selectActivity(id)
           }}
           onOpenSettings={() => setSettingsOpen(true)}
-        />
+        />}
 
-        {sidebarVisible && <aside className="sidebar" style={{ width: sidebarWidth }}>
+        {sidebarVisible && !zenMode && <aside className="sidebar" style={{ width: sidebarWidth }}>
           {sidebarContent()}
           <div className="resize-handle vertical" onMouseDown={startSidebarResize} />
         </aside>}
@@ -1733,7 +1733,7 @@ export default function App() {
               ))}
             </div>
 
-            {panelOpen && <section className="bottom-panel" style={{ height: panelHeight }}>
+            {panelOpen && !zenMode && <section className="bottom-panel" style={{ height: panelHeight }}>
               <div className="resize-handle horizontal" onMouseDown={startPanelResize} />
               <PanelHeader
                 activeTab={panelTab}
@@ -1762,7 +1762,7 @@ export default function App() {
         </section>
       </main>
 
-      <StatusBar
+      {!zenMode && <StatusBar
         remoteConnected={remoteConnected}
         onOpenRemote={() => { remote.setOpen(true); remote.refreshProfiles() }}
         branch={gitInfo.branch}
@@ -1789,7 +1789,7 @@ export default function App() {
           if (updateState === 'Restart to update') void window.tungsten?.installUpdate()
           else void window.tungsten?.checkForUpdates()
         }}
-      />
+      />}
 
       {palette.open && (
         <CommandPalette
