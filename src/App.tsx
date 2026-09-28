@@ -9,6 +9,7 @@ import {
   ChevronDown,
   ChevronRight,
   ChevronsDownUp,
+  Code2,
   CircleAlert,
   CircleCheck,
   CircleStop,
@@ -23,6 +24,7 @@ import {
   FlaskConical,
   Files,
   FolderOpen,
+  FileDown,
   FolderPlus,
   GitBranch,
   GitCommitHorizontal,
@@ -37,6 +39,7 @@ import {
   PanelLeftClose,
   Pause,
   Play,
+  Puzzle,
   Plus,
   Rocket,
   RefreshCw,
@@ -80,6 +83,9 @@ import { DebugView } from './components/sidebar/DebugView'
 import { TestingView } from './components/sidebar/TestingView'
 import { ExtensionsView } from './components/sidebar/ExtensionsView'
 import { ExplorerView } from './components/sidebar/ExplorerView'
+import { BlockPalette } from './components/builder/BlockPalette'
+import { BuilderView } from './components/builder/BuilderView'
+import { useBuilder } from './builder/useBuilder'
 import { TerminalPanel } from './components/panel/TerminalPanel'
 import {
   type EditorGroupLayout,
@@ -589,6 +595,27 @@ export default function App() {
     setDirty((current) => new Set(current).add(path))
   }, [])
 
+  /**
+   * The visual builder.
+   *
+   * It owns its own graph and keeps the generated code beside it; the
+   * workbench only decides when it is on screen and where its output goes.
+   */
+  const builder = useBuilder({ notify })
+  const [builderOpen, setBuilderOpen] = useState(false)
+  const BUILDER_OUTPUT = 'src/generated/blocks.ts'
+
+  /** Writes the generated program into the workspace as an ordinary file. */
+  const exportBuilderCode = useCallback((code: string) => {
+    setFiles((current) => (current.some((file) => file.path === BUILDER_OUTPUT)
+      ? current.map((file) => (file.path === BUILDER_OUTPUT ? { ...file, content: code } : file))
+      : [...current, { path: BUILDER_OUTPUT, content: code, language: languageForPath(BUILDER_OUTPUT) }]))
+    setDirty((current) => new Set(current).add(BUILDER_OUTPUT))
+    setBuilderOpen(false)
+    openFile(BUILDER_OUTPUT)
+    notify(`Blocks written to ${BUILDER_OUTPUT}`)
+  }, [notify, openFile])
+
   const buildPreview = useCallback(() => {
     const get = (path: string) => files.find((file) => file.path === path)?.content ?? ''
     const styles = get('src/styles.css')
@@ -763,7 +790,8 @@ export default function App() {
     gitOperation: gitOperation.operation || '',
     debugState: debugRunning ? (debugThreadId ? 'stopped' : 'running') : '',
     quickOpenOpen: palette.open,
-  }), [activeFile, activePath, activity, debugRunning, debugThreadId, dirty.size, focusedSurface, gitInfo.isRepository, gitOperation.operation, layout.groups.length, openTabs.length, palette.open, panelOpen, panelTab, remoteConnected, sidebarVisible, workspaceRoot, zenMode])
+    builderOpen,
+  }), [activeFile, builderOpen, activePath, activity, debugRunning, debugThreadId, dirty.size, focusedSurface, gitInfo.isRepository, gitOperation.operation, layout.groups.length, openTabs.length, palette.open, panelOpen, panelTab, remoteConnected, sidebarVisible, workspaceRoot, zenMode])
 
   const createProjectFromTemplate = async () => {
     if (!window.tungsten) {
@@ -908,6 +936,9 @@ export default function App() {
       { id: 'workbench.action.closeEditorsToTheRight', label: 'View: Close Editors to the Right', detail: 'Close every tab after the active one', icon: X, when: 'editorIsOpen', action: () => setLayout((current) => closeToTheRightInLayout(current, groupActiveEditor(current)?.path ?? '')) },
       { id: 'workbench.action.pinEditor', label: 'View: Toggle Pin Editor', detail: 'Pinned tabs survive Close Others', icon: Check, when: 'editorIsOpen', action: () => setLayout((current) => togglePinned(current, groupActiveEditor(current)?.path ?? '')) },
       { id: 'workbench.action.toggleGroupOrientation', label: 'View: Toggle Editor Group Layout', detail: layout.orientation === 'horizontal' ? 'Switch to stacked' : 'Switch to side-by-side', icon: SplitSquareHorizontal, when: 'multipleGroups', action: () => setLayout((current) => ({ ...current, orientation: current.orientation === 'horizontal' ? 'vertical' : 'horizontal' })) },
+      { id: 'builder.open', label: 'Builder: Open Visual Builder', detail: `${builder.graph.nodes.length} blocks on the canvas`, icon: Puzzle, action: () => { setBuilderOpen(true); showView('builder') } },
+      { id: 'builder.close', label: 'Builder: Back to the Editor', detail: 'Leave the canvas, keep the graph', icon: Code2, when: 'builderOpen', action: () => setBuilderOpen(false) },
+      { id: 'builder.writeFile', label: 'Builder: Write Generated Code to the Workspace', detail: builder.report.compilable ? `Write ${BUILDER_OUTPUT}` : 'Blocked: the graph has errors', icon: FileDown, when: 'builderOpen', action: () => { if (builder.report.compilable) exportBuilderCode(builder.program.code); else notify('Fix the integrity errors first') } },
       { id: 'workbench.action.toggleSidePreview', label: 'View: Toggle Side Preview', detail: sidePreview ? 'Close the live preview pane' : 'Open the live preview pane', icon: Eye, action: () => setSidePreview((value) => !value) },
       { id: 'workbench.action.closeEditorsInGroup', label: 'View: Close All Editors in Group', detail: `${openTabs.length} open`, icon: X, when: 'editorIsOpen', action: () => { openTabs.forEach((path) => closeTab(path)) } },
       // Tungsten uses a single editor group plus an optional side pane rather
@@ -1481,6 +1512,13 @@ export default function App() {
         onUninstall={project.uninstallExtension}
       />
     )
+    if (activity === 'builder') return (
+      <BlockPalette
+        registry={builder.registry}
+        disabled={Boolean(builder.parseError)}
+        onAdd={(type) => { setBuilderOpen(true); builder.addBlock(type) }}
+      />
+    )
     return (
       <ExplorerView
         workspaceName={workspaceName}
@@ -1717,6 +1755,7 @@ export default function App() {
           badges={{ source: sourceChanges.length, tests: projectInfo.tests.length }}
           onSelect={(id) => {
             if (id === 'source') void refreshGit()
+            if (id === 'builder') setBuilderOpen(true)
             selectActivity(id)
           }}
           onOpenSettings={() => setSettingsOpen(true)}
@@ -1729,24 +1768,34 @@ export default function App() {
 
         <section className="main-stage">
           <div className="editor-and-panel">
-            <div className={`editor-groups ${layout.orientation}`}>
-              {layout.groups.map((group) => (
-                <EditorGroup
-                  key={group.id}
-                  group={group}
-                  layout={layout}
-                  files={files}
-                  dirty={dirty}
-                  settings={editorOptions}
-                  theme={activeTheme}
-                  workspaceName={workspaceName}
-                  gitComparison={gitComparison}
-                  sidePreview={sidePreview}
-                  monaco={monacoBridge}
-                  actions={editorActions}
-                />
-              ))}
-            </div>
+            {builderOpen ? (
+              <BuilderView
+                builder={builder}
+                editorOptions={editorOptions.editor}
+                theme={monacoThemeName(activeTheme)}
+                onExport={exportBuilderCode}
+                onClose={() => setBuilderOpen(false)}
+              />
+            ) : (
+              <div className={`editor-groups ${layout.orientation}`}>
+                {layout.groups.map((group) => (
+                  <EditorGroup
+                    key={group.id}
+                    group={group}
+                    layout={layout}
+                    files={files}
+                    dirty={dirty}
+                    settings={editorOptions}
+                    theme={activeTheme}
+                    workspaceName={workspaceName}
+                    gitComparison={gitComparison}
+                    sidePreview={sidePreview}
+                    monaco={monacoBridge}
+                    actions={editorActions}
+                  />
+                ))}
+              </div>
+            )}
 
             {panelOpen && !zenMode && <section className="bottom-panel" style={{ height: panelHeight }}>
               <div className="resize-handle horizontal" onMouseDown={startPanelResize} />

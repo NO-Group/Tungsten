@@ -12,7 +12,7 @@
 export const WORKBENCH_LAYOUT_KEY = 'tungsten.workbench.v2'
 
 /** The six things the activity bar can show. */
-export type Activity = 'explorer' | 'search' | 'source' | 'debug' | 'tests' | 'extensions'
+export type Activity = 'explorer' | 'search' | 'source' | 'debug' | 'tests' | 'extensions' | 'builder'
 
 export type PersistedLayout = {
   sidebarVisible: boolean
