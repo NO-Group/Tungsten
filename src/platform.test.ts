@@ -249,6 +249,18 @@ describe('desktop bridge contract', () => {
     expect(code(model)).not.toContain('useState')
   })
 
+  it('keeps the workbench layout, and its persistence, in one place', () => {
+    const hook = readFileSync(new URL('./workbench/useWorkbenchLayout.ts', import.meta.url), 'utf8')
+    expect(renderer).toContain('const workbench = useWorkbenchLayout()')
+    expect(code(hook)).toContain('WORKBENCH_LAYOUT_KEY')
+    // Sizes are clamped on the way in, so a layout from a bigger screen
+    // cannot restore a panel taller than the window.
+    expect(code(hook)).toContain('clampPanelHeight(')
+    for (const call of ['tungsten.workbench.v2', 'setSidebarWidth(Math', 'setPanelHeight(Math']) {
+      expect(code(renderer), call).not.toContain(call)
+    }
+  })
+
   it('writes the product version down in exactly one place', () => {
     const manifest = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')) as { version: string }
     expect(APP_VERSION).toBe(manifest.version)

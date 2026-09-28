@@ -7,8 +7,11 @@
  */
 
 import { Blocks, BugPlay, CircleUserRound, FlaskConical, Files, GitBranch, Search, Settings } from 'lucide-react'
+import type { Activity } from '../workbench/workbenchLayout'
 
-export type Activity = 'explorer' | 'search' | 'source' | 'debug' | 'tests' | 'extensions'
+// The list of activities belongs to the layout model, which decides what
+// clicking one does; re-exported so callers of this bar have one import.
+export type { Activity } from '../workbench/workbenchLayout'
 
 const activityItems: Array<{ id: Activity; label: string; icon: typeof Files }> = [
   { id: 'explorer', label: 'Explorer', icon: Files },

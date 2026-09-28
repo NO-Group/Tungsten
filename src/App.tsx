@@ -58,7 +58,7 @@ import {
 import { PREVIEW_PATH, defaultFiles, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
 import { EditorGroup } from './components/EditorGroup'
 import { ContextMenu } from './components/ContextMenu'
-import { ActivityBar, type Activity } from './components/ActivityBar'
+import { ActivityBar } from './components/ActivityBar'
 import { PanelHeader } from './components/panel/PanelHeader'
 import { TitleBar, type Menu as AppMenu } from './components/TitleBar'
 import { StatusBar } from './components/StatusBar'
@@ -125,6 +125,7 @@ import { useGitService } from './git/useGitService'
 import { registerLanguageProviders } from './languages/monacoLanguageClient'
 import { registerSnippetProvider } from './languages/monacoSnippetProvider'
 import { useDiagnostics } from './languages/useDiagnostics'
+import { useWorkbenchLayout } from './workbench/useWorkbenchLayout'
 import { useTerminalSessions } from './terminal/useTerminalSessions'
 import { APP_VERSION } from './version'
 import './styles.css'
@@ -146,7 +147,6 @@ type CommandItem = {
 
 const WORKSPACE_KEY = 'tungsten.workspace.v1'
 const SETTINGS_KEY = 'tungsten.settings.v1'
-const WORKBENCH_LAYOUT_KEY = 'tungsten.workbench.v2'
 /** User keybinding overrides, keyed by command id. */
 const KEYBINDINGS_KEY = 'tungsten.keybindings.v2'
 const SNIPPETS_KEY = 'tungsten.snippets.v1'
@@ -182,11 +182,6 @@ function loadSettings() {
   }
 }
 
-function loadWorkbenchLayout() {
-  try { return JSON.parse(localStorage.getItem(WORKBENCH_LAYOUT_KEY) || '{}') as { sidebarWidth?: number; panelHeight?: number; sidebarVisible?: boolean; panelOpen?: boolean } }
-  catch { return {} }
-}
-
 /** User overrides map a command id to a keybinding string ('' disables it). */
 function loadUserKeybindings(): Record<string, string> {
   try { return JSON.parse(localStorage.getItem(KEYBINDINGS_KEY) || '{}') as Record<string, string> }
@@ -207,8 +202,17 @@ function mergeKeybindings(overrides: Record<string, string>): KeybindingRule[] {
 }
 
 export default function App() {
-  const [initialWorkbenchLayout] = useState(loadWorkbenchLayout)
   const [files, setFiles] = useState<WorkspaceFile[]>(loadFiles)
+  const workbench = useWorkbenchLayout()
+  const {
+    activity, sidebarVisible, setSidebarVisible, sidebarWidth,
+    panelOpen, setPanelOpen, panelHeight, panelTab, setPanelTab,
+    zenMode, setZenMode, activityBarVisible, setActivityBarVisible,
+    centeredLayout, setCenteredLayout, sidePreview, setSidePreview,
+    showView, selectActivity, showPanel, togglePanelMaximized,
+    startSidebarResize, startPanelResize,
+  } = workbench
+
   const [workspaceName, setWorkspaceName] = useState('forge')
   const [workspaceRoot, setWorkspaceRoot] = useState('')
   const [workspaceRoots, setWorkspaceRoots] = useState<Array<{ name: string; path: string; prefix: string }>>([])
@@ -241,12 +245,6 @@ export default function App() {
       return setGroupEditors(current, group.id, resolved)
     })
   }, [])
-  const [activity, setActivity] = useState<Activity>('explorer')
-  const [sidebarVisible, setSidebarVisible] = useState(initialWorkbenchLayout.sidebarVisible ?? true)
-  const [sidebarWidth, setSidebarWidth] = useState(initialWorkbenchLayout.sidebarWidth ?? 248)
-  const [panelOpen, setPanelOpen] = useState(initialWorkbenchLayout.panelOpen ?? true)
-  const [panelHeight, setPanelHeight] = useState(initialWorkbenchLayout.panelHeight ?? 225)
-  const [panelTab, setPanelTab] = useState('TERMINAL')
   const [dirty, setDirty] = useState<Set<string>>(new Set())
   const [cursor, setCursor] = useState({ line: 1, column: 1 })
   const [palette, setPalette] = useState<{ open: boolean; mode: PaletteMode }>({ open: false, mode: 'commands' })
@@ -273,9 +271,6 @@ export default function App() {
   const [pendingChords, setPendingChords] = useState<string[]>([])
   /** Which surface has focus, used for `when` clauses like `terminalFocus`. */
   const [focusedSurface, setFocusedSurface] = useState<'editor' | 'terminal' | 'input' | 'none'>('none')
-  const [zenMode, setZenMode] = useState(false)
-  const [activityBarVisible, setActivityBarVisible] = useState(true)
-  const [centeredLayout, setCenteredLayout] = useState(false)
   /** Recently closed editors, for Reopen Closed Editor. */
   const [closedTabs, setClosedTabs] = useState<string[]>([])
   /** Highlighted row in quick access, driven by the arrow keys. */
@@ -288,7 +283,6 @@ export default function App() {
   const [newFileName, setNewFileName] = useState('')
   const [renameTarget, setRenameTarget] = useState<string | null>(null)
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number; path: string } | null>(null)
-  const [sidePreview, setSidePreview] = useState(false)
   const [userSnippets, setUserSnippets] = useState<Snippet[]>(() => loadUserSnippets())
   const [snippetsOpen, setSnippetsOpen] = useState(false)
   const [settingsEditorOpen, setSettingsEditorOpen] = useState(false)
@@ -327,7 +321,7 @@ export default function App() {
     workspaceName,
     files,
     dirty,
-    revealTerminal: () => { setPanelTab('TERMINAL'); setPanelOpen(true) },
+    revealTerminal: () => showPanel('TERMINAL'),
   })
   const {
     tabs: terminalTabs, activeId: activeTerminalId, split: terminalSplit,
@@ -550,7 +544,7 @@ export default function App() {
     workspaceRoot,
     launchConfig: files.find((file) => file.path === '.tungsten/launch.json')?.content,
     notify,
-    revealDebugView: () => { setActivity('debug'); setSidebarVisible(true) },
+    revealDebugView: () => showView('debug'),
   })
   const { breakpoints, watches } = debug
   // Stable across renders, so the adapter subscription below is not torn down
@@ -870,15 +864,15 @@ export default function App() {
       { id: 'editor.action.toggleMinimap', label: 'View: Toggle Minimap', detail: settings.minimap ? 'Minimap is on' : 'Minimap is off', icon: Layers, action: () => setSettings((current) => ({ ...current, minimap: !current.minimap })) },
 
       // Views.
-      { id: 'workbench.view.explorer', label: 'View: Show Explorer', detail: 'Files and folders', icon: Files, action: () => { setActivity('explorer'); setSidebarVisible(true) } },
-      { id: 'workbench.view.search', label: 'View: Show Search', detail: 'Search across the workspace', icon: Search, action: () => { setActivity('search'); setSidebarVisible(true) } },
-      { id: 'workbench.view.scm', label: 'View: Show Source Control', detail: gitInfo.isRepository ? `${sourceChanges.length} changes on ${gitInfo.branch}` : 'No repository detected', icon: GitBranch, action: () => { setActivity('source'); setSidebarVisible(true); void refreshGit() } },
-      { id: 'workbench.view.debug', label: 'View: Show Run and Debug', detail: 'Breakpoints, call stack and variables', icon: BugPlay, action: () => { setActivity('debug'); setSidebarVisible(true) } },
-      { id: 'workbench.view.testing', label: 'View: Show Testing', detail: `${discoveredTests.length} tests detected`, icon: FlaskConical, action: () => { setActivity('tests'); setSidebarVisible(true) } },
-      { id: 'workbench.view.extensions', label: 'View: Show Extensions', detail: `${extensions.length} installed`, icon: Blocks, action: () => { setActivity('extensions'); setSidebarVisible(true) } },
-      { id: 'workbench.actions.view.problems', label: 'View: Show Problems', detail: `${problems.length} diagnostics`, icon: CircleAlert, action: () => { setPanelOpen(true); setPanelTab('PROBLEMS') } },
-      { id: 'workbench.action.output.toggleOutput', label: 'View: Toggle Output', detail: 'Workbench output channels', icon: ListChecks, action: () => { setPanelOpen(true); setPanelTab('OUTPUT') } },
-      { id: 'workbench.debug.action.toggleRepl', label: 'View: Toggle Debug Console', detail: 'Inspect debug output', icon: Bot, action: () => { setPanelOpen(true); setPanelTab('DEBUG CONSOLE') } },
+      { id: 'workbench.view.explorer', label: 'View: Show Explorer', detail: 'Files and folders', icon: Files, action: () => showView('explorer') },
+      { id: 'workbench.view.search', label: 'View: Show Search', detail: 'Search across the workspace', icon: Search, action: () => showView('search') },
+      { id: 'workbench.view.scm', label: 'View: Show Source Control', detail: gitInfo.isRepository ? `${sourceChanges.length} changes on ${gitInfo.branch}` : 'No repository detected', icon: GitBranch, action: () => { showView('source'); void refreshGit() } },
+      { id: 'workbench.view.debug', label: 'View: Show Run and Debug', detail: 'Breakpoints, call stack and variables', icon: BugPlay, action: () => showView('debug') },
+      { id: 'workbench.view.testing', label: 'View: Show Testing', detail: `${discoveredTests.length} tests detected`, icon: FlaskConical, action: () => showView('tests') },
+      { id: 'workbench.view.extensions', label: 'View: Show Extensions', detail: `${extensions.length} installed`, icon: Blocks, action: () => showView('extensions') },
+      { id: 'workbench.actions.view.problems', label: 'View: Show Problems', detail: `${problems.length} diagnostics`, icon: CircleAlert, action: () => showPanel('PROBLEMS') },
+      { id: 'workbench.action.output.toggleOutput', label: 'View: Toggle Output', detail: 'Workbench output channels', icon: ListChecks, action: () => showPanel('OUTPUT') },
+      { id: 'workbench.debug.action.toggleRepl', label: 'View: Toggle Debug Console', detail: 'Inspect debug output', icon: Bot, action: () => showPanel('DEBUG CONSOLE') },
 
       // Layout.
       { id: 'workbench.action.toggleSidebarVisibility', label: 'View: Toggle Primary Side Bar', detail: sidebarVisible ? 'Hide the side bar' : 'Show the side bar', icon: PanelLeftClose, action: () => setSidebarVisible((value) => !value) },
@@ -906,8 +900,8 @@ export default function App() {
       { id: 'workbench.action.openSettings', label: 'Preferences: Open Settings', detail: `${Object.keys(configurationSchema).length} settings`, icon: Settings, action: () => { setSettingsEditorQuery(''); setSettingsEditorOpen(true) } },
       { id: 'workbench.action.openSnippets', label: 'Snippets: Browse Snippets', detail: `${activeSnippets.length} for ${activeFile?.language ?? 'this language'}`, icon: Code, action: () => setSnippetsOpen(true) },
       { id: 'workbench.action.insertSnippet', label: 'Snippets: Insert Snippet', detail: 'Pick a snippet to insert', icon: Code, when: 'editorIsOpen', action: () => setSnippetsOpen(true) },
-      { id: 'workbench.action.replaceInFiles', label: 'Search: Replace in Files', detail: 'Search and replace across the workspace', icon: Replace, action: () => { setActivity('search'); setSidebarVisible(true); search.setShowReplace(true) } },
-      { id: 'workbench.action.findInFiles', label: 'Search: Find in Files', detail: 'Full-text search with regex and globs', icon: Search, action: () => { setActivity('search'); setSidebarVisible(true) } },
+      { id: 'workbench.action.replaceInFiles', label: 'Search: Replace in Files', detail: 'Search and replace across the workspace', icon: Replace, action: () => { showView('search'); search.setShowReplace(true) } },
+      { id: 'workbench.action.findInFiles', label: 'Search: Find in Files', detail: 'Full-text search with regex and globs', icon: Search, action: () => showView('search') },
       { id: 'workbench.action.toggleSearchRegex', label: 'Search: Toggle Regular Expression', detail: search.options.isRegex ? 'Currently on' : 'Currently off', icon: Search, action: () => search.toggleOption('isRegex') },
       { id: 'workbench.action.toggleSearchCaseSensitive', label: 'Search: Toggle Match Case', detail: search.options.matchCase ? 'Currently on' : 'Currently off', icon: Search, action: () => search.toggleOption('matchCase') },
       { id: 'workbench.action.toggleSearchWholeWord', label: 'Search: Toggle Whole Word', detail: search.options.wholeWord ? 'Currently on' : 'Currently off', icon: Search, action: () => search.toggleOption('wholeWord') },
@@ -916,8 +910,8 @@ export default function App() {
       { id: 'workbench.action.zoomReset', label: 'View: Reset Zoom', detail: 'Restore the default font size', icon: RotateCcw, action: () => setSettings((current) => ({ ...current, fontSize: defaultSettings.fontSize })) },
 
       // Terminal.
-      { id: 'workbench.action.terminal.toggleTerminal', label: 'Terminal: Toggle Terminal', detail: 'Show or hide the integrated terminal', icon: TerminalSquare, action: () => { if (panelTab === 'TERMINAL' && panelOpen) setPanelOpen(false); else { setPanelTab('TERMINAL'); setPanelOpen(true) } } },
-      { id: 'workbench.action.terminal.new', label: 'Terminal: Create New Terminal', detail: 'Start another shell', icon: Plus, action: () => { if (window.tungsten) terminal.open(); else { setPanelTab('TERMINAL'); setPanelOpen(true) } } },
+      { id: 'workbench.action.terminal.toggleTerminal', label: 'Terminal: Toggle Terminal', detail: 'Show or hide the integrated terminal', icon: TerminalSquare, action: () => { if (panelTab === 'TERMINAL' && panelOpen) setPanelOpen(false); else showPanel('TERMINAL') } },
+      { id: 'workbench.action.terminal.new', label: 'Terminal: Create New Terminal', detail: 'Start another shell', icon: Plus, action: () => { if (window.tungsten) terminal.open(); else showPanel('TERMINAL') } },
       { id: 'workbench.action.terminal.split', label: 'Terminal: Split Terminal', detail: terminalSplit ? 'Return to a single pane' : 'Show two terminals side by side', icon: Columns2, action: terminal.toggleSplit },
       { id: 'workbench.action.terminal.kill', label: 'Terminal: Kill Active Terminal', detail: 'Close the focused terminal', icon: Trash2, when: 'isDesktop', action: () => terminal.close(activeTerminalId) },
       { id: 'workbench.action.terminal.clear', label: 'Terminal: Clear', detail: 'Clear the terminal buffer', icon: Trash2, action: terminal.restart },
@@ -935,7 +929,7 @@ export default function App() {
       { id: 'workbench.action.debug.stepOut', label: 'Debug: Step Out', detail: 'Finish the current frame', icon: Undo2, when: 'debugState', action: () => { void debug.control('stepOut') } },
       { id: 'workbench.action.debug.restart', label: 'Debug: Restart', detail: 'Restart the debug session', icon: RotateCcw, when: 'debugState', action: () => { void debug.stop().then(() => debug.start()) } },
       { id: 'editor.debug.action.toggleBreakpoint', label: 'Debug: Toggle Breakpoint', detail: activeFile ? `Line ${cursor.line} of ${fileName(activeFile.path)}` : 'No active file', icon: CircleAlert, when: 'editorIsOpen', action: () => { if (activeFile) void debug.toggleBreakpoint(activeFile.path, cursor.line) } },
-      { id: 'workbench.action.tasks.runTask', label: 'Task: Run Task', detail: `${projectInfo.tasks.length} tasks detected`, icon: ListChecks, action: () => { setActivity('tests'); setSidebarVisible(true) } },
+      { id: 'workbench.action.tasks.runTask', label: 'Task: Run Task', detail: `${projectInfo.tasks.length} tasks detected`, icon: ListChecks, action: () => showView('tests') },
 
       // Source control.
       { id: 'tungsten.git.refresh', label: 'Git: Refresh', detail: 'Reload status, branches and history', icon: RefreshCw, action: () => { void refreshGit() } },
@@ -1122,10 +1116,6 @@ export default function App() {
   }, [userKeybindings])
 
   useEffect(() => {
-    localStorage.setItem(WORKBENCH_LAYOUT_KEY, JSON.stringify({ sidebarVisible, sidebarWidth, panelOpen, panelHeight }))
-  }, [panelHeight, panelOpen, sidebarVisible, sidebarWidth])
-
-  useEffect(() => {
     if (!editorInstance || !activeFile || activeFile.language === 'diff') return
     const decorations = [
       ...breakpoints.filter((point) => point.path === activeFile.path).map((point) => ({ range: new monacoApi.Range(point.line, 1, point.line, 1), options: { isWholeLine: true, glyphMarginClassName: 'debug-breakpoint-glyph', glyphMarginHoverMessage: { value: point.condition ? `Conditional breakpoint: ${point.condition}` : 'Breakpoint' } } })),
@@ -1208,26 +1198,6 @@ export default function App() {
     const timer = window.setTimeout(() => setPendingChords([]), 5000)
     return () => window.clearTimeout(timer)
   }, [pendingChords])
-
-  const startSidebarResize = (event: React.MouseEvent) => {
-    event.preventDefault()
-    const startX = event.clientX
-    const startWidth = sidebarWidth
-    const move = (moveEvent: MouseEvent) => setSidebarWidth(Math.max(190, Math.min(420, startWidth + moveEvent.clientX - startX)))
-    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
-  }
-
-  const startPanelResize = (event: React.MouseEvent) => {
-    event.preventDefault()
-    const startY = event.clientY
-    const startHeight = panelHeight
-    const move = (moveEvent: MouseEvent) => setPanelHeight(Math.max(120, Math.min(window.innerHeight * .65, startHeight + startY - moveEvent.clientY)))
-    const up = () => { window.removeEventListener('mousemove', move); window.removeEventListener('mouseup', up) }
-    window.addEventListener('mousemove', move)
-    window.addEventListener('mouseup', up)
-  }
 
   /** Settings matching the settings-editor search box, grouped by category. */
   const settingsEditorGroups = useMemo(() => {
@@ -1703,7 +1673,7 @@ export default function App() {
     openRemoteDialog: () => setRemoteOpen(true),
     openCollaborationDialog: () => setCollaborationOpen(true),
     openProjectDialog: () => setProjectModal(true),
-  }), [buildPreview, closeTabIn, notify, openDesktopFolder, openFile, openNewFileDialog, resolveGitConflict, runProject, setCollaborationOpen, setRemoteOpen, stageGitHunk, updateFileAt])
+  }), [buildPreview, closeTabIn, notify, openDesktopFolder, openFile, openNewFileDialog, resolveGitConflict, runProject, setCollaborationOpen, setRemoteOpen, setSidePreview, stageGitHunk, updateFileAt])
 
 
   return (
@@ -1732,10 +1702,7 @@ export default function App() {
           badges={{ source: sourceChanges.length, tests: projectInfo.tests.length }}
           onSelect={(id) => {
             if (id === 'source') void refreshGit()
-            // Clicking the view you are already in collapses the sidebar, the
-            // way VS Code's activity bar behaves.
-            if (activity === id) setSidebarVisible((value) => !value)
-            else { setActivity(id); setSidebarVisible(true) }
+            selectActivity(id)
           }}
           onOpenSettings={() => setSettingsOpen(true)}
         />
@@ -1786,7 +1753,7 @@ export default function App() {
                 searchActive={terminalSearchOpen}
                 onToggleSearch={() => terminal.setSearchOpen(!terminalSearchOpen)}
                 onRestartTerminal={terminal.restart}
-                onMaximize={() => setPanelHeight((height) => (height > 400 ? 225 : Math.round(window.innerHeight * .62)))}
+                onMaximize={togglePanelMaximized}
                 onClose={() => setPanelOpen(false)}
               />
               {panelContent()}
@@ -1800,11 +1767,11 @@ export default function App() {
         onOpenRemote={() => { remote.setOpen(true); remote.refreshProfiles() }}
         branch={gitInfo.branch}
         changeCount={sourceChanges.length}
-        onOpenSourceControl={() => { setActivity('source'); setSidebarVisible(true); void refreshGit() }}
+        onOpenSourceControl={() => { showView('source'); void refreshGit() }}
         onRefreshGit={refreshGit}
         errorCount={diagnostics.counts.errors}
         warningCount={diagnostics.counts.warnings}
-        onOpenProblems={() => { setPanelOpen(true); setPanelTab('PROBLEMS') }}
+        onOpenProblems={() => showPanel('PROBLEMS')}
         pendingChord={pendingChords.length ? keybindingLabel(pendingChords) : ''}
         workspaceName={workspaceName}
         workspaceRoot={workspaceRoot}
