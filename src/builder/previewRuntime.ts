@@ -82,6 +82,11 @@ const render = {
     element.textContent = format(value)
     return element
   },
+  /** What is in a field right now, by element id. */
+  value: (id) => {
+    const element = document.getElementById(String(id))
+    return element && 'value' in element ? element.value : ''
+  },
   input: ({ id, placeholder }) => {
     const element = upsert(String(id), () => document.createElement('input'))
     element.placeholder = String(placeholder ?? '')

@@ -110,7 +110,10 @@ export function generateProgram(graph: BlockGraph, registry: BlockRegistry): Gen
     // A block that occupies a step stores its result in a variable, so its
     // outputs are read by name. A pure expression is inlined where it is used.
     const isStatement = sourceDefinition.inputs.some((port) => port.type === 'Exec')
-    if (isStatement) return symbolFor(source)
+    if (isStatement) {
+      const symbol = symbolFor(source)
+      return sourceDefinition.read?.(symbol, link.from.port) ?? symbol
+    }
 
 
     if (inFlight.has(source.id)) return 'undefined'

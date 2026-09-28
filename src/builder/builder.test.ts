@@ -675,3 +675,94 @@ describe('code parser', () => {
     expect(parsed.ok && checkIntegrity(parsed.graph, registry).compilable).toBe(true)
   })
 })
+
+describe('scope', () => {
+  it('refuses a value read from another handler', () => {
+    // Two events, one value: the variable the first handler binds does not
+    // exist inside the second, however the wire looks on the canvas.
+    const { graph, ids } = build(
+      [['event.start'], ['data.query'], ['event.click'], ['logic.log']],
+      [
+        ['0', 'exec', '1', 'exec'],
+        ['2', 'exec', '3', 'exec'],
+        ['1', 'rows', '3', 'value'],
+      ],
+    )
+    const report = checkIntegrity(graph, registry)
+    const scope = report.diagnostics.find((entry) => entry.code === 'out-of-scope')
+    expect(scope?.message).toContain('different handler')
+    expect(scope?.fix).toContain('Input Value')
+    expect(scope?.nodeId).toBe(ids[3])
+    expect(report.compilable).toBe(false)
+  })
+
+  it('refuses a value read after the branch that bound it closed', () => {
+    const { graph, ids } = build(
+      [['event.start'], ['logic.if'], ['data.query'], ['logic.log']],
+      [
+        ['0', 'exec', '1', 'exec'],
+        ['1', 'body', '2', 'exec'],
+        ['1', 'exec', '3', 'exec'],
+        ['2', 'rows', '3', 'value'],
+      ],
+    )
+    const report = checkIntegrity(graph, registry)
+    const scope = report.diagnostics.find((entry) => entry.code === 'out-of-scope')
+    expect(scope?.message).toContain('already finished')
+    expect(scope?.nodeId).toBe(ids[3])
+    expect(report.compilable).toBe(false)
+  })
+
+  it('allows a value read inside the branch that bound it', () => {
+    const { graph } = build(
+      [['event.start'], ['logic.if'], ['data.query'], ['logic.log']],
+      [
+        ['0', 'exec', '1', 'exec'],
+        ['1', 'body', '2', 'exec'],
+        ['2', 'exec', '3', 'exec'],
+        ['2', 'rows', '3', 'value'],
+      ],
+    )
+    expect(checkIntegrity(graph, registry).compilable).toBe(true)
+  })
+
+  it('allows an outer value read from inside a branch', () => {
+    const { graph } = build(
+      [['event.start'], ['data.query'], ['logic.if'], ['logic.log']],
+      [
+        ['0', 'exec', '1', 'exec'],
+        ['1', 'exec', '2', 'exec'],
+        ['2', 'body', '3', 'exec'],
+        ['1', 'rows', '3', 'value'],
+      ],
+    )
+    expect(checkIntegrity(graph, registry).compilable).toBe(true)
+  })
+
+  it('lets an Input Value block be read from any handler', () => {
+    const { graph, ids } = build(
+      [['event.start'], ['ui.input'], ['event.click'], ['logic.log'], ['ui.value']],
+      [
+        ['0', 'exec', '1', 'exec'],
+        ['2', 'exec', '3', 'exec'],
+        ['4', 'value', '3', 'value'],
+      ],
+    )
+    const named = setNodeValue(setNodeValue(graph, ids[1], 'id', 'email'), ids[4], 'id', 'email')
+    const report = checkIntegrity(named, registry)
+    expect(report.diagnostics.filter((entry) => entry.severity === 'error')).toHaveLength(0)
+    expect(generateProgram(named, registry).code).toContain('console.log(render.value("email"))')
+  })
+
+  it('round-trips a field read through the parser', () => {
+    const { graph, ids } = build(
+      [['event.click'], ['logic.log'], ['ui.value']],
+      [['0', 'exec', '1', 'exec'], ['2', 'value', '1', 'value']],
+    )
+    const named = setNodeValue(graph, ids[2], 'id', 'email')
+    const before = generateProgram(named, registry).code
+    const parsed = parseProgram(before, registry)
+    expect(parsed.ok).toBe(true)
+    expect(parsed.ok && generateProgram(parsed.graph, registry).code).toBe(before)
+  })
+})

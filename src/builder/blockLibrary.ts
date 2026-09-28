@@ -167,13 +167,29 @@ const uiInput = defineBlock({
     { id: 'id', label: 'Element id', type: 'String', default: 'email', required: true },
     { id: 'placeholder', label: 'Placeholder', type: 'String', default: '' },
   ],
-  outputs: [
-    { id: 'exec', label: 'Then', type: 'Exec' },
-    { id: 'value', label: 'Value', type: 'String' },
-  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
   generate: ({ input, symbol }) =>
     `const ${symbol} = render.input({ id: ${input('id')}, placeholder: ${input('placeholder')} })`,
   parse: parseOptions('render.input', { id: 'id', placeholder: 'placeholder' }),
+})
+
+/**
+ * Reading a field is deliberately a separate block.
+ *
+ * An input is drawn once, at start-up, and read later from a click handler
+ * -- a different function, where the variable the input block bound is not
+ * in scope. Reading by element id has no scope at all, so the obvious graph
+ * is also the correct one.
+ */
+const uiValue = defineBlock({
+  type: 'ui.value',
+  label: 'Input Value',
+  category: 'UI',
+  description: 'What the user has typed into a field, read by element id.',
+  inputs: [{ id: 'id', label: 'Element id', type: 'String', default: 'email', required: true }],
+  outputs: [{ id: 'value', label: 'Value', type: 'String' }],
+  generate: ({ input }) => `render.value(${input('id')})`,
+  parse: parseCall('render.value', ['id']),
 })
 
 // ----------------------------------------------------------------- Logic
@@ -475,7 +491,7 @@ const storageUpload = defineBlock({
 
 export const builtinBlocks: BlockDefinition[] = [
   onAppStart, onClick,
-  uiButton, uiText, uiInput,
+  uiButton, uiText, uiInput, uiValue,
   logicIf, logicForEach, logicCompare, logicMath, logicLog,
   dataQuery, dataInsert, dataVariable, dataNumber,
   networkFetch,

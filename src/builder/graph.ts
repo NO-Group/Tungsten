@@ -255,3 +255,64 @@ function execPortTest(graph: BlockGraph, registry: BlockRegistry) {
     return definition ? findPort(definition, portId)?.type === 'Exec' : false
   }
 }
+
+/** Where a statement sits: which handler, inside which bodies, and when. */
+export type Scope = {
+  /** The event whose chain the statement belongs to. */
+  event: string
+  /** Enclosing containers, outermost first: the event, then each body slot. */
+  path: string[]
+  /** Position in the program, for "was this bound before it was read". */
+  order: number
+}
+
+/**
+ * The scope of every statement in the graph.
+ *
+ * Generated code is ordinary JavaScript, so its variables obey ordinary
+ * scoping: a value bound in one handler is invisible in another, and one
+ * bound inside a branch is gone once the branch closes. The canvas shows
+ * neither of those boundaries, which is exactly why they have to be checked
+ * rather than left for the user to discover at runtime.
+ */
+export function scopesOf(graph: BlockGraph, registry: BlockRegistry): Map<string, Scope> {
+  const scopes = new Map<string, Scope>()
+  let order = 0
+
+  const walk = (nodeId: string, portId: string, event: string, path: string[]) => {
+    const seen = new Set<string>()
+    let link = outgoing(graph, nodeId, portId)[0]
+
+    while (link) {
+      const node = nodeById(graph, link.to.node)
+      const definition = node && registry.get(node.type)
+      if (!node || !definition || seen.has(node.id)) break
+      seen.add(node.id)
+
+      order += 1
+      scopes.set(node.id, { event, path, order })
+
+      for (const slot of definition.slots ?? []) {
+        walk(node.id, slot.id, event, [...path, `${node.id}:${slot.id}`])
+      }
+
+      link = outgoing(graph, node.id, 'exec')[0]
+    }
+  }
+
+  for (const node of graph.nodes) {
+    if (!registry.get(node.type)?.isEvent) continue
+    order += 1
+    scopes.set(node.id, { event: node.id, path: [node.id], order })
+    walk(node.id, 'exec', node.id, [node.id])
+  }
+
+  return scopes
+}
+
+/** Can a statement in `here` read a value bound in `there`? */
+export function inScope(there: Scope, here: Scope): boolean {
+  if (there.event !== here.event) return false
+  if (there.order >= here.order) return false
+  return there.path.every((step, index) => here.path[index] === step)
+}

@@ -327,3 +327,86 @@ describe('the workbench', () => {
     expect(container.querySelector('.statusbar')?.textContent).toContain('0')
   })
 })
+
+describe('the builder, from the workbench', () => {
+  /** Opens the builder the way a user does: the activity bar icon. */
+  function openBuilder() {
+    click(buttonsLabelled('Builder')[0])
+  }
+
+  function paletteItem(label: string) {
+    return [...container.querySelectorAll('.block-palette-item')]
+      .find((item) => item.querySelector('.block-palette-label')?.textContent === label)!
+  }
+
+  it('is reachable from the activity bar, and shows the block library', () => {
+    openBuilder()
+    expect(container.querySelector('.builder-view')).not.toBeNull()
+    expect(container.querySelectorAll('.block-palette-item').length).toBeGreaterThan(15)
+  })
+
+  it('replaces the editor area, and gives it back on close', () => {
+    openBuilder()
+    expect(container.querySelector('.editor-groups')).toBeNull()
+    click(buttonsLabelled('Close the builder')[0])
+    expect(container.querySelector('.builder-view')).toBeNull()
+    expect(container.querySelector('.editor-groups')).not.toBeNull()
+  })
+
+  it('opens from the command palette', () => {
+    run('Open Visual Builder')
+    expect(container.querySelector('.builder-view')).not.toBeNull()
+  })
+
+  it('adds a block from the sidebar onto the canvas', () => {
+    openBuilder()
+    click(paletteItem('On App Start'))
+    expect(container.querySelectorAll('.builder-node').length).toBe(1)
+  })
+
+  it('writes the generated program into the workspace as a file', () => {
+    openBuilder()
+    click(paletteItem('On App Start'))
+    click([...container.querySelectorAll('.builder-toolbar button')]
+      .find((button) => button.textContent?.includes('Write to file'))!)
+    expect(container.querySelector('.builder-view')).toBeNull()
+    expect(container.querySelector('[data-testid="editor"]')?.getAttribute('data-path'))
+      .toContain('src/generated/blocks.ts')
+    expect(container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')?.value)
+      .toContain('app.onStart(async () => {')
+  })
+
+  it('builds a web bundle into the workspace', () => {
+    openBuilder()
+    click(paletteItem('On App Start'))
+    click([...container.querySelectorAll('.builder-toolbar button')]
+      .find((button) => button.textContent?.includes('Build'))!)
+    expect(container.querySelector('[data-testid="editor"]')?.getAttribute('data-path'))
+      .toContain('build/web/index.html')
+    expect(text()).toContain('Built 4 files for web')
+  })
+
+  it('refuses to build a graph the checker rejects', () => {
+    openBuilder()
+    click(paletteItem('On App Start'))
+    click(paletteItem('Upload File'))
+    click(container.querySelector('[aria-label="Output Then of On App Start"]')!)
+    click(container.querySelector('[aria-label="Input Run of Upload File"]')!)
+
+    // Upload needs a file, and nothing is plugged into it.
+    expect(container.querySelector('.builder-state')?.textContent).toContain('error')
+    const build = [...container.querySelectorAll('.builder-toolbar button')]
+      .find((button) => button.textContent?.includes('Build')) as HTMLButtonElement
+    expect(build.disabled).toBe(true)
+  })
+
+  it('registers a plugin block written into the workspace', () => {
+    run('Add an Example Block Plugin')
+    expect(container.querySelector('[data-testid="editor"]')?.getAttribute('data-path'))
+      .toContain('plugins/notify.block.json')
+    openBuilder()
+    expect([...container.querySelectorAll('.block-palette-label')].map((item) => item.textContent))
+      .toContain('Send Notification')
+    expect(container.querySelector('.block-palette-footer')?.textContent).toContain('1 from plugins')
+  })
+})

@@ -65,6 +65,15 @@ export type BlockDefinition = {
   /** Turns the node into source text: a statement, or an expression. */
   generate: (context: GenerateContext) => string
   /**
+   * How one of this block's outputs is read off the variable it assigned.
+   *
+   * A statement block binds a single name, but its outputs are not always
+   * that name: a text input binds an element and exposes what was typed into
+   * it. Without this, a graph would generate code that reads the wrong thing
+   * and still type-check, which is the worst kind of wrong.
+   */
+  read?: (symbol: string, portId: string) => string
+  /**
    * Recognises this block's own generated statement, for the other
    * direction: text back into blocks.
    *

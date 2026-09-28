@@ -22,7 +22,7 @@ import {
   type BlockRegistry,
   type PortType,
 } from './blockSchema'
-import { execChainNodes, incoming, liveNodes, nodeById } from './graph'
+import { execChainNodes, inScope, incoming, liveNodes, nodeById, scopesOf } from './graph'
 
 export type DiagnosticSeverity = 'error' | 'warning'
 
@@ -47,6 +47,7 @@ export type IntegrityRule =
   | 'cycle'
   | 'orphan'
   | 'unreachable-value'
+  | 'out-of-scope'
   | 'unused-result'
 
 export type IntegrityReport = {
@@ -210,6 +211,7 @@ export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): Inte
   // ------------------------------------- what runs, and what does not
   const live = liveNodes(graph, registry)
   const running = execChainNodes(graph, registry)
+  const scopes = scopesOf(graph, registry)
 
   for (const node of graph.nodes) {
     const definition = registry.get(node.type)
@@ -268,6 +270,33 @@ export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): Inte
           code: 'unreachable-value',
           message: `“${definition.label}” reads “${sourceDefinition.label}”, but that block never runs.`,
           fix: `Put “${sourceDefinition.label}” in the execution chain before this block.`,
+        })
+        continue
+      }
+
+      // Reachable is not the same as readable. The value lives in a variable,
+      // and a variable belongs to the handler and the body it was bound in.
+      const here = scopes.get(node.id)
+      const there = scopes.get(source.id)
+      if (sourceIsStatement && here && there && !inScope(there, here)) {
+        const crossHandler = there.event !== here.event
+        const later = there.order >= here.order
+        diagnostics.push({
+          severity: 'error',
+          nodeId: node.id,
+          connectionId: link.id,
+          portId: port.id,
+          code: 'out-of-scope',
+          message: crossHandler
+            ? `“${definition.label}” reads “${sourceDefinition.label}”, which runs in a different handler.`
+            : later
+              ? `“${definition.label}” reads “${sourceDefinition.label}” before that block has run.`
+              : `“${definition.label}” reads “${sourceDefinition.label}”, which is inside a branch that has already finished.`,
+          fix: crossHandler
+            ? 'Move both blocks into the same handler, or read the value from the page instead — an Input Value block reads a field by id from anywhere.'
+            : later
+              ? `Move “${sourceDefinition.label}” earlier in the chain.`
+              : `Move “${definition.label}” inside the same branch as “${sourceDefinition.label}”.`,
         })
       }
     }

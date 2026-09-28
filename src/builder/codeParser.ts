@@ -99,6 +99,13 @@ export function parseProgram(code: string, registry: BlockRegistry): ParseResult
     frame.previous = nodeId
   }
 
+  /** A named output of a node, when the source text read one off by name. */
+  const outputPort = (nodeId: string, portId: string): string | undefined => {
+    const node = nodes.find((candidate) => candidate.id === nodeId)
+    const definition = node && registry.get(node.type)
+    return definition?.outputs.find((port) => port.id === portId && port.type !== 'Exec')?.id
+  }
+
   /** The first value output of a node, which is what a variable refers to. */
   const valuePort = (nodeId: string): string | undefined => {
     const node = nodes.find((candidate) => candidate.id === nodeId)
@@ -106,17 +113,56 @@ export function parseProgram(code: string, registry: BlockRegistry): ParseResult
     return definition?.outputs.find((port) => port.type !== 'Exec')?.id
   }
 
+  /**
+   * Rebuilds a pure expression block from its own generated text.
+   *
+   * Without this, `console.log(render.value("email"))` would come back as a
+   * block logging the *string* `render.value("email")` -- text that still
+   * parses and no longer means anything like the same thing. Statements are
+   * handled by the main loop; only expressions are reconstructed here.
+   */
+  const expressionFrom = (text: string, depth: number, remaining: number) => {
+    if (remaining <= 0) return undefined
+    for (const definition of definitions) {
+      if (definition.inputs.some((port) => port.type === 'Exec')) continue
+      const parsed = definition.parse?.(text)
+      if (!parsed) continue
+      const port = definition.outputs.find((candidate) => candidate.type !== 'Exec')
+      if (!port) continue
+
+      const node = add(definition.type, Math.max(0, depth - 1))
+      for (const [portId, argument] of Object.entries(parsed.inputs)) {
+        applyInput(node, portId, argument, depth, remaining - 1)
+      }
+      return { node: node.id, port: port.id }
+    }
+    return undefined
+  }
+
   /** Resolves one parsed input: a link to an earlier block, or a literal. */
-  const applyInput = (node: BlockNode, portId: string, text: string) => {
+  const applyInput = (node: BlockNode, portId: string, text: string, depth = 0, remaining = 6) => {
     const trimmed = text.trim()
-    const source = symbols.get(trimmed)
+
+    // `input1.value` is a block's output read off the variable it bound, so
+    // the property names the port; `input1` on its own means the block's
+    // first value output.
+    const member = /^([A-Za-z0-9_$]+)\.([A-Za-z0-9_$]+)$/.exec(trimmed)
+    const base = member ? member[1] : trimmed
+    const source = symbols.get(base)
     if (source) {
-      const port = valuePort(source)
+      const named = member ? outputPort(source, member[2]) : undefined
+      const port = named ?? valuePort(source)
       if (port) {
         link({ node: source, port }, { node: node.id, port: portId })
         return
       }
     }
+    const expression = expressionFrom(trimmed, depth, remaining)
+    if (expression) {
+      link(expression, { node: node.id, port: portId })
+      return
+    }
+
     const value = literalValue(trimmed)
     if (value !== undefined) node.values[portId] = value
   }
@@ -191,7 +237,7 @@ export function parseProgram(code: string, registry: BlockRegistry): ParseResult
     chain(frame, node.id)
     if (binding) symbols.set(binding[1], node.id)
     for (const [portId, text] of Object.entries(matched.parsed.inputs)) {
-      applyInput(node, portId, text)
+      applyInput(node, portId, text, frame.depth)
     }
 
     if (matched.parsed.opensBody) {

@@ -13,6 +13,7 @@ import { resetIds } from '../../builder/graph'
 import { PARSE_DEBOUNCE } from '../../builder/useBuilder'
 import { PREVIEW_CHANNEL } from '../../builder/previewRuntime'
 import { EXAMPLE_PLUGIN, loadPluginBlocks } from '../../builder/pluginBlocks'
+import { builtinBlocks } from '../../builder/blockLibrary'
 
 // Monaco cannot run in jsdom; the code pane becomes a textarea that behaves
 // the same way from the outside: it shows `value` and reports edits.
@@ -125,7 +126,10 @@ describe('the builder surface', () => {
   })
 
   it('lists every built-in block plus the workspace plugins, grouped', () => {
-    expect(container.querySelectorAll('.block-palette-item').length).toBe(20)
+    // Counted against the library itself, so adding a block does not mean
+    // editing a number here.
+    expect(container.querySelectorAll('.block-palette-item').length)
+      .toBe(builtinBlocks.length + plugins.blocks.length)
     expect(container.querySelectorAll('.block-palette-groups section').length).toBe(7)
     expect(container.querySelector('.block-palette-footer')?.textContent).toContain('1 from plugins')
   })
