@@ -1,12 +1,14 @@
 /**
  * The activity bar.
  *
- * The seven primary views, plus the account and manage buttons pinned to the
+ * The eight primary views, plus the account and manage buttons pinned to the
  * bottom. Badges surface counts that would otherwise need the view opened to
  * be seen -- pending changes, discovered test profiles.
  */
 
-import { Blocks, BugPlay, CircleUserRound, FlaskConical, Files, GitBranch, Puzzle, Search, Settings } from 'lucide-react'
+import {
+  Blocks, BookOpen, BugPlay, CircleUserRound, FlaskConical, Files, GitBranch, Puzzle, Search, Settings,
+} from 'lucide-react'
 import type { Activity } from '../workbench/workbenchLayout'
 
 // The list of activities belongs to the layout model, which decides what
@@ -21,6 +23,7 @@ const activityItems: Array<{ id: Activity; label: string; icon: typeof Files }> 
   { id: 'tests', label: 'Testing', icon: FlaskConical },
   { id: 'extensions', label: 'Extensions', icon: Blocks },
   { id: 'builder', label: 'Builder', icon: Puzzle },
+  { id: 'dictionary', label: 'Shell Dictionary', icon: BookOpen },
 ]
 
 export type ActivityBarProps = {

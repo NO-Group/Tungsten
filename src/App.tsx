@@ -40,6 +40,8 @@ import {
   Pause,
   Play,
   Puzzle,
+  BookOpen,
+  FilePlus2,
   Plus,
   Rocket,
   RefreshCw,
@@ -82,11 +84,15 @@ import { SourceControlView } from './components/sidebar/SourceControlView'
 import { DebugView } from './components/sidebar/DebugView'
 import { TestingView } from './components/sidebar/TestingView'
 import { ExtensionsView } from './components/sidebar/ExtensionsView'
+import { DictionaryView } from './components/sidebar/DictionaryView'
 import { ExplorerView } from './components/sidebar/ExplorerView'
 import { BlockPalette } from './components/builder/BlockPalette'
 import { BuilderView } from './components/builder/BuilderView'
 import { useBuilder } from './builder/useBuilder'
 import { EXAMPLE_PLUGIN, PLUGIN_DIRECTORY, PLUGIN_SUFFIX, loadPluginBlocks } from './builder/pluginBlocks'
+import { createDictionary } from './shell/commandDictionary'
+import { explainCommandLine } from './shell/explainShell'
+import { DICTIONARY_DIRECTORY, EXAMPLE_COMMAND_FILE, loadWorkspaceCommands } from './shell/workspaceCommands'
 import type { CompileTarget } from './builder/compile'
 import { TerminalPanel } from './components/panel/TerminalPanel'
 import {
@@ -324,13 +330,37 @@ export default function App() {
 
   const activeFile = files.find((file) => file.path === activePath)
 
+  // The shell dictionary, merged with anything the workspace documents in
+  // `dictionary/`. One index feeds the sidebar, the terminal and the palette.
+  const workspaceCommands = useMemo(() => loadWorkspaceCommands(files), [files])
+  const dictionary = useMemo(() => createDictionary(workspaceCommands.entries), [workspaceCommands.entries])
+
   const terminal = useTerminalSessions({
     workspaceRoot,
     workspaceName,
     files,
     dirty,
+    dictionary,
     revealTerminal: () => showPanel('TERMINAL'),
   })
+
+  /**
+   * What the half-typed prompt means, shown under the input as you type.
+   *
+   * Only the command word is resolved, so the hint appears on the first
+   * keystrokes rather than waiting for a complete line.
+   */
+  const terminalHint = useMemo(() => {
+    const typed = terminal.input.trim()
+    if (!typed) return ''
+    const entry = dictionary.lookup(typed.split(/\s+/)[0])
+    if (!entry) return ''
+    const explanation = explainCommandLine(typed, dictionary)
+    const flags = explanation.segments[0]?.flags.filter((flag) => flag.known) || []
+    return flags.length
+      ? `${entry.name} — ${entry.summary} · ${flags.map((flag) => flag.flag).join(' ')}`
+      : `${entry.name} — ${entry.summary}`
+  }, [dictionary, terminal.input])
   const {
     tabs: terminalTabs, activeId: activeTerminalId, split: terminalSplit,
     searchOpen: terminalSearchOpen, searchQuery: terminalSearchQuery, searchRequest: terminalSearchRequest,
@@ -609,6 +639,7 @@ export default function App() {
    * than at the next restart.
    */
   const pluginLoad = useMemo(() => loadPluginBlocks(files), [files])
+
   const builder = useBuilder({ notify, plugins: pluginLoad.blocks })
   const [builderOpen, setBuilderOpen] = useState(false)
   const BUILDER_OUTPUT = 'src/generated/blocks.ts'
@@ -663,6 +694,29 @@ export default function App() {
     openFile(path)
     notify('Example block plugin added to plugins/')
   }, [notify, openFile, writeGeneratedFiles])
+
+  /** Drops a worked example into `dictionary/`, so a team can document its own. */
+  const documentCommand = useCallback(() => {
+    writeGeneratedFiles([{ path: EXAMPLE_COMMAND_FILE.path, contents: EXAMPLE_COMMAND_FILE.content }])
+    openFile(EXAMPLE_COMMAND_FILE.path)
+    notify(`Example command documentation added to ${DICTIONARY_DIRECTORY}/`)
+  }, [notify, openFile, writeGeneratedFiles])
+
+  /** Reads whatever is typed at the prompt back in English, in the terminal. */
+  const explainTerminalInput = useCallback(() => {
+    const line = terminal.input.trim()
+    showPanel('terminal')
+    if (!line) {
+      terminal.appendLine({ text: 'explain: type a command at the prompt first', kind: 'muted' })
+      return
+    }
+    const explanation = explainCommandLine(line, dictionary)
+    terminal.appendLine(
+      { text: `explain ${line}`, kind: 'command' },
+      ...explanation.sentences.map((text) => ({ text, kind: text.startsWith(' ') ? ('muted' as const) : undefined })),
+      ...explanation.warnings.map((text) => ({ text: `! ${text}`, kind: 'warning' as const })),
+    )
+  }, [dictionary, showPanel, terminal])
 
   const buildPreview = useCallback(() => {
     const get = (path: string) => files.find((file) => file.path === path)?.content ?? ''
@@ -989,6 +1043,10 @@ export default function App() {
       { id: 'builder.buildWeb', label: 'Builder: Build the Web Bundle', detail: 'index.html, the program, and the UI schema', icon: Hammer, action: () => buildBuilderTarget('web') },
       { id: 'builder.buildMobile', label: 'Builder: Export Mobile Source', detail: 'Flutter widgets and handlers from the same graph', icon: Hammer, action: () => buildBuilderTarget('mobile') },
       { id: 'builder.buildRunner', label: 'Builder: Build the Local Runner', detail: 'A dependency-free server for the built bundle', icon: Rocket, action: () => buildBuilderTarget('node') },
+      { id: 'dictionary.open', label: 'Shell Dictionary: Browse Commands', detail: `${dictionary.entries.length} commands, searchable`, icon: BookOpen, action: () => showView('dictionary') },
+      { id: 'dictionary.explain', label: 'Shell Dictionary: Explain the Terminal Command', detail: terminal.input.trim() ? terminal.input.trim() : 'Type a command in the terminal first', icon: BookOpen, action: () => explainTerminalInput() },
+      { id: 'dictionary.man', label: 'Shell Dictionary: Read a Manual Page in the Terminal', detail: 'man <command>, answered from the dictionary', icon: BookOpen, action: () => { showPanel('terminal'); terminal.setInput('man '); terminal.focusInput() } },
+      { id: 'dictionary.document', label: 'Shell Dictionary: Document a Command for This Workspace', detail: `Writes ${EXAMPLE_COMMAND_FILE.path}`, icon: FilePlus2, action: documentCommand },
       { id: 'builder.newPlugin', label: 'Builder: Add an Example Block Plugin', detail: `Writes ${PLUGIN_DIRECTORY}/notify${PLUGIN_SUFFIX}`, icon: PackagePlus, action: createExamplePlugin },
       { id: 'builder.writeFile', label: 'Builder: Write Generated Code to the Workspace', detail: builder.report.compilable ? `Write ${BUILDER_OUTPUT}` : 'Blocked: the graph has errors', icon: FileDown, when: 'builderOpen', action: () => { if (builder.report.compilable) exportBuilderCode(builder.program.code); else notify('Fix the integrity errors first') } },
       { id: 'workbench.action.toggleSidePreview', label: 'View: Toggle Side Preview', detail: sidePreview ? 'Close the live preview pane' : 'Open the live preview pane', icon: Eye, action: () => setSidePreview((value) => !value) },
@@ -1392,6 +1450,7 @@ export default function App() {
         onRun={runTerminalCommand}
         history={history}
         historyIndex={historyIndex}
+        hint={terminalHint}
         onHistoryIndexChange={terminal.setHistoryIndex}
         workspaceName={workspaceName}
         inputRef={terminal.inputRef}
@@ -1562,6 +1621,15 @@ export default function App() {
         onInstall={() => { void project.installExtension() }}
         onToggleEnabled={(extension) => project.setExtensionEnabled(extension.id, extension.enabled === false)}
         onUninstall={project.uninstallExtension}
+      />
+    )
+    if (activity === 'dictionary') return (
+      <DictionaryView
+        dictionary={dictionary}
+        contributed={workspaceCommands.entries.length}
+        problems={workspaceCommands.problems}
+        onRun={(command) => { showPanel('terminal'); terminal.run(command) }}
+        onDocumentCommand={documentCommand}
       />
     )
     if (activity === 'builder') return (

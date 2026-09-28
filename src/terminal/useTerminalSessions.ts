@@ -10,6 +10,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { supportedLanguages } from '../workspace'
 import { runSandboxCommand, type ShellFile } from './sandboxShell'
+import type { Dictionary } from '../shell/commandDictionary'
 import {
   closeTerminalTab, commandOutputLines, createTerminalTab, nextTerminalId, parseTerminalLayout,
   restartTerminalTab, serializeTerminalLayout, terminalAtOffset,
@@ -24,6 +25,8 @@ export type TerminalHost = {
   workspaceName: string
   files: ShellFile[]
   dirty: Set<string>
+  /** The command dictionary `man`, `apropos` and `explain` answer from. */
+  dictionary?: Dictionary
   /** Opens the panel on the terminal tab; every action here implies it. */
   revealTerminal: () => void
 }
@@ -36,7 +39,7 @@ function welcomeLines(): TerminalLine[] {
   ]
 }
 
-export function useTerminalSessions({ workspaceRoot, workspaceName, files, dirty, revealTerminal }: TerminalHost) {
+export function useTerminalSessions({ workspaceRoot, workspaceName, files, dirty, dictionary, revealTerminal }: TerminalHost) {
   const [layout, setLayout] = useState<TerminalLayout>(() => parseTerminalLayout(localStorage.getItem(TERMINAL_LAYOUT_KEY)))
   const nextIdRef = useRef(nextTerminalId(layout.tabs))
 
@@ -120,10 +123,10 @@ export function useTerminalSessions({ workspaceRoot, workspaceName, files, dirty
       return
     }
 
-    const result = runSandboxCommand(entry, { workspaceName, files, dirty })
+    const result = runSandboxCommand(entry, { workspaceName, files, dirty, dictionary })
     if (result.clear) setLines([])
     else setLines((current) => [...current, ...result.lines])
-  }, [dirty, files, workspaceName, workspaceRoot])
+  }, [dictionary, dirty, files, workspaceName, workspaceRoot])
 
   /**
    * Runs a task command where the user can watch it.

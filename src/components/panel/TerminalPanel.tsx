@@ -56,6 +56,8 @@ export type TerminalPanelProps = {
   onRun: (command: string) => void
   history: string[]
   historyIndex: number
+  /** One line explaining what is currently typed, from the shell dictionary. */
+  hint?: string
   onHistoryIndexChange: (index: number) => void
   workspaceName: string
   inputRef: React.RefObject<HTMLInputElement | null>
@@ -151,7 +153,7 @@ function DesktopTerminals({
 }
 
 function SandboxTerminal({
-  lines, input, onInputChange, onRun, history, historyIndex,
+  lines, input, onInputChange, onRun, history, historyIndex, hint,
   onHistoryIndexChange, workspaceName, inputRef, endRef,
 }: TerminalPanelProps) {
   return (
@@ -195,6 +197,7 @@ function SandboxTerminal({
             }}
           />
         </div>
+        {hint && <div className="terminal-hint" role="note">{hint}</div>}
         <div ref={endRef} />
       </div>
     </div>

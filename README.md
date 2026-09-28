@@ -86,6 +86,53 @@ See [remote development and collaboration](docs/REMOTE_AND_COLLABORATION.md).
 - Automatic packaged-app updates and Windows NSIS/portable, macOS DMG/ZIP, and Linux AppImage/DEB targets
 - GitHub Actions cross-platform installer builds with optional signing/notarization secrets and generated release notes
 
+## The shell dictionary
+
+Tungsten ships a dictionary of **592 shell commands** and answers questions
+about them in three places: the **Shell Dictionary** view in the activity bar,
+the terminal prompt, and the command palette.
+
+```bash
+man tar                 # the full page: synopsis, flags, examples, see also
+apropos compress        # search every summary, flag table and example
+whatis jq               # the one-line description
+explain sudo rm -rf /var/cache    # read a whole command line back in English
+```
+
+`explain` is the reason the dictionary exists. It splits a line on the operators
+that change its meaning — respecting quotes, so a pipe inside a string stays a
+pipe character — resolves each command against the dictionary, expands bundled
+short flags (`-la`) and dashless clusters (`tar czf`), follows wrappers through
+to what they will actually run (`xargs -0 rm -f` warns about the `rm`), and
+names every redirection. Anything it does not recognise is reported rather than
+guessed at.
+
+The terminal is dictionary-aware throughout: a hint under the prompt explains
+what you are typing as you type it, a command the browser sandbox cannot run is
+answered with what the dictionary knows about it instead of a dead end, and a
+typo is met with the nearest match — the distance metric counts a swapped pair
+of letters as one mistake, so `gti` finds `git`.
+
+A workspace can document its own commands. Drop JSON into `dictionary/`:
+
+```
+dictionary/team.commands.json   →   { "commands": [ { "name": "deploy", ... } ] }
+```
+
+Those entries are read as data — nothing in the file is ever evaluated — and
+merged into the same index, so the sidebar, `man`, `apropos` and `explain` all
+answer for them. A workspace entry may also override a built-in one. The
+palette command **Shell Dictionary: Document a Command for This Workspace**
+writes a worked example to start from.
+
+`src/shell/` holds it: `commandModel.ts` (the shape of an entry), `data/` (the
+entries, by subject), `commandDictionary.ts` (the index, search, suggestions and
+the manual renderer), `explainShell.ts` (the command-line reader) and
+`workspaceCommands.ts` (the loader). `src/shell/commandDictionary.test.ts`
+treats the data as something to be verified, not trusted: no duplicate names, no
+cross-reference to a page that does not exist, no entry pointing at itself,
+every synopsis actually invoking the command it documents.
+
 ## Graphene, the design language
 
 `src/theme/tokens.json` is the single source of truth for how Tungsten looks: the
@@ -142,7 +189,7 @@ Installers are written to `out/`. Build on each target OS or use the included `B
 | Area | Components |
 | --- | --- |
 | Editor | `components/EditorGroup.tsx`, `components/ConfiguredEditor.tsx`, `components/Preview.tsx` |
-| Sidebar | `components/sidebar/` — `ExplorerView`, `SearchView`, `SourceControlView`, `DebugView`, `TestingView`, `ExtensionsView` |
+| Sidebar | `components/sidebar/` — `ExplorerView`, `SearchView`, `SourceControlView`, `DebugView`, `TestingView`, `ExtensionsView`, `DictionaryView` |
 | Panel | `components/panel/` — `ProblemsPanel`, `TerminalPanel` |
 | Chrome | `components/TitleBar.tsx`, `components/StatusBar.tsx`, `components/ActivityBar.tsx`, `components/panel/PanelHeader.tsx`, `components/ContextMenu.tsx` |
 | Dialogs | `components/dialogs/` — command palette, theme picker, settings, settings editor, snippets, keyboard shortcuts, collaboration, remote, new project, new file |

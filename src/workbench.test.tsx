@@ -410,3 +410,92 @@ describe('the builder, from the workbench', () => {
     expect(container.querySelector('.block-palette-footer')?.textContent).toContain('1 from plugins')
   })
 })
+
+describe('the shell dictionary, from the workbench', () => {
+  /** Opens the dictionary the way a user does: the activity bar icon. */
+  function openDictionary() {
+    click(buttonsLabelled('Shell Dictionary')[0])
+  }
+
+  function searchDictionary(value: string) {
+    type(container.querySelector<HTMLInputElement>('.dictionary-search input')!, value)
+  }
+
+  function terminalText() {
+    return [...container.querySelectorAll('.terminal-line')].map((line) => line.textContent).join('\n')
+  }
+
+  function runInTerminal(command: string) {
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Terminal input"]')!
+    type(input, command)
+    act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+  }
+
+  it('is reachable from the activity bar and lists hundreds of commands', () => {
+    openDictionary()
+    expect(container.querySelector('.dictionary-list')).not.toBeNull()
+    expect(container.querySelector('.dictionary-footer')?.textContent).toMatch(/\d{3} commands/)
+  })
+
+  it('opens a manual page from the sidebar', () => {
+    openDictionary()
+    searchDictionary('rsync')
+    click(container.querySelector('.dictionary-item')!)
+    expect(container.querySelector('.dictionary-synopsis')?.textContent).toContain('rsync [OPTION]...')
+  })
+
+  it('runs an example straight into the terminal', () => {
+    openDictionary()
+    searchDictionary('tar')
+    click([...container.querySelectorAll('.dictionary-item')][0])
+    click(container.querySelector('.dictionary-example button')!)
+    expect(terminalText()).toContain('tar czf')
+  })
+
+  it('answers man at the prompt, from the dictionary', () => {
+    runInTerminal('man grep')
+    const text = terminalText()
+    expect(text).toContain('grep — Print lines matching a pattern')
+    expect(text).toContain('SYNOPSIS')
+    expect(text).toContain('-r, -R')
+  })
+
+  it('suggests the command behind a typo instead of only refusing', () => {
+    runInTerminal('gti status')
+    expect(terminalText()).toContain('Did you mean: git')
+  })
+
+  it('explains what is typed, under the prompt, as it is typed', () => {
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Terminal input"]')!
+    type(input, 'tar xzf release.tgz')
+    expect(container.querySelector('.terminal-hint')?.textContent)
+      .toContain('tar — Create and extract tar archives')
+  })
+
+  it('reads the typed line back in English from the command palette', () => {
+    type(container.querySelector<HTMLInputElement>('[aria-label="Terminal input"]')!, 'rm -rf build')
+    run('Explain the Terminal Command')
+    const text = terminalText()
+    expect(text).toContain('rm — Remove files and directories')
+    expect(text).toContain('-r — Remove directories and their contents')
+    expect(text).toContain('There is no undo')
+  })
+
+  it('opens from the command palette', () => {
+    run('Shell Dictionary: Browse Commands')
+    expect(container.querySelector('.dictionary-list')).not.toBeNull()
+  })
+
+  it('documents a workspace command, and then answers questions about it', () => {
+    run('Document a Command')
+    expect(text()).toContain('team.commands.json')
+
+    openDictionary()
+    expect(container.querySelector('.dictionary-footer')?.textContent).toContain('1 from this workspace')
+    searchDictionary('deploy')
+    expect(container.querySelector('.dictionary-item')?.textContent).toContain('Ship the current branch to staging')
+
+    runInTerminal('whatis deploy')
+    expect(terminalText()).toContain('Ship the current branch to staging')
+  })
+})

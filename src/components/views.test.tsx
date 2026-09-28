@@ -18,6 +18,7 @@ import { SourceControlView } from './sidebar/SourceControlView'
 import { DebugView } from './sidebar/DebugView'
 import { TestingView } from './sidebar/TestingView'
 import { ExtensionsView } from './sidebar/ExtensionsView'
+import { DictionaryView } from './sidebar/DictionaryView'
 import { ExplorerView } from './sidebar/ExplorerView'
 import { ActivityBar } from './ActivityBar'
 import { TitleBar, type Menu } from './TitleBar'
@@ -26,6 +27,7 @@ import { PanelHeader } from './panel/PanelHeader'
 import { ProblemsPanel } from './panel/ProblemsPanel'
 import { TerminalPanel } from './panel/TerminalPanel'
 import { MarkerSeverity } from '../markers/markerService'
+import { createDictionary, shellDictionary } from '../shell/commandDictionary'
 
 // React only allows act() when the environment declares itself a test.
 ;(globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -472,5 +474,98 @@ describe('panel header', () => {
     click('Split terminal')
     expect(selected).toEqual(['OUTPUT'])
     expect(split).toBe(1)
+  })
+})
+
+describe('shell dictionary view', () => {
+  const props = {
+    dictionary: shellDictionary,
+    contributed: 0,
+    problems: [],
+    onRun: noop,
+    onDocumentCommand: noop,
+  }
+
+  /** Types into the search box the way a person does. */
+  function search(value: string) {
+    const input = container.querySelector<HTMLInputElement>('.dictionary-search input')!
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!
+    act(() => {
+      setter.call(input, value)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+  }
+
+  it('lists commands with their summaries and says how many it knows', () => {
+    const dom = render(<DictionaryView {...props} />)
+    expect(dom.querySelectorAll('.dictionary-item').length).toBeGreaterThan(50)
+    expect(dom.querySelector('.dictionary-footer')?.textContent)
+      .toContain(`${shellDictionary.entries.length} commands`)
+  })
+
+  it('narrows the list as the query is typed', () => {
+    const dom = render(<DictionaryView {...props} />)
+    const before = dom.querySelectorAll('.dictionary-item').length
+    search('archive')
+    const after = [...dom.querySelectorAll('.dictionary-item')]
+    expect(after.length).toBeLessThan(before)
+    expect(after[0].textContent).toContain('tar')
+  })
+
+  it('offers the nearest command when the query matches nothing', () => {
+    const dom = render(<DictionaryView {...props} />)
+    search('gerp')
+    expect(dom.querySelector('.dictionary-empty')?.textContent).toContain('grep')
+  })
+
+  it('filters to one group and reports its size', () => {
+    const dom = render(<DictionaryView {...props} />)
+    click('Containers')
+    const containers = shellDictionary.counts().find((row) => row.group === 'Containers')!.count
+    expect(dom.querySelectorAll('.dictionary-item').length).toBe(containers)
+  })
+
+  it('opens the manual page for a command', () => {
+    const dom = render(<DictionaryView {...props} />)
+    search('rsync')
+    click('rsync')
+    expect(dom.querySelector('.dictionary-synopsis')?.textContent).toContain('rsync [OPTION]...')
+    expect(dom.querySelectorAll('.dictionary-options dt').length).toBeGreaterThan(4)
+    expect(dom.querySelector('.dictionary-warning')?.textContent).toContain('--delete removes files')
+  })
+
+  it('runs an example, and offers to read the page in the terminal', () => {
+    const run: string[] = []
+    const dom = render(<DictionaryView {...props} onRun={(command) => run.push(command)} />)
+    search('tar')
+    click('tar')
+    act(() => { dom.querySelector<HTMLButtonElement>('.dictionary-example button')!.click() })
+    click('man tar')
+    expect(run[0]).toContain('tar czf')
+    expect(run[1]).toBe('man tar')
+  })
+
+  it('walks to a related command and back to the list', () => {
+    const dom = render(<DictionaryView {...props} />)
+    search('gzip')
+    click('gzip')
+    click('tar')
+    expect(dom.querySelector('.dictionary-page-head h3')?.textContent).toBe('tar')
+    click('Back to the list')
+    expect(dom.querySelector('.dictionary-list')).toBeTruthy()
+  })
+
+  it('shows what the workspace contributed, and what it could not read', () => {
+    const dictionary = createDictionary([
+      { name: 'deploy', group: 'Development', summary: 'Ship the branch', synopsis: 'deploy [SERVICE]', source: 'team.commands.json' },
+    ])
+    const dom = render(
+      <DictionaryView {...props} dictionary={dictionary} contributed={1} problems={['old.commands.json: not valid JSON']} />,
+    )
+    expect(dom.querySelector('.dictionary-footer')?.textContent).toContain('1 from this workspace')
+    expect(dom.querySelector('.dictionary-problems')?.textContent).toContain('not valid JSON')
+    search('deploy')
+    click('deploy')
+    expect(dom.querySelector('.dictionary-provenance')?.textContent).toContain('team.commands.json')
   })
 })
