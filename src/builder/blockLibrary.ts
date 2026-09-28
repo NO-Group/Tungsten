@@ -407,6 +407,36 @@ const authSignUp = defineBlock({
   parse: parseCall('await auth.signUp', ['email', 'password']),
 })
 
+const authOauth = defineBlock({
+  type: 'auth.oauth',
+  label: 'Sign In with Provider',
+  category: 'Auth',
+  description: 'Starts an OAuth sign-in with Google, GitHub or Apple.',
+  isAsync: true,
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'provider', label: 'Provider', type: 'String', default: 'google', required: true },
+    { id: 'redirect', label: 'Redirect to', type: 'String', default: '/' },
+  ],
+  outputs: [
+    { id: 'exec', label: 'Then', type: 'Exec' },
+    { id: 'user', label: 'User', type: 'Object' },
+  ],
+  generate: ({ input, symbol, node }) => {
+    // The provider is a fixed choice rather than an expression: an OAuth
+    // provider interpolated from a connected block is a redirect waiting to
+    // be pointed somewhere it should not go.
+    const allowed = ['google', 'github', 'apple', 'microsoft']
+    const raw = String(node.values.provider ?? 'google').toLowerCase()
+    const provider = allowed.includes(raw) ? raw : 'google'
+    return `const ${symbol} = await auth.oauth(${quote(provider)}, { redirectTo: ${input('redirect')} })`
+  },
+  parse: (statement) => {
+    const match = /^await auth\.oauth\("([a-z]+)", \{ redirectTo: (.*) \}\)$/.exec(statement)
+    return match ? { inputs: { provider: `"${match[1]}"`, redirect: match[2] } } : undefined
+  },
+})
+
 const authSession = defineBlock({
   type: 'auth.session',
   label: 'Current Session',
@@ -449,6 +479,6 @@ export const builtinBlocks: BlockDefinition[] = [
   logicIf, logicForEach, logicCompare, logicMath, logicLog,
   dataQuery, dataInsert, dataVariable, dataNumber,
   networkFetch,
-  authSignUp, authSession,
+  authSignUp, authOauth, authSession,
   storageUpload,
 ]

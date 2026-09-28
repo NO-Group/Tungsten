@@ -35,6 +35,8 @@ export type BuilderDiagnostic = {
   portId?: string
   /** Written for the person who drew the graph, not for a compiler. */
   message: string
+  /** What to do about it, in one sentence. Always present. */
+  fix: string
   code: IntegrityRule
 }
 
@@ -144,7 +146,8 @@ export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): Inte
       severity: 'error',
       nodeId: node.id,
       code: 'unknown-block',
-      message: `“${node.type}” is not a block this workspace knows. Install the plugin that provides it, or delete the block.`,
+      message: `“${node.type}” is not a block this workspace knows.`,
+      fix: `Install the plugin that provides “${node.type}”, or delete the block.`,
     })
   }
 
@@ -164,7 +167,8 @@ export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): Inte
         nodeId: target.id,
         connectionId: connection.id,
         code: 'type-mismatch',
-        message: 'This link points at a port that no longer exists. Redraw it.',
+        message: 'This link points at a port that no longer exists.',
+        fix: 'Delete the link and draw it again to whichever port replaced it.',
       })
       continue
     }
@@ -177,6 +181,7 @@ export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): Inte
         portId: input.id,
         code: 'type-mismatch',
         message: `“${sourceDefinition.label} → ${output.label}” gives ${ARTICLE[output.type]}, but “${input.label}” needs ${ARTICLE[input.type]}.`,
+        fix: `Remove the link, or put a block between them that turns ${ARTICLE[output.type]} into ${ARTICLE[input.type]}.`,
       })
     }
   }
@@ -197,7 +202,8 @@ export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): Inte
       severity: 'error',
       nodeId: component[0],
       code: 'cycle',
-      message: `These blocks run in a circle and would never finish: ${labels}. Break one of the links.`,
+      message: `These blocks run in a circle and would never finish: ${labels}.`,
+      fix: 'Delete one link in the loop. If you meant to repeat something, use a For Each block instead.',
     })
   }
 
@@ -217,7 +223,8 @@ export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): Inte
       code: 'orphan',
       message: isolated
         ? `“${definition.label}” is not connected to anything, so it will not run or appear in the code.`
-        : `Nothing leads to “${definition.label}”. Connect it to an event to make it run.`,
+        : `Nothing leads to “${definition.label}”.`,
+      fix: 'Link its Run port to the step before it, or delete the block.',
     })
   }
 
@@ -239,6 +246,7 @@ export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): Inte
             portId: port.id,
             code: 'missing-input',
             message: `“${definition.label}” needs ${ARTICLE[port.type]} for “${port.label}”.`,
+            fix: `Type a value into “${port.label}”, or connect a block that produces ${ARTICLE[port.type]}.`,
           })
         }
         continue
@@ -258,7 +266,8 @@ export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): Inte
           connectionId: link.id,
           portId: port.id,
           code: 'unreachable-value',
-          message: `“${definition.label}” reads “${sourceDefinition.label}”, but that block never runs. Put it in the chain before this one.`,
+          message: `“${definition.label}” reads “${sourceDefinition.label}”, but that block never runs.`,
+          fix: `Put “${sourceDefinition.label}” in the execution chain before this block.`,
         })
       }
     }
@@ -278,7 +287,8 @@ export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): Inte
       severity: 'warning',
       nodeId: node.id,
       code: 'unused-result',
-      message: `“${definition.label}” waits for a result that nothing reads. That is a round trip you are paying for and throwing away.`,
+      message: `“${definition.label}” waits for a result that nothing reads.`,
+      fix: 'Connect its result to something, or delete the block: you are paying for a round trip and discarding it.',
     })
   }
 

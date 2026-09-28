@@ -11,6 +11,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { resetIds } from '../../builder/graph'
 import { PARSE_DEBOUNCE } from '../../builder/useBuilder'
+import { PREVIEW_CHANNEL } from '../../builder/previewRuntime'
+import { EXAMPLE_PLUGIN, loadPluginBlocks } from '../../builder/pluginBlocks'
 
 // Monaco cannot run in jsdom; the code pane becomes a textarea that behaves
 // the same way from the outside: it shows `value` and reports edits.
@@ -31,17 +33,25 @@ let container: HTMLDivElement
 let root: Root
 const notify = vi.fn()
 
+const plugins = loadPluginBlocks([{ path: 'plugins/notify.block.json', content: EXAMPLE_PLUGIN }])
+
 /** The builder surface plus its sidebar palette, wired as App wires them. */
 function Harness() {
-  const builder = useBuilder({ notify })
+  const builder = useBuilder({ notify, plugins: plugins.blocks })
   return (
     <>
-      <BlockPalette registry={builder.registry} onAdd={builder.addBlock} />
+      <BlockPalette
+        registry={builder.registry}
+        pluginCount={plugins.blocks.length}
+        pluginProblems={plugins.problems}
+        onAdd={builder.addBlock}
+      />
       <BuilderView
         builder={builder}
         editorOptions={{}}
         theme="tungsten"
         onExport={() => undefined}
+        onBuild={() => undefined}
         onClose={() => undefined}
       />
     </>
@@ -68,6 +78,23 @@ function click(element: Element | null | undefined) {
   act(() => { (element as HTMLElement).click() })
 }
 
+/**
+ * Lets passive effects run.
+ *
+ * React flushes them through the host scheduler, which these tests have
+ * swapped for fake timers, so an effect's work -- persistence, in particular
+ * -- has not happened yet when a click returns. An async `act` yields far
+ * enough for the scheduler to drain.
+ */
+async function flushEffects() {
+  // The scheduler that drains React's passive effects runs on a macrotask,
+  // which fake timers do not advance; the test has to hand the event loop
+  // back for real before an effect's work can be observed.
+  vi.useRealTimers()
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)) })
+  vi.useFakeTimers()
+}
+
 function palette(label: string) {
   return [...container.querySelectorAll('.block-palette-item')]
     .find((item) => item.querySelector('.block-palette-label')?.textContent === label)
@@ -80,6 +107,7 @@ beforeEach(() => {
   resetIds()
   notify.mockClear()
   Element.prototype.scrollIntoView = vi.fn()
+  Element.prototype.scrollTo = vi.fn()
   vi.useFakeTimers()
   render()
 })
@@ -96,9 +124,16 @@ describe('the builder surface', () => {
     expect(code()).toContain('No events yet')
   })
 
-  it('lists every built-in block, grouped', () => {
-    expect(container.querySelectorAll('.block-palette-item').length).toBe(18)
+  it('lists every built-in block plus the workspace plugins, grouped', () => {
+    expect(container.querySelectorAll('.block-palette-item').length).toBe(20)
     expect(container.querySelectorAll('.block-palette-groups section').length).toBe(7)
+    expect(container.querySelector('.block-palette-footer')?.textContent).toContain('1 from plugins')
+  })
+
+  it('offers a plugin block that generates its own template', () => {
+    click(palette('Send Notification'))
+    expect(code()).toContain('// No events yet')
+    expect(container.querySelectorAll('.builder-node').length).toBe(1)
   })
 
   it('filters the library', () => {
@@ -207,11 +242,122 @@ describe('the builder surface', () => {
     expect(container.querySelectorAll('.builder-node').length).toBe(0)
   })
 
-  it('keeps the graph across a remount', () => {
+  it('keeps the graph across a remount', async () => {
     click(palette('On App Start'))
+    await flushEffects()
     act(() => root.unmount())
     container.remove()
     render()
     expect(container.querySelectorAll('.builder-node').length).toBe(1)
+  })
+})
+
+describe('the preview, the database and the build', () => {
+  const tab = (label: string) => [...container.querySelectorAll('.builder-tabs button')]
+    .find((button) => button.textContent?.trim().startsWith(label))
+
+  /** Wires a button to a click handler that logs, the whole app in four clicks. */
+  function clickableApp() {
+    click(palette('Button'))
+    click(palette('On Click'))
+    click(palette('Log'))
+    click(container.querySelector('[aria-label="Output Then of On Click"]'))
+    click(container.querySelector('[aria-label="Input Run of Log"]'))
+  }
+
+  it('runs the interface in a sandboxed frame', () => {
+    clickableApp()
+    click(tab('Preview'))
+    const frame = container.querySelector('iframe') as HTMLIFrameElement
+    expect(frame.getAttribute('sandbox')).toBe('allow-scripts')
+    expect(frame.getAttribute('srcdoc')).toContain('<button id="submit"')
+    expect(frame.getAttribute('srcdoc')).toContain('app.onClick')
+  })
+
+  it('shows what the running app logs', () => {
+    click(tab('Preview'))
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        data: { channel: PREVIEW_CHANNEL, kind: 'log', text: 'saved' },
+      }))
+    })
+    expect(container.querySelector('.builder-console-lines')?.textContent).toContain('saved')
+  })
+
+  it('ignores messages that are not the preview talking', () => {
+    click(tab('Preview'))
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', { data: { kind: 'log', text: 'from somewhere else' } }))
+    })
+    expect(container.querySelector('.builder-console-lines')?.textContent).toContain('Nothing logged yet')
+  })
+
+  it('traces a runtime failure back to the block that threw', () => {
+    click(palette('On App Start'))
+    click(palette('Log'))
+    click(container.querySelector('[aria-label="Output Then of On App Start"]'))
+    click(container.querySelector('[aria-label="Input Run of Log"]'))
+    const line = code().split('\n').findIndex((text) => text.includes('console.log')) + 1
+    click(tab('Preview'))
+    act(() => {
+      window.dispatchEvent(new MessageEvent('message', {
+        data: { channel: PREVIEW_CHANNEL, kind: 'error', text: 'x is not defined', line },
+      }))
+    })
+    expect(container.querySelector('.builder-preview-failure')?.textContent).toContain('“Log” failed while running')
+    expect(container.querySelector('.builder-node.selected .builder-node-title')?.textContent).toBe('Log')
+  })
+
+  it('draws a table and shows the migration it will write', () => {
+    click(tab('Data'))
+    click(container.querySelector('.builder-schema header button'))
+    type(container.querySelector('[aria-label="Table 1 name"]') as HTMLInputElement, 'posts')
+    expect(container.querySelector('.builder-migration')?.textContent).toContain('create table if not exists posts')
+    expect(container.querySelector('.builder-migration')?.textContent).toContain('id bigserial primary key')
+  })
+
+  it('adds and removes columns', () => {
+    click(tab('Data'))
+    click(container.querySelector('.builder-schema header button'))
+    click(container.querySelector('.builder-add-column'))
+    expect(container.querySelectorAll('.builder-table li').length).toBe(2)
+    click(container.querySelector('[aria-label="Delete column column_2"]'))
+    expect(container.querySelectorAll('.builder-table li').length).toBe(1)
+  })
+
+  it('keeps the schema across a remount', async () => {
+    click(tab('Data'))
+    click(container.querySelector('.builder-schema header button'))
+    await flushEffects()
+    act(() => root.unmount())
+    container.remove()
+    render()
+    click(tab('Data'))
+    expect(container.querySelectorAll('.builder-table').length).toBe(1)
+  })
+
+  it('will not build while the graph has errors', () => {
+    click(palette('On App Start'))
+    click(palette('Upload File'))
+    click(container.querySelector('[aria-label="Output Then of On App Start"]'))
+    click(container.querySelector('[aria-label="Input Run of Upload File"]'))
+    const build = [...container.querySelectorAll('.builder-toolbar button')]
+      .find((button) => button.textContent?.includes('Build')) as HTMLButtonElement
+    expect(build.disabled).toBe(true)
+  })
+
+  it('builds once the graph is sound', () => {
+    clickableApp()
+    const build = [...container.querySelectorAll('.builder-toolbar button')]
+      .find((button) => button.textContent?.includes('Build')) as HTMLButtonElement
+    expect(build.disabled).toBe(false)
+    expect([...container.querySelectorAll('[aria-label="Compile target"] option')].map((option) => option.textContent))
+      .toEqual(['Web bundle', 'Mobile source', 'Local runner'])
+  })
+
+  it('tells the user how to fix each problem, not just what is wrong', () => {
+    click(palette('Log'))
+    expect(container.querySelector('.builder-problem-fix')?.textContent)
+      .toContain('Link its Run port to the step before it')
   })
 })

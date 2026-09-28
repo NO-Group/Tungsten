@@ -14,11 +14,15 @@ export type BlockPaletteProps = {
   registry: BlockRegistry
   /** Count of plugin-contributed blocks, shown so the SDK is visible. */
   pluginCount?: number
+  /** Manifests that failed to load, named so they can be fixed. */
+  pluginProblems?: Array<{ path: string; message: string }>
   disabled?: boolean
   onAdd: (type: string) => void
+  onAddExamplePlugin?: () => void
 }
 
-export function BlockPalette({ registry, pluginCount = 0, disabled, onAdd }: BlockPaletteProps) {
+export function BlockPalette(props: BlockPaletteProps) {
+  const { registry, pluginCount = 0, pluginProblems = [], disabled, onAdd, onAddExamplePlugin } = props
   const [query, setQuery] = useState('')
   const needle = query.trim().toLowerCase()
 
@@ -71,9 +75,24 @@ export function BlockPalette({ registry, pluginCount = 0, disabled, onAdd }: Blo
         {!groups.length && <div className="sidebar-empty compact"><span>No block matches “{query}”</span></div>}
       </div>
 
+      {Boolean(pluginProblems.length) && (
+        <ul className="block-palette-problems">
+          {pluginProblems.map((problem) => (
+            <li key={problem.path}><strong>{problem.path}</strong> {problem.message}</li>
+          ))}
+        </ul>
+      )}
+
       <footer className="block-palette-footer">
-        {registry.all().length} blocks
-        {pluginCount > 0 && `, ${pluginCount} from plugins`}
+        <span>
+          {registry.all().length} blocks
+          {pluginCount > 0 && `, ${pluginCount} from plugins`}
+        </span>
+        {onAddExamplePlugin && (
+          <button onClick={onAddExamplePlugin} title={`Writes an example manifest into ${'plugins/'}`}>
+            Add plugin
+          </button>
+        )}
       </footer>
     </div>
   )

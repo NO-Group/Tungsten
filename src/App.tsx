@@ -86,6 +86,8 @@ import { ExplorerView } from './components/sidebar/ExplorerView'
 import { BlockPalette } from './components/builder/BlockPalette'
 import { BuilderView } from './components/builder/BuilderView'
 import { useBuilder } from './builder/useBuilder'
+import { EXAMPLE_PLUGIN, PLUGIN_DIRECTORY, PLUGIN_SUFFIX, loadPluginBlocks } from './builder/pluginBlocks'
+import type { CompileTarget } from './builder/compile'
 import { TerminalPanel } from './components/panel/TerminalPanel'
 import {
   type EditorGroupLayout,
@@ -601,9 +603,34 @@ export default function App() {
    * It owns its own graph and keeps the generated code beside it; the
    * workbench only decides when it is on screen and where its output goes.
    */
-  const builder = useBuilder({ notify })
+  /**
+   * Plugin blocks are scanned out of the workspace on every change, so a
+   * block appears in the library the moment its manifest is saved rather
+   * than at the next restart.
+   */
+  const pluginLoad = useMemo(() => loadPluginBlocks(files), [files])
+  const builder = useBuilder({ notify, plugins: pluginLoad.blocks })
   const [builderOpen, setBuilderOpen] = useState(false)
   const BUILDER_OUTPUT = 'src/generated/blocks.ts'
+
+  /** Writes generated files into the workspace, replacing what is there. */
+  const writeGeneratedFiles = useCallback((written: Array<{ path: string; contents: string }>) => {
+    setFiles((current) => {
+      const next = [...current]
+      for (const file of written) {
+        const index = next.findIndex((candidate) => candidate.path === file.path)
+        const entry = { path: file.path, content: file.contents, language: languageForPath(file.path) }
+        if (index >= 0) next[index] = { ...next[index], ...entry }
+        else next.push(entry)
+      }
+      return next
+    })
+    setDirty((current) => {
+      const next = new Set(current)
+      written.forEach((file) => next.add(file.path))
+      return next
+    })
+  }, [])
 
   /** Writes the generated program into the workspace as an ordinary file. */
   const exportBuilderCode = useCallback((code: string) => {
@@ -615,6 +642,27 @@ export default function App() {
     openFile(BUILDER_OUTPUT)
     notify(`Blocks written to ${BUILDER_OUTPUT}`)
   }, [notify, openFile])
+
+  /** Compiles the graph for a target and drops the result in the workspace. */
+  const buildBuilderTarget = useCallback((target: CompileTarget) => {
+    const result = builder.build(target)
+    if (!result.ok) {
+      notify(result.reason)
+      return
+    }
+    writeGeneratedFiles(result.files)
+    setBuilderOpen(false)
+    openFile(result.files[0].path)
+    notify(`Built ${result.summary}`)
+  }, [builder, notify, openFile, writeGeneratedFiles])
+
+  /** Drops a worked example into `plugins/`, so the SDK has a starting point. */
+  const createExamplePlugin = useCallback(() => {
+    const path = `${PLUGIN_DIRECTORY}/notify${PLUGIN_SUFFIX}`
+    writeGeneratedFiles([{ path, contents: EXAMPLE_PLUGIN }])
+    openFile(path)
+    notify('Example block plugin added to plugins/')
+  }, [notify, openFile, writeGeneratedFiles])
 
   const buildPreview = useCallback(() => {
     const get = (path: string) => files.find((file) => file.path === path)?.content ?? ''
@@ -938,6 +986,10 @@ export default function App() {
       { id: 'workbench.action.toggleGroupOrientation', label: 'View: Toggle Editor Group Layout', detail: layout.orientation === 'horizontal' ? 'Switch to stacked' : 'Switch to side-by-side', icon: SplitSquareHorizontal, when: 'multipleGroups', action: () => setLayout((current) => ({ ...current, orientation: current.orientation === 'horizontal' ? 'vertical' : 'horizontal' })) },
       { id: 'builder.open', label: 'Builder: Open Visual Builder', detail: `${builder.graph.nodes.length} blocks on the canvas`, icon: Puzzle, action: () => { setBuilderOpen(true); showView('builder') } },
       { id: 'builder.close', label: 'Builder: Back to the Editor', detail: 'Leave the canvas, keep the graph', icon: Code2, when: 'builderOpen', action: () => setBuilderOpen(false) },
+      { id: 'builder.buildWeb', label: 'Builder: Build the Web Bundle', detail: 'index.html, the program, and the UI schema', icon: Hammer, action: () => buildBuilderTarget('web') },
+      { id: 'builder.buildMobile', label: 'Builder: Export Mobile Source', detail: 'Flutter widgets and handlers from the same graph', icon: Hammer, action: () => buildBuilderTarget('mobile') },
+      { id: 'builder.buildRunner', label: 'Builder: Build the Local Runner', detail: 'A dependency-free server for the built bundle', icon: Rocket, action: () => buildBuilderTarget('node') },
+      { id: 'builder.newPlugin', label: 'Builder: Add an Example Block Plugin', detail: `Writes ${PLUGIN_DIRECTORY}/notify${PLUGIN_SUFFIX}`, icon: PackagePlus, action: createExamplePlugin },
       { id: 'builder.writeFile', label: 'Builder: Write Generated Code to the Workspace', detail: builder.report.compilable ? `Write ${BUILDER_OUTPUT}` : 'Blocked: the graph has errors', icon: FileDown, when: 'builderOpen', action: () => { if (builder.report.compilable) exportBuilderCode(builder.program.code); else notify('Fix the integrity errors first') } },
       { id: 'workbench.action.toggleSidePreview', label: 'View: Toggle Side Preview', detail: sidePreview ? 'Close the live preview pane' : 'Open the live preview pane', icon: Eye, action: () => setSidePreview((value) => !value) },
       { id: 'workbench.action.closeEditorsInGroup', label: 'View: Close All Editors in Group', detail: `${openTabs.length} open`, icon: X, when: 'editorIsOpen', action: () => { openTabs.forEach((path) => closeTab(path)) } },
@@ -1515,8 +1567,11 @@ export default function App() {
     if (activity === 'builder') return (
       <BlockPalette
         registry={builder.registry}
+        pluginCount={pluginLoad.blocks.length}
+        pluginProblems={pluginLoad.problems}
         disabled={Boolean(builder.parseError)}
         onAdd={(type) => { setBuilderOpen(true); builder.addBlock(type) }}
+        onAddExamplePlugin={createExamplePlugin}
       />
     )
     return (
@@ -1774,6 +1829,7 @@ export default function App() {
                 editorOptions={editorOptions.editor}
                 theme={monacoThemeName(activeTheme)}
                 onExport={exportBuilderCode}
+                onBuild={buildBuilderTarget}
                 onClose={() => setBuilderOpen(false)}
               />
             ) : (
