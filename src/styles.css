@@ -1543,3 +1543,34 @@ kbd { font-family: 'JetBrains Mono', monospace; }
   font-size: 11px;
   font-style: italic;
 }
+
+.contribution-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 0 10px 6px;
+  padding: 8px 10px;
+  background: var(--raised);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--muted);
+}
+
+.contribution-card strong { display: block; color: var(--strong); font-size: 11.5px; }
+.contribution-card p { margin: 2px 0 0; font-size: 10.5px; line-height: 1.45; }
+.contribution-card code { color: var(--accent); font-family: var(--mono); font-size: 10px; }
+
+.contribution-card button {
+  flex: none;
+  align-self: center;
+  padding: 3px 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.contribution-card button:hover { background: var(--list-hover); border-color: var(--bright); color: var(--strong); }

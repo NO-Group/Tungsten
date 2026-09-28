@@ -252,6 +252,21 @@ Every dialog is built on one `Modal` shell, so backdrop dismissal, Escape, the d
 
 None of these components reads `localStorage` or calls `window.tungsten`: desktop capability arrives as a prop, so every view renders in the browser build and in jsdom. `src/components/views.test.tsx` and `src/components/dialogs.test.tsx` mount each one and drive it, and `src/platform.test.ts` enforces the boundary.
 
+## Extending Tungsten
+
+Four extension points, all read from the workspace you have open:
+
+| I want to… | Put a file here | Runs code? |
+| --- | --- | --- |
+| Add a block to the visual builder | `plugins/*.block.json` | no — it is a template |
+| Add a block that needs real logic | `src/builder/blockLibrary.ts` via `defineBlock` | yes, it is app source |
+| Document a shell command | `dictionary/*.commands.json` | no — it is data |
+| Add IDE commands, languages, themes | `extensions/<id>/extension.json` | only if you opt in |
+
+Full worked examples, the field reference and the failure messages are in
+**[docs/PLUGINS.md](docs/PLUGINS.md)**. The visual builder's specification and
+where each part of it is implemented is in **[docs/BLUEPRINT.md](docs/BLUEPRINT.md)**.
+
 ## Validation
 
 ```bash

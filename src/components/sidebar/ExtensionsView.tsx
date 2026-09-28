@@ -7,7 +7,7 @@
  * declares.
  */
 
-import { CircleStop, PackagePlus, Play, Search, ShieldCheck, Trash2 } from 'lucide-react'
+import { BookOpen, CircleStop, PackagePlus, Play, Puzzle, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { TipButton } from '../TipButton'
 
 /** The contribution points that ship inside the workbench itself. */
@@ -25,9 +25,16 @@ export type ExtensionsViewProps = {
   onInstall: () => void
   onToggleEnabled: (extension: ExtensionManifest) => void
   onUninstall: (id: string) => void
+  /** Writes the worked example for a builder block into `plugins/`. */
+  onAddBlockPlugin: () => void
+  /** Writes the worked example for a shell command into `dictionary/`. */
+  onDocumentCommand: () => void
 }
 
-export function ExtensionsView({ extensions, languageCount, onInstall, onToggleEnabled, onUninstall }: ExtensionsViewProps) {
+export function ExtensionsView({
+  extensions, languageCount, onInstall, onToggleEnabled, onUninstall,
+  onAddBlockPlugin, onDocumentCommand,
+}: ExtensionsViewProps) {
   return (
     <>
       <div className="sidebar-title">
@@ -44,6 +51,29 @@ export function ExtensionsView({ extensions, languageCount, onInstall, onToggleE
           <p>Install commands, themes and language contributions from a local folder.</p>
         </div>
         <button onClick={onInstall}>Install</button>
+      </div>
+
+      {/*
+        The other two extension points are files in the workspace rather than
+        installed packages, so they would otherwise be invisible here -- which
+        is exactly where someone looks for "how do I add one?".
+      */}
+      <div className="section-heading"><span>WORKSPACE CONTRIBUTIONS</span></div>
+      <div className="contribution-card">
+        <Puzzle size={13} />
+        <div>
+          <strong>Builder blocks</strong>
+          <p><code>plugins/*.block.json</code> — a block appears in the builder palette as soon as the file is saved.</p>
+        </div>
+        <button onClick={onAddBlockPlugin}>Add example</button>
+      </div>
+      <div className="contribution-card">
+        <BookOpen size={13} />
+        <div>
+          <strong>Shell commands</strong>
+          <p><code>dictionary/*.commands.json</code> — documents your own commands for <code>man</code>, <code>apropos</code> and <code>explain</code>.</p>
+        </div>
+        <button onClick={onDocumentCommand}>Add example</button>
       </div>
 
       <div className="section-heading"><span>BUILT IN</span><span className="count-pill">{builtIns.length}</span></div>

@@ -207,7 +207,7 @@ describe('extensions view', () => {
 
   it('offers to re-enable a disabled extension', () => {
     const onToggleEnabled = vi.fn()
-    render(<ExtensionsView extensions={[extension]} languageCount={21} onInstall={noop} onToggleEnabled={onToggleEnabled} onUninstall={noop} />)
+    render(<ExtensionsView extensions={[extension]} languageCount={21} onInstall={noop} onToggleEnabled={onToggleEnabled} onUninstall={noop} onAddBlockPlugin={noop} onDocumentCommand={noop} />)
     expect(container.textContent).toContain('21 bundled language grammars')
     expect(container.textContent).toContain('Permissions: commands')
     expect(container.querySelector('.extension-card.managed')?.className).toContain('disabled')
@@ -474,6 +474,39 @@ describe('panel header', () => {
     click('Split terminal')
     expect(selected).toEqual(['OUTPUT'])
     expect(split).toBe(1)
+  })
+})
+
+describe('the workspace contribution points', () => {
+  const props = {
+    extensions: [],
+    languageCount: 21,
+    onInstall: noop,
+    onToggleEnabled: noop,
+    onUninstall: noop,
+    onAddBlockPlugin: noop,
+    onDocumentCommand: noop,
+  }
+
+  it('says where a builder block and a documented command go', () => {
+    const dom = render(<ExtensionsView {...props} />)
+    expect(dom.textContent).toContain('plugins/*.block.json')
+    expect(dom.textContent).toContain('dictionary/*.commands.json')
+  })
+
+  it('writes the worked example for whichever one is asked for', () => {
+    const asked: string[] = []
+    const dom = render(
+      <ExtensionsView
+        {...props}
+        onAddBlockPlugin={() => asked.push('block')}
+        onDocumentCommand={() => asked.push('command')}
+      />,
+    )
+    const buttons = [...dom.querySelectorAll('.contribution-card button')]
+    act(() => { (buttons[0] as HTMLButtonElement).click() })
+    act(() => { (buttons[1] as HTMLButtonElement).click() })
+    expect(asked).toEqual(['block', 'command'])
   })
 })
 

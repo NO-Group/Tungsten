@@ -1645,6 +1645,8 @@ export default function App() {
         onInstall={() => { void project.installExtension() }}
         onToggleEnabled={(extension) => project.setExtensionEnabled(extension.id, extension.enabled === false)}
         onUninstall={project.uninstallExtension}
+        onAddBlockPlugin={createExamplePlugin}
+        onDocumentCommand={documentCommand}
       />
     )
     if (activity === 'dictionary') return (
