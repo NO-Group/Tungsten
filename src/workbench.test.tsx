@@ -499,3 +499,62 @@ describe('the shell dictionary, from the workbench', () => {
     expect(terminalText()).toContain('Ship the current branch to staging')
   })
 })
+
+describe('the terminal, when a real shell is behind it', () => {
+  /**
+   * Answers the health probe the way the dev server does.
+   *
+   * The workbench decides between a real PTY and the emulated shell from that
+   * one answer, so faking it here exercises the same branch a browser takes.
+   */
+  function withShellServer(available: boolean) {
+    const fetchImpl = vi.fn(async (input: RequestInfo | URL) => {
+      if (String(input).includes('/__tungsten/shell/health')) {
+        return new Response(
+          JSON.stringify({ available, shell: '/bin/bash', cwd: '/w', sessions: 0, maxSessions: 12 }),
+          { status: 200, headers: { 'content-type': 'application/json' } },
+        )
+      }
+      return new Response('', { status: 404 })
+    })
+    vi.stubGlobal('fetch', fetchImpl)
+  }
+
+  afterEach(() => { vi.unstubAllGlobals() })
+
+  it('uses the emulated shell when nothing is hosting a process', async () => {
+    withShellServer(false)
+    act(() => { root.unmount() })
+    render()
+    await act(async () => undefined)
+    expect(container.querySelector('[aria-label="Terminal input"]')).not.toBeNull()
+    expect(container.querySelector('.terminal-name')?.textContent).toContain('sandbox')
+  })
+
+  it('attaches xterm to the real shell when the server offers one', async () => {
+    withShellServer(true)
+    act(() => { root.unmount() })
+    render()
+    await act(async () => undefined)
+    expect(container.querySelector('[data-testid="desktop-terminal"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Terminal input"]')).toBeNull()
+    expect(container.querySelector('.terminal-name')?.textContent).toContain('pty')
+  })
+
+  it('sends a dictionary example to the real shell rather than emulating it', async () => {
+    withShellServer(true)
+    act(() => { root.unmount() })
+    render()
+    await act(async () => undefined)
+
+    click(buttonsLabelled('Shell Dictionary')[0])
+    type(container.querySelector<HTMLInputElement>('.dictionary-search input')!, 'tar')
+    click([...container.querySelectorAll('.dictionary-item')][0])
+    click(container.querySelector('.dictionary-example button')!)
+
+    // Nothing is echoed into an emulated scrollback: the command went to the
+    // process, which is what the xterm view is showing.
+    expect(container.querySelector('[data-testid="desktop-terminal"]')).not.toBeNull()
+    expect(container.querySelectorAll('.terminal-line').length).toBe(0)
+  })
+})

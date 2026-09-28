@@ -27,6 +27,11 @@ export type TerminalHost = {
   dirty: Set<string>
   /** The command dictionary `man`, `apropos` and `explain` answer from. */
   dictionary?: Dictionary
+  /**
+   * True when a real process host is attached -- Electron's PTY, or the dev
+   * server's. Commands then go to that shell instead of the emulation.
+   */
+  pty?: boolean
   /** Opens the panel on the terminal tab; every action here implies it. */
   revealTerminal: () => void
 }
@@ -39,7 +44,7 @@ function welcomeLines(): TerminalLine[] {
   ]
 }
 
-export function useTerminalSessions({ workspaceRoot, workspaceName, files, dirty, dictionary, revealTerminal }: TerminalHost) {
+export function useTerminalSessions({ workspaceRoot, workspaceName, files, dirty, dictionary, pty, revealTerminal }: TerminalHost) {
   const [layout, setLayout] = useState<TerminalLayout>(() => parseTerminalLayout(localStorage.getItem(TERMINAL_LAYOUT_KEY)))
   const nextIdRef = useRef(nextTerminalId(layout.tabs))
 
@@ -105,14 +110,24 @@ export function useTerminalSessions({ workspaceRoot, workspaceName, files, dirty
   /**
    * Runs a command in the panel.
    *
-   * On the desktop this is a real child process; in the browser the emulated
-   * shell answers from the in-memory workspace.
+   * Three hosts, in order of fidelity: a real PTY (Electron's, or the dev
+   * server's, both rendered by xterm), the desktop's one-shot child process
+   * runner, and finally the emulated shell that answers from the in-memory
+   * workspace when there is no process host at all.
    */
   const run = useCallback((raw: string) => {
     const entry = raw.trim()
     if (!entry) return
     setHistory((current) => [...current, entry])
     setHistoryIndex(-1)
+
+    if (pty) {
+      // Typed into the live shell, so `cd` sticks and the output is the
+      // process's own -- no reimplementation of anything.
+      revealTerminal()
+      setCommand((current) => ({ id: (current?.id || 0) + 1, command: entry }))
+      return
+    }
 
     if (window.tungsten && workspaceRoot) {
       if (entry === 'clear') return setLines([])
@@ -126,7 +141,7 @@ export function useTerminalSessions({ workspaceRoot, workspaceName, files, dirty
     const result = runSandboxCommand(entry, { workspaceName, files, dirty, dictionary })
     if (result.clear) setLines([])
     else setLines((current) => [...current, ...result.lines])
-  }, [dictionary, dirty, files, workspaceName, workspaceRoot])
+  }, [dictionary, dirty, files, pty, revealTerminal, workspaceName, workspaceRoot])
 
   /**
    * Runs a task command where the user can watch it.
@@ -136,13 +151,19 @@ export function useTerminalSessions({ workspaceRoot, workspaceName, files, dirty
    */
   const runTask = useCallback((entry: string) => {
     revealTerminal()
+    if (pty && !window.tungsten) {
+      // One shell in the browser build: the task runs where the user is
+      // looking, rather than in a tab they cannot see.
+      setCommand((current) => ({ id: (current?.id || 0) + 1, command: entry }))
+      return
+    }
     if (window.tungsten && workspaceRoot) {
       const terminalId = open(undefined, `task · ${entry.split(/\s+/)[0]}`)
       setCommand((current) => ({ id: (current?.id || 0) + 1, command: entry, terminalId }))
       return
     }
     run(entry)
-  }, [open, revealTerminal, run, workspaceRoot])
+  }, [open, pty, revealTerminal, run, workspaceRoot])
 
   const appendLine = useCallback((...added: TerminalLine[]) => setLines((current) => [...current, ...added]), [])
 

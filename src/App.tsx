@@ -93,6 +93,8 @@ import { EXAMPLE_PLUGIN, PLUGIN_DIRECTORY, PLUGIN_SUFFIX, loadPluginBlocks } fro
 import { createDictionary } from './shell/commandDictionary'
 import { explainCommandLine } from './shell/explainShell'
 import { DICTIONARY_DIRECTORY, EXAMPLE_COMMAND_FILE, loadWorkspaceCommands } from './shell/workspaceCommands'
+import { createSocketBackend, ipcBackend, probeShellServer } from './terminal/ptyClient'
+import type { ShellInfo } from './terminal/ptyProtocol'
 import type { CompileTarget } from './builder/compile'
 import { TerminalPanel } from './components/panel/TerminalPanel'
 import {
@@ -330,6 +332,26 @@ export default function App() {
 
   const activeFile = files.find((file) => file.path === activePath)
 
+  /**
+   * A real shell for the browser build.
+   *
+   * The desktop has Electron's PTY. In a browser, Tungsten asks the dev
+   * server whether it is hosting one; when it is, the terminal is bash rather
+   * than the emulation, and everything on the machine is runnable.
+   */
+  const [shellServer, setShellServer] = useState<ShellInfo | null>(null)
+  useEffect(() => {
+    if (window.tungsten) return
+    let cancelled = false
+    void probeShellServer().then((info) => { if (!cancelled) setShellServer(info) })
+    return () => { cancelled = true }
+  }, [])
+
+  const terminalBackend = useMemo(() => {
+    if (window.tungsten) return ipcBackend(window.tungsten)
+    return shellServer ? createSocketBackend() : null
+  }, [shellServer])
+
   // The shell dictionary, merged with anything the workspace documents in
   // `dictionary/`. One index feeds the sidebar, the terminal and the palette.
   const workspaceCommands = useMemo(() => loadWorkspaceCommands(files), [files])
@@ -341,6 +363,7 @@ export default function App() {
     files,
     dirty,
     dictionary,
+    pty: Boolean(terminalBackend),
     revealTerminal: () => showPanel('TERMINAL'),
   })
 
@@ -1426,7 +1449,8 @@ export default function App() {
     )
     return (
       <TerminalPanel
-        desktop={Boolean(window.tungsten)}
+        desktop={Boolean(terminalBackend)}
+        backend={terminalBackend}
         tabs={terminalTabs}
         activeId={activeTerminalId}
         split={terminalSplit}
@@ -1927,7 +1951,7 @@ export default function App() {
                 activeTab={panelTab}
                 onSelectTab={setPanelTab}
                 problemCount={problems.length}
-                terminalKind={window.tungsten ? 'pty' : 'sandbox'}
+                terminalKind={terminalBackend ? 'pty' : 'sandbox'}
                 onNewTerminal={() => {
                   if (window.tungsten) return void terminal.open()
                   // The emulated shell has a single buffer, so a "new

@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
+import { tungstenShell } from './server/shellPlugin.ts'
+
 // package.json is the only place the version is written down; the About
 // dialog, the terminal banner and the installer all read it from here.
 const { version } = JSON.parse(readFileSync(new URL('./package.json', import.meta.url), 'utf8')) as { version: string }
@@ -10,7 +12,9 @@ const { version } = JSON.parse(readFileSync(new URL('./package.json', import.met
 export default defineConfig({
   base: './',
   define: { __APP_VERSION__: JSON.stringify(version) },
-  plugins: [react()],
+  // The shell plugin gives the browser build a real PTY, the way the
+  // desktop build gets one from Electron. Dev and preview only.
+  plugins: [react(), tungstenShell()],
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 4500,

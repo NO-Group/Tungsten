@@ -16,6 +16,7 @@ import type React from 'react'
 import { Plus, Search, TerminalSquare, X } from 'lucide-react'
 
 import type { TerminalLine, TerminalProfile, TerminalTab } from '../../terminal/terminalSessions'
+import type { TerminalBackend } from '../../terminal/ptyClient'
 
 const DesktopTerminal = lazy(() => import('../DesktopTerminal'))
 
@@ -29,6 +30,8 @@ export type RemoteProfiles = {
 export type TerminalPanelProps = {
   /** True when real PTYs are available; false in the browser sandbox. */
   desktop: boolean
+  /** The process host to attach to, when there is one. */
+  backend?: TerminalBackend | null
 
   // -- desktop --------------------------------------------------------
   tabs: TerminalTab[]
@@ -65,12 +68,14 @@ export type TerminalPanelProps = {
 }
 
 export function TerminalPanel(props: TerminalPanelProps) {
-  return props.desktop ? <DesktopTerminals {...props} /> : <SandboxTerminal {...props} />
+  // A real terminal needs somewhere to run; without a backend the emulated
+  // shell is the honest answer rather than an empty black rectangle.
+  return props.desktop && props.backend ? <DesktopTerminals {...props} /> : <SandboxTerminal {...props} />
 }
 
 function DesktopTerminals({
   tabs, activeId, split, profiles, command, searchOpen, searchQuery, searchRequest,
-  themeId, fontSize, onSelectTab, onCloseTab, onNewTerminal, onSearchQueryChange,
+  themeId, fontSize, backend, onSelectTab, onCloseTab, onNewTerminal, onSearchQueryChange,
   onSearchSubmit, onCloseSearch, onFocusChange,
 }: TerminalPanelProps) {
   // With a split panel the second visible terminal is the first one that is
@@ -138,6 +143,7 @@ function DesktopTerminals({
             <Suspense fallback={<div className="terminal-loading">Starting PTY…</div>}>
               <DesktopTerminal
                 sessionKey={terminal.id * 1000 + terminal.generation}
+                backend={backend!}
                 command={terminal.id === (command?.terminalId || activeId) ? command : null}
                 profile={terminal.profile}
                 searchRequest={terminal.id === activeId ? searchRequest : null}

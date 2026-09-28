@@ -133,6 +133,53 @@ treats the data as something to be verified, not trusted: no duplicate names, no
 cross-reference to a page that does not exist, no entry pointing at itself,
 every synopsis actually invoking the command it documents.
 
+## A real terminal in the browser
+
+The desktop build spawns a PTY in the Electron main process. The browser build
+now gets the same thing: `server/shellPlugin.ts` is a Vite plugin that hosts
+real `node-pty` processes behind a WebSocket at `/__tungsten/pty`, and
+`src/terminal/ptyClient.ts` presents that socket to the workbench through the
+identical API the Electron bridge exposes. `DesktopTerminal` — xterm, fit,
+search, scrollback — does not know which one it is driving.
+
+So the terminal in a browser tab is bash. Not an emulation of bash: the shell
+on the machine, with job control, colour, a working `cd`, your environment,
+`git`, `node`, `python3`, `vim`, `top`, and every other binary on `PATH`.
+
+| Host | Used when | What runs |
+| --- | --- | --- |
+| Electron PTY | the desktop app | `node-pty` in the main process |
+| Socket PTY | `npm run dev` / `npm run preview` | `node-pty` in the Vite server |
+| Emulated shell | a static production build | `src/terminal/sandboxShell.ts` |
+
+The workbench probes `/__tungsten/shell/health` once at startup and picks the
+best host available, so the same bundle degrades to the emulated shell when
+there is nothing to attach to.
+
+Each shell starts from a generated rc file that sources your own config first
+and then adds Tungsten's dictionary, so `man`, `whatis`, `apropos` and
+`explain` work inside the real shell — on a container with no man pages
+installed, `man rsync` still answers.
+
+### What keeps this safe
+
+Handing a browser tab a shell is not a small thing, so:
+
+- the plugin is `apply: 'serve'` — it exists during `vite dev` and
+  `vite preview` and is **never** part of a production bundle; the built
+  `dist/` contains no server, no `ws` and no `node-pty`
+- sockets whose `Origin` is not the page being served are refused, so another
+  site open in the same browser cannot reach your shell
+- `TUNGSTEN_SHELL=off` disables it, and the startup banner always says which
+  shell you got
+- input is capped, terminal dimensions are clamped, at most twelve shells may
+  be open at once, and closing a tab kills its process
+
+`server/shellPlugin.test.ts` boots a real server and drives it the way the
+browser does: probe, connect, start bash, run `echo`, check that `cd /tmp`
+persists into the next command, read a manual page through the shell function,
+and confirm a foreign origin is turned away.
+
 ## Graphene, the design language
 
 `src/theme/tokens.json` is the single source of truth for how Tungsten looks: the
@@ -190,7 +237,7 @@ Installers are written to `out/`. Build on each target OS or use the included `B
 | --- | --- |
 | Editor | `components/EditorGroup.tsx`, `components/ConfiguredEditor.tsx`, `components/Preview.tsx` |
 | Sidebar | `components/sidebar/` — `ExplorerView`, `SearchView`, `SourceControlView`, `DebugView`, `TestingView`, `ExtensionsView`, `DictionaryView` |
-| Panel | `components/panel/` — `ProblemsPanel`, `TerminalPanel` |
+| Panel | `components/panel/` — `ProblemsPanel`, `TerminalPanel`, `DesktopTerminal` (xterm over a PTY) |
 | Chrome | `components/TitleBar.tsx`, `components/StatusBar.tsx`, `components/ActivityBar.tsx`, `components/panel/PanelHeader.tsx`, `components/ContextMenu.tsx` |
 | Dialogs | `components/dialogs/` — command palette, theme picker, settings, settings editor, snippets, keyboard shortcuts, collaboration, remote, new project, new file |
 | Shared | `components/Modal.tsx`, `components/FileGlyph.tsx`, `components/TipButton.tsx`, `components/Highlight.tsx` |

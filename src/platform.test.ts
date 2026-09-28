@@ -373,7 +373,7 @@ describe('desktop bridge contract', () => {
     // The terminal decides between a PTY and the emulated shell from a prop,
     // so both paths stay renderable in a test.
     expect(code(panelSource.TerminalPanel)).not.toContain('window.tungsten')
-    expect(panelSource.TerminalPanel).toContain('desktop ?')
+    expect(panelSource.TerminalPanel).toContain('props.desktop && props.backend')
   })
 
   it('scores quick access with the fuzzy scorer rather than substring matching', () => {

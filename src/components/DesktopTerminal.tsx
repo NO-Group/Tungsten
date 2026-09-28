@@ -5,11 +5,19 @@ import { SearchAddon } from '@xterm/addon-search'
 import '@xterm/xterm/css/xterm.css'
 
 import { getTheme, terminalTheme } from '../theme/themeService'
+import type { TerminalBackend } from '../terminal/ptyClient'
 
 type CommandRequest = { id: number; command: string } | null
 type SearchRequest = { id: number; query: string } | null
 
-export default function DesktopTerminal({ sessionKey, command, profile, searchRequest, themeId, fontSize }: { sessionKey: number; command: CommandRequest; profile?: { kind: 'wsl' | 'container'; id: string }; searchRequest?: SearchRequest; themeId?: string; fontSize?: number }) {
+/**
+ * A terminal attached to a real process.
+ *
+ * Which process is the caller's decision: Electron's PTY on the desktop, or
+ * the dev server's PTY in the browser. Both arrive here as one `backend`, so
+ * this component is the same code either way.
+ */
+export default function DesktopTerminal({ sessionKey, backend, command, profile, searchRequest, themeId, fontSize }: { sessionKey: number; backend: TerminalBackend; command: CommandRequest; profile?: { kind: 'wsl' | 'container'; id: string }; searchRequest?: SearchRequest; themeId?: string; fontSize?: number }) {
   const containerRef = useRef<HTMLDivElement>(null)
   const terminalRef = useRef<Terminal | null>(null)
   const searchAddonRef = useRef<SearchAddon | null>(null)
@@ -22,8 +30,8 @@ export default function DesktopTerminal({ sessionKey, command, profile, searchRe
   const initialFontSizeRef = useRef(fontSize)
 
   useEffect(() => {
-    if (!containerRef.current || !window.tungsten) return
-    const api = window.tungsten
+    if (!containerRef.current) return
+    const api = backend
     const terminal = new Terminal({
       cursorBlink: true,
       cursorStyle: 'bar',
@@ -86,7 +94,7 @@ export default function DesktopTerminal({ sessionKey, command, profile, searchRe
       searchAddonRef.current = null
       sessionRef.current = null
     }
-  }, [profile, sessionKey])
+  }, [backend, profile, sessionKey])
 
   // Apply theme and font-size changes in place, preserving scrollback and the PTY.
   useEffect(() => {
@@ -102,10 +110,10 @@ export default function DesktopTerminal({ sessionKey, command, profile, searchRe
   }, [fontSize])
 
   useEffect(() => {
-    if (!ready || !command || !sessionRef.current || !window.tungsten) return
-    void window.tungsten.writeTerminal(sessionRef.current, `${command.command}\r`)
+    if (!ready || !command || !sessionRef.current) return
+    void backend.writeTerminal(sessionRef.current, `${command.command}\r`)
     terminalRef.current?.focus()
-  }, [command, ready])
+  }, [backend, command, ready])
 
   useEffect(() => {
     if (!searchRequest?.query) return
