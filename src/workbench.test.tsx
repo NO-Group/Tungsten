@@ -197,6 +197,61 @@ describe('the workbench', () => {
     expect(container.querySelector('.ide')?.className).toContain('centered-layout')
   })
 
+  it('creates a file, and opens it', () => {
+    run('new file')
+    const input = container.querySelector<HTMLInputElement>('.new-file-modal input')
+    expect(input).not.toBeNull()
+    type(input!, 'src/notes.ts')
+    click(buttonsLabelled('Create file')[0])
+
+    expect(container.querySelector('.new-file-modal')).toBeNull()
+    expect([...container.querySelectorAll('.editor-tab')].some((tab) => tab.textContent?.includes('notes.ts'))).toBe(true)
+    expect(container.querySelector('.file-tree')?.textContent).toContain('notes.ts')
+  })
+
+  it('opens the settings editor', () => {
+    run('preferences open settings')
+    expect(container.querySelector('.settings-editor')?.textContent).toContain('Settings')
+  })
+
+  it('changes a setting, and keeps it across a restart', () => {
+    run('quick settings')
+    const toggles = [...container.querySelectorAll<HTMLInputElement>('.toggle-setting input')]
+    const minimap = toggles.find((input) => input.closest('label')?.textContent?.toLowerCase().includes('minimap'))
+    expect(minimap).toBeDefined()
+    const before = minimap!.checked
+
+    click(minimap!)
+    expect(JSON.parse(localStorage.getItem('tungsten.settings.v1') || '{}').minimap).toBe(!before)
+
+    act(() => { root.unmount() })
+    container.remove()
+    render()
+    run('quick settings')
+    const restored = [...container.querySelectorAll<HTMLInputElement>('.toggle-setting input')]
+      .find((input) => input.closest('label')?.textContent?.toLowerCase().includes('minimap'))
+    expect(restored?.checked).toBe(!before)
+  })
+
+  it('opens the keybindings editor with the commands listed', () => {
+    run('keyboard shortcuts')
+    const modal = container.querySelector('.keybindings-modal')
+    expect(modal?.textContent).toContain('Keyboard Shortcuts')
+    // Every row carries its command id as a tooltip.
+    expect([...modal!.querySelectorAll('.keybinding-command')].map((row) => row.getAttribute('title')))
+      .toContain('workbench.action.showCommands')
+  })
+
+  it('changes the colour theme', () => {
+    run('color theme')
+    const modal = container.querySelector('.theme-picker')
+    expect(modal).not.toBeNull()
+    const option = [...modal!.querySelectorAll('button')].find((button) => /light/i.test(button.textContent ?? ''))
+    expect(option).toBeDefined()
+    click(option!)
+    expect(localStorage.getItem('tungsten.theme.v1')).toBeTruthy()
+  })
+
   it('reports a clean problem count until a server says otherwise', () => {
     expect(container.querySelector('.statusbar')?.textContent).toContain('0')
   })
