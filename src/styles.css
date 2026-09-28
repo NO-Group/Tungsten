@@ -1574,3 +1574,49 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 }
 
 .contribution-card button:hover { background: var(--list-hover); border-color: var(--bright); color: var(--strong); }
+
+/* -- Builder: drag, drop and snap ---------------------------------------- */
+
+.block-palette-help {
+  margin: 0 10px 6px;
+  color: var(--faint);
+  font-size: 10.5px;
+  line-height: 1.4;
+}
+
+.block-palette-item { cursor: grab; }
+.block-palette-item:active { cursor: grabbing; }
+
+.builder-canvas.dropping { background-image: radial-gradient(var(--border) 1px, transparent 1px); background-size: 8px 8px; }
+
+.builder-drop-ghost {
+  position: absolute;
+  height: 56px;
+  border: 1px dashed var(--accent);
+  border-radius: 6px;
+  background: var(--wash);
+  pointer-events: none;
+}
+
+.builder-wire.dragging {
+  stroke: var(--accent);
+  stroke-width: 2;
+  stroke-dasharray: 5 4;
+  fill: none;
+  pointer-events: none;
+}
+
+.builder-pin.targetable {
+  outline: 2px solid var(--wash);
+  outline-offset: 1px;
+}
+
+.builder-pin.snapping,
+.builder-pin.targetable:hover {
+  background: var(--accent);
+  box-shadow: 0 0 0 3px var(--wash);
+}
+
+.builder-node.snapping { outline: 1px solid var(--accent); }
+.builder-node-header { cursor: grab; }
+.builder-node-header:active { cursor: grabbing; }

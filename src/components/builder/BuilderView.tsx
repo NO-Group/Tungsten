@@ -109,7 +109,8 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onBuild, 
             revealed={builder.revealed}
             readOnly={Boolean(parseError)}
             onSelect={builder.select}
-            onMove={builder.moveBlock}
+            onDropBlock={(type, position) => builder.addBlock(type, position)}
+        onMove={builder.moveBlock}
             onRemove={builder.removeBlock}
             onValue={builder.setValue}
             onLink={builder.link}

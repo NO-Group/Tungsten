@@ -9,6 +9,7 @@
 import { useMemo, useState } from 'react'
 
 import type { BlockRegistry } from '../../builder/blockSchema'
+import { BLOCK_DRAG_TYPE } from '../../builder/canvasLayout'
 
 export type BlockPaletteProps = {
   registry: BlockRegistry
@@ -42,6 +43,8 @@ export function BlockPalette(props: BlockPaletteProps) {
     <div className="block-palette">
       <div className="sidebar-title"><span>BUILDER BLOCKS</span></div>
 
+      <p className="block-palette-help">Drag a block onto the canvas, or click to place it.</p>
+
       <input
         className="block-palette-filter"
         placeholder="Filter blocks"
@@ -62,7 +65,14 @@ export function BlockPalette(props: BlockPaletteProps) {
                 key={block.type}
                 className="block-palette-item"
                 disabled={disabled}
-                title={block.description}
+                title={`${block.description} — drag onto the canvas, or click to place it`}
+                // Dragging is the point; the click is kept because it is
+                // faster when you just want the block somewhere.
+                draggable={!disabled}
+                onDragStart={(event) => {
+                  event.dataTransfer.setData(BLOCK_DRAG_TYPE, block.type)
+                  event.dataTransfer.effectAllowed = 'copy'
+                }}
                 onClick={() => onAdd(block.type)}
               >
                 <span className="block-palette-label">{block.label}</span>

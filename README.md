@@ -252,6 +252,17 @@ Every dialog is built on one `Modal` shell, so backdrop dismissal, Escape, the d
 
 None of these components reads `localStorage` or calls `window.tungsten`: desktop capability arrives as a prop, so every view renders in the browser build and in jsdom. `src/components/views.test.tsx` and `src/components/dialogs.test.tsx` mount each one and drive it, and `src/platform.test.ts` enforces the boundary.
 
+## The visual builder
+
+Open it from the activity bar. Drag a block out of the library onto the canvas,
+drag a wire from one pin to another — or push two blocks together until they
+snap onto the same execution chain — and the code writes itself in the pane
+beside the canvas. Edit that code by hand and the blocks follow, 300ms after
+you stop typing; break the syntax and the canvas goes read-only with a banner
+instead of guessing. An integrity checker refuses to compile a graph with a
+type mismatch, a cycle or an unreachable read, and every diagnostic names the
+fix. See **[docs/BLUEPRINT.md](docs/BLUEPRINT.md)**.
+
 ## Extending Tungsten
 
 Four extension points, all read from the workspace you have open:

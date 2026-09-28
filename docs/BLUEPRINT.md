@@ -5,11 +5,34 @@ and compilation, integrity checking and extensibility — is built. This is the
 line-by-line mapping, including the three places Tungsten deliberately does
 something other than what the specification said, and why.
 
+## How you actually build with it
+
+Three ways in, because different hands reach for different ones:
+
+- **Drag a block out of the library** and drop it where you want it. A dashed
+  ghost shows where it will land, snapped to an 8px grid, centred on the
+  cursor. Clicking a palette item still drops one below the last block, which
+  is faster when you do not care where it goes.
+- **Drag a wire** from an output pin; the wire follows the pointer and the
+  pins it could legally land on light up. Let go on one to connect. Or click
+  the two pins in turn — easier to hit on a trackpad, and Escape cancels.
+- **Push two blocks together.** Drag a block so its *Run* pin comes within
+  56px of a free *Then* pin and it snaps into alignment, joined, the way two
+  puzzle pieces do. Only execution pins snap, and only free ones: an
+  accidental data link is much harder to notice than an accidental step in
+  the sequence, and snapping must never silently replace a connection you
+  made on purpose.
+
+The geometry and the snapping rules are pure functions in
+`src/builder/canvasLayout.ts`, so they are tested as rules rather than through
+a rendered canvas.
+
 ## Part 1 — Core engine and bidirectional sync
 
 | Specified | Built | Where |
 | --- | --- | --- |
-| Split pane: puzzle canvas + live code view | Yes | `src/components/BuilderView.tsx` |
+| Split pane: puzzle canvas + live code view | Yes | `src/components/builder/BuilderView.tsx` |
+| Drag, drop and snap pieces together | Yes | `src/components/builder/BuilderCanvas.tsx`, `src/builder/canvasLayout.ts` |
 | Single source of truth graph model | Yes — one graph, one store | `src/builder/graph.ts`, `useBuilder.ts` |
 | Flow A: blocks → AST → code | Yes, deterministic and ordered | `src/builder/codeGenerator.ts` |
 | Monaco updated with an external-update marker | Yes, breaks the echo loop | `useBuilder.ts` |

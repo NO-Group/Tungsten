@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import { builtinBlocks } from './blockLibrary'
+import { NODE_WIDTH, snapCandidate } from './canvasLayout'
 import { createRegistry, defineBlock, isAssignable, type BlockGraph } from './blockSchema'
 import { generateProgram, lineOfNode, nodeAtLine } from './codeGenerator'
 import { checkIntegrity, diagnosticsByNode } from './integrity'
@@ -764,5 +765,52 @@ describe('scope', () => {
     const parsed = parseProgram(before, registry)
     expect(parsed.ok).toBe(true)
     expect(parsed.ok && generateProgram(parsed.graph, registry).code).toBe(before)
+  })
+})
+
+describe('snapping pieces together', () => {
+  it('snaps to the nearest free Then pin and lines the pins up', () => {
+    const { graph, ids } = build([['event.start', 0, 0], ['logic.log', 400, 400]])
+
+    // Dropped close to On App Start's Then pin, but not exactly on it.
+    const snap = snapCandidate(graph, registry, ids[1], { x: NODE_WIDTH + 12, y: 18 })
+    expect(snap?.from).toEqual({ node: ids[0], port: 'exec' })
+    expect(snap?.to).toEqual({ node: ids[1], port: 'exec' })
+
+    // Lined up exactly: the Run pin now sits on the Then pin it joined.
+    expect(snap?.position).toEqual({ x: NODE_WIDTH, y: 0 })
+  })
+
+  it('ignores a pin that is out of reach', () => {
+    const { graph, ids } = build([['event.start', 0, 0], ['logic.log', 400, 400]])
+    expect(snapCandidate(graph, registry, ids[1], { x: 600, y: 600 })).toBeUndefined()
+  })
+
+  it('ignores a Then pin that already drives a block', () => {
+    const { graph, ids } = build(
+      [['event.start', 0, 0], ['logic.log', 300, 0], ['logic.log', 400, 400]],
+      [['0', 'exec', '1', 'exec']],
+    )
+    expect(snapCandidate(graph, registry, ids[2], { x: NODE_WIDTH, y: 0 })).toBeUndefined()
+  })
+
+  it('ignores a block whose Run pin is already taken', () => {
+    const { graph, ids } = build(
+      [['event.start', 0, 0], ['event.click', 0, 300], ['logic.log', 400, 400]],
+      [['0', 'exec', '2', 'exec']],
+    )
+    // The second event's Then pin is free, but the log block is already wired.
+    expect(snapCandidate(graph, registry, ids[2], { x: NODE_WIDTH, y: 300 })).toBeUndefined()
+  })
+
+  it('never snaps a block to itself', () => {
+    const { graph, ids } = build([['logic.log', 0, 0]])
+    expect(snapCandidate(graph, registry, ids[0], { x: 0, y: 0 })).toBeUndefined()
+  })
+
+  it('picks the closer of two candidates', () => {
+    const { graph, ids } = build([['event.start', 0, 0], ['event.click', 0, 40], ['logic.log', 500, 500]])
+    const snap = snapCandidate(graph, registry, ids[2], { x: NODE_WIDTH, y: 34 })
+    expect(snap?.from.node).toBe(ids[1])
   })
 })

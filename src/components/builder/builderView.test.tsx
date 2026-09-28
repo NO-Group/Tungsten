@@ -14,6 +14,7 @@ import { PARSE_DEBOUNCE } from '../../builder/useBuilder'
 import { PREVIEW_CHANNEL } from '../../builder/previewRuntime'
 import { EXAMPLE_PLUGIN, loadPluginBlocks } from '../../builder/pluginBlocks'
 import { builtinBlocks } from '../../builder/blockLibrary'
+import { BLOCK_DRAG_TYPE, GRID } from '../../builder/canvasLayout'
 
 // Monaco cannot run in jsdom; the code pane becomes a textarea that behaves
 // the same way from the outside: it shows `value` and reports edits.
@@ -103,6 +104,48 @@ function palette(label: string) {
 
 const code = () => (container.querySelector('[data-testid="code"]') as HTMLTextAreaElement).value
 
+const canvas = () => container.querySelector('.builder-canvas')!
+const nodes = () => [...container.querySelectorAll('.builder-node')] as HTMLElement[]
+const pin = (label: string) => container.querySelector<HTMLElement>(`[aria-label="${label}"]`)!
+
+/**
+ * A drag payload.
+ *
+ * jsdom has no DataTransfer, and the component only ever asks it three
+ * things, so the stub answers those three.
+ */
+function transfer(type?: string, value?: string) {
+  return {
+    types: type ? [type] : [],
+    dropEffect: 'none',
+    effectAllowed: 'none',
+    getData: (asked: string) => (asked === type ? value ?? '' : ''),
+    setData: () => undefined,
+  }
+}
+
+/** Dispatches a drag event React will pick up, with coordinates. */
+function fireDrag(target: Element, kind: 'dragover' | 'drop' | 'dragleave', at: { x: number; y: number }, data = transfer(BLOCK_DRAG_TYPE, 'ui.button')) {
+  const event = new Event(kind, { bubbles: true, cancelable: true })
+  Object.defineProperties(event, {
+    dataTransfer: { value: data },
+    clientX: { value: at.x },
+    clientY: { value: at.y },
+  })
+  act(() => { target.dispatchEvent(event) })
+}
+
+/** Pointer events, which jsdom does not construct for us either. */
+function firePointer(target: Element | Window, kind: string, at: { x: number; y: number }) {
+  const event = new MouseEvent(kind, { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y })
+  act(() => { target.dispatchEvent(event) })
+}
+
+function fireMouse(target: Element | Window, kind: string, at: { x: number; y: number }) {
+  const event = new MouseEvent(kind, { bubbles: true, cancelable: true, clientX: at.x, clientY: at.y })
+  act(() => { target.dispatchEvent(event) })
+}
+
 beforeEach(() => {
   localStorage.clear()
   resetIds()
@@ -121,7 +164,7 @@ afterEach(() => {
 
 describe('the builder surface', () => {
   it('starts empty and says so in both panes', () => {
-    expect(container.querySelector('.builder-empty')?.textContent).toContain('Pick a block')
+    expect(container.querySelector('.builder-empty')?.textContent).toContain('Drag a block')
     expect(code()).toContain('No events yet')
   })
 
@@ -363,5 +406,143 @@ describe('the preview, the database and the build', () => {
     click(palette('Log'))
     expect(container.querySelector('.builder-problem-fix')?.textContent)
       .toContain('Link its Run port to the step before it')
+  })
+})
+
+describe('building by dragging', () => {
+  it('offers every palette item as a drag source', () => {
+    expect(palette('On App Start')?.getAttribute('draggable')).toBe('true')
+    expect(container.querySelector('.block-palette-help')?.textContent).toContain('Drag a block onto the canvas')
+  })
+
+  it('shows where a dragged block would land', () => {
+    fireDrag(canvas(), 'dragover', { x: 300, y: 180 })
+    const ghost = container.querySelector<HTMLElement>('[data-testid="builder-drop-ghost"]')
+    expect(ghost).not.toBeNull()
+    expect(canvas().className).toContain('dropping')
+    // Centred on the cursor and landed on the grid.
+    expect(Number.parseInt(ghost!.style.top, 10) % GRID).toBe(0)
+  })
+
+  it('ignores a drag that is not carrying a block', () => {
+    fireDrag(canvas(), 'dragover', { x: 300, y: 180 }, transfer('text/plain', 'hello'))
+    expect(container.querySelector('[data-testid="builder-drop-ghost"]')).toBeNull()
+  })
+
+  it('creates the block where it was dropped', () => {
+    fireDrag(canvas(), 'dragover', { x: 400, y: 240 })
+    fireDrag(canvas(), 'drop', { x: 400, y: 240 })
+    const node = nodes()[0]
+    expect(node.textContent).toContain('Button')
+    // Half a block left of the cursor, so the pointer holds the middle.
+    expect(node.style.left).toBe('296px')
+    expect(node.style.top).toBe('224px')
+    expect(container.querySelector('[data-testid="builder-drop-ghost"]')).toBeNull()
+  })
+
+  it('drops a plugin block just like a built-in one', () => {
+    fireDrag(canvas(), 'drop', { x: 200, y: 120 }, transfer(BLOCK_DRAG_TYPE, 'acme.notify'))
+    expect(nodes()[0].textContent).toContain('Send Notification')
+  })
+
+  it('still places a block on a plain click, for the impatient', () => {
+    click(palette('On App Start'))
+    expect(nodes()).toHaveLength(1)
+  })
+})
+
+describe('wiring by dragging', () => {
+  beforeEach(() => {
+    click(palette('On App Start'))
+    click(palette('Log'))
+  })
+
+  it('draws a wire that follows the pointer, and connects where it is dropped', () => {
+    firePointer(pin('Output Then of On App Start'), 'pointerdown', { x: 260, y: 60 })
+    firePointer(window, 'pointermove', { x: 300, y: 140 })
+    expect(container.querySelector('[data-testid="builder-wire-preview"]')).not.toBeNull()
+    expect(container.querySelector('.builder-hint')?.textContent).toContain('Let go on a pin')
+
+    firePointer(pin('Input Run of Log'), 'pointerup', { x: 320, y: 150 })
+    expect(container.querySelectorAll('.builder-wire').length).toBe(1)
+    expect(code()).toContain('console.log')
+  })
+
+  it('marks the pins that the dragged wire could land on', () => {
+    firePointer(pin('Output Then of On App Start'), 'pointerdown', { x: 260, y: 60 })
+    firePointer(window, 'pointermove', { x: 280, y: 100 })
+    expect(pin('Input Run of Log').className).toContain('targetable')
+    // An output pin is not a target for a wire that started at an output.
+    expect(pin('Output Then of Log').className).not.toContain('targetable')
+  })
+
+  it('drops the wire harmlessly when it lands on nothing', () => {
+    firePointer(pin('Output Then of On App Start'), 'pointerdown', { x: 260, y: 60 })
+    firePointer(window, 'pointermove', { x: 500, y: 400 })
+    firePointer(window, 'pointerup', { x: 500, y: 400 })
+    expect(container.querySelector('[data-testid="builder-wire-preview"]')).toBeNull()
+    expect(container.querySelectorAll('.builder-wire').length).toBe(0)
+  })
+
+  it('cancels a dragged wire on Escape', () => {
+    firePointer(pin('Output Then of On App Start'), 'pointerdown', { x: 260, y: 60 })
+    firePointer(window, 'pointermove', { x: 300, y: 140 })
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })) })
+    expect(container.querySelector('[data-testid="builder-wire-preview"]')).toBeNull()
+  })
+
+  it('still connects with two clicks', () => {
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Log'))
+    expect(container.querySelectorAll('.builder-wire').length).toBe(1)
+  })
+})
+
+describe('pieces that snap together', () => {
+  beforeEach(() => {
+    click(palette('On App Start'))
+    click(palette('Log'))
+  })
+
+  it('snaps onto the chain when dropped near a free Then pin, and connects', () => {
+    const [start, log] = nodes()
+    const startTop = Number.parseInt(start.style.top, 10)
+
+    // Pick the Log block up and let it go just below On Start's Then pin.
+    fireMouse(log, 'mousedown', { x: 60, y: startTop + 200 })
+    fireMouse(window, 'mousemove', { x: 234, y: startTop + 60 })
+
+    expect(nodes()[1].className).toContain('snapping')
+    fireMouse(window, 'mouseup', { x: 234, y: startTop + 60 })
+
+    expect(container.querySelectorAll('.builder-wire').length).toBe(1)
+    expect(code()).toContain('console.log')
+    // Lined up, not merely near.
+    expect(nodes()[1].style.top).toBe(`${startTop}px`)
+  })
+
+  it('does not snap to a pin that is already driving something', () => {
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Log'))
+    click(palette('Log'))
+
+    const [start, , second] = nodes()
+    const startTop = Number.parseInt(start.style.top, 10)
+    fireMouse(second, 'mousedown', { x: 60, y: startTop + 400 })
+    fireMouse(window, 'mousemove', { x: 234, y: startTop + 60 })
+
+    expect(nodes()[2].className).not.toContain('snapping')
+    fireMouse(window, 'mouseup', { x: 234, y: startTop + 60 })
+    expect(container.querySelectorAll('.builder-wire').length).toBe(1)
+  })
+
+  it('leaves a block where it was dropped when nothing is near', () => {
+    const log = nodes()[1]
+    // Grabbed 20px in from the block's left edge, which sits at x=40.
+    fireMouse(log, 'mousedown', { x: 60, y: 20 })
+    fireMouse(window, 'mousemove', { x: 620, y: 500 })
+    fireMouse(window, 'mouseup', { x: 620, y: 500 })
+    expect(container.querySelectorAll('.builder-wire').length).toBe(0)
+    expect(nodes()[1].style.left).toBe('600px')
   })
 })
