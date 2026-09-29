@@ -90,3 +90,36 @@ describe('recipes', () => {
     expect(graph.nodes[0].position).toEqual({ x: 500, y: 250 })
   })
 })
+
+describe('generated apps wear Graphene', () => {
+  it('takes every colour from tokens.json rather than repeating it', async () => {
+    const { previewHtml } = await import('./previewRuntime')
+    const { UI_THEME } = await import('./uiTokens')
+    const tokens = (await import('../theme/tokens.json')).default
+
+    const html = previewHtml({ document: { components: [] }, code: '' })
+    expect(html).toContain(`--app-accent: ${tokens.accent.base}`)
+    expect(html).toContain(`--app-surface: ${tokens.ramp.base}`)
+    expect(UI_THEME.accent).toBe(tokens.accent.base)
+
+    // Components are written in terms of the variables, so a generated app
+    // can be re-themed by overriding :root and nothing else.
+    expect(html).toContain('background: var(--app-accent)')
+    const styles = html.slice(html.indexOf('<style>'), html.indexOf('</style>'))
+    const literals = styles.match(/#[0-9a-fA-F]{6}/g) ?? []
+    expect(literals.every((hex) => JSON.stringify(tokens).includes(hex))).toBe(true)
+  })
+
+  it('carries the same palette into the mobile target', async () => {
+    const { compile } = await import('./compile')
+    const tokens = (await import('../theme/tokens.json')).default
+    resetIds()
+    const { graph } = instantiate(recipeById('signin-form')!, empty, registry)
+    const built = compile({ graph, registry, schema: { tables: [] }, target: 'mobile' })
+    expect(built.ok).toBe(true)
+    if (!built.ok) return
+    const dart = built.files.find((file) => file.path.endsWith('main.dart'))!.contents
+    expect(dart).toContain(`Color(0xFF${tokens.accent.base.replace('#', '').toUpperCase()})`)
+    expect(dart).toContain('class AppTheme')
+  })
+})

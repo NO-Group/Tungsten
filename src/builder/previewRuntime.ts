@@ -12,6 +12,7 @@
  * pretends to reach a database teaches the user something false.
  */
 
+import { uiThemeCss } from './uiTokens'
 import { renderDocumentBody, type UiDocument } from './uiSchema'
 
 /** What the frame posts back to the workbench. */
@@ -176,23 +177,7 @@ export function previewHtml({ document: ui, code }: PreviewOptions): string {
   <head>
     <meta charset="utf-8" />
     <style>
-      :root { color-scheme: dark; }
-      body {
-        margin: 0; padding: 18px; font: 13px/1.5 'DM Sans', system-ui, sans-serif;
-        color: #d5d9d5; background: #111311;
-      }
-      #app { display: flex; flex-direction: column; align-items: flex-start; gap: 10px; }
-      button {
-        padding: 6px 14px; font: inherit; color: #10140c; background: #c8f169;
-        border: 0; border-radius: 5px; cursor: pointer;
-      }
-      button:active { transform: translateY(1px); }
-      input {
-        padding: 6px 9px; font: inherit; color: #d5d9d5; background: #101210;
-        border: 1px solid #2b302b; border-radius: 5px; min-width: 200px;
-      }
-      p { margin: 0; }
-      .empty { color: #858c86; }
+      ${uiThemeCss()}
     </style>
   </head>
   <body>

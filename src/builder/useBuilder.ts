@@ -21,7 +21,10 @@ import { parseProgram, type ParseFailure } from './codeParser'
 import { EMPTY_HISTORY, canRedo, canUndo, record, redo, undo, type History } from './history'
 import { instantiate, recipeById } from './recipes'
 import { BUILDER_SYNC_KEY, readSyncPreference, writeSyncPreference } from './fileSync'
-import { checkIntegrity, type IntegrityReport } from './integrity'
+import { useIntegrityCheck } from './useIntegrityCheck'
+import type { PluginManifest } from './pluginBlocks'
+import { withExternalProblems, type ExternalProblem } from './externalDiagnostics'
+import type { IntegrityReport } from './integrity'
 import { compile, type CompileResult, type CompileTarget } from './compile'
 import { EMPTY_SCHEMA, type Column, type DataSchema, type Table } from './dataSchema'
 import { previewHtml } from './previewRuntime'
@@ -49,6 +52,12 @@ export type BuilderHost = {
   notify: (message: string) => void
   /** Blocks contributed by workspace plugins, already parsed. */
   plugins?: BlockDefinition[]
+  /**
+   * The manifests those blocks came from. The integrity worker rebuilds the
+   * registry from these, because a block's functions cannot cross a worker
+   * boundary and its manifest can.
+   */
+  pluginManifests?: PluginManifest[]
 }
 
 type Stored = { graph: BlockGraph; schema: DataSchema }
@@ -75,6 +84,15 @@ export type BuilderState = {
    * rather than showing a graph that no longer matches the file.
    */
   parseError?: ParseFailure
+  /**
+   * One counter for the whole document, bumped by every accepted change
+   * whichever side it came from.
+   *
+   * Anything that needs to know "has this moved since I last looked?" -- the
+   * integrity worker, a diagnostics pass, a test -- compares this rather than
+   * diffing graphs or comparing strings.
+   */
+  docVersion: number
   selected?: string
   /** The block the traceback last pointed at, for the canvas to reveal. */
   revealed?: string
@@ -121,6 +139,14 @@ export type BuilderState = {
   addColumn: (table: number) => void
   updateColumn: (table: number, column: number, patch: Partial<Column>) => void
   removeColumn: (table: number, column: number) => void
+  /** True while a background check for the current version is outstanding. */
+  checking: boolean
+  /**
+   * Problems reported from outside the canvas -- the language server on the
+   * generated file, or a failing run. Errors here freeze compilation too.
+   */
+  setExternalProblems: (problems: ExternalProblem[]) => void
+  externalProblems: ExternalProblem[]
   /** Compiles for a target, or refuses with a reason. */
   build: (target: CompileTarget) => CompileResult
   /** A line the preview logged. */
@@ -160,6 +186,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [selected, setSelected] = useState<string | undefined>(undefined)
   const [revealed, setRevealed] = useState<string | undefined>(undefined)
   const [history, setHistory] = useState<History>(EMPTY_HISTORY)
+  const [docVersion, setDocVersion] = useState(0)
   const [syncEnabled, setSyncEnabled] = useState(() => {
     try {
       return readSyncPreference(localStorage.getItem(BUILDER_SYNC_KEY))
@@ -174,12 +201,19 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const ui = useMemo(() => schemaFromGraph(graph, registry), [graph, registry])
 
   /**
-   * The checker runs on every mutation. It is pure and touches nothing but
-   * the graph, so at this size it is cheaper than the re-render it feeds;
-   * if a graph ever grows large enough to notice, this memo is the seam to
-   * move onto a worker without changing a single caller.
+   * The checker runs on every mutation, in a worker where there is one and
+   * inline where there is not. Problems reported from outside -- the
+   * language server on the generated file, a failing run -- are folded into
+   * the same report, so one thing decides what the canvas shows and whether
+   * the graph may be compiled.
    */
-  const report = useMemo(() => checkIntegrity(graph, registry), [graph, registry])
+  const [externalProblems, setExternalProblems] = useState<ExternalProblem[]>([])
+  const manifests = useMemo(() => host.pluginManifests ?? [], [host.pluginManifests])
+  const check = useIntegrityCheck(graph, registry, docVersion, manifests)
+  const report = useMemo(
+    () => withExternalProblems(check.report, program, externalProblems),
+    [check.report, externalProblems, program],
+  )
 
   /**
    * The sandbox is rebuilt from the generated program, not from the text in
@@ -222,6 +256,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const apply = useCallback((next: BlockGraph, coalesce?: string) => {
     if (timer.current) clearTimeout(timer.current)
     setHistory((current) => record(current, graph, { coalesce }))
+    setDocVersion((current) => current + 1)
     setGraph(next)
     setCode(generateProgram(next, registry).code)
     setParseError(undefined)
@@ -232,6 +267,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     if (!step) return
     if (timer.current) clearTimeout(timer.current)
     setHistory(step.history)
+    setDocVersion((current) => current + 1)
     setGraph(step.graph)
     setCode(generateProgram(step.graph, registry).code)
     setParseError(undefined)
@@ -358,6 +394,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
         return
       }
       setParseError(undefined)
+      setDocVersion((current) => current + 1)
       setGraph(parsed.graph)
     }, PARSE_DEBOUNCE)
   }, [registry])
@@ -380,6 +417,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     }
     setParseError(undefined)
     setHistory((current) => record(current, graph, { coalesce: 'file' }))
+    setDocVersion((current) => current + 1)
     setGraph(parsed.graph)
   }, [graph, registry])
 
@@ -486,6 +524,9 @@ export function useBuilder(host: BuilderHost): BuilderState {
     registry,
     program,
     report,
+    checking: check.checking,
+    externalProblems,
+    setExternalProblems,
     ui,
     schema,
     previewDocument,
@@ -493,6 +534,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     failure,
     code,
     parseError,
+    docVersion,
     selected,
     revealed,
     addBlock,

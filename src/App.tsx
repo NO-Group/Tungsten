@@ -42,6 +42,7 @@ import {
   Puzzle,
   BookOpen,
   FilePlus2,
+  Sparkles,
   Plus,
   Rocket,
   RefreshCw,
@@ -92,6 +93,9 @@ import { useBuilder } from './builder/useBuilder'
 import { EXAMPLE_PLUGIN, PLUGIN_DIRECTORY, PLUGIN_SUFFIX, loadPluginBlocks } from './builder/pluginBlocks'
 import { BUILDER_SYNC_PATH } from './builder/fileSync'
 import { useBuilderFileSync } from './builder/useBuilderFileSync'
+import { useAiAssistant } from './editor/ai/useAiAssistant'
+import { AiPanel } from './components/editor/AiPanel'
+import type { AiContext } from './editor/ai/aiModel'
 import { createDictionary } from './shell/commandDictionary'
 import { explainCommandLine } from './shell/explainShell'
 import { DICTIONARY_DIRECTORY, EXAMPLE_COMMAND_FILE, loadWorkspaceCommands } from './shell/workspaceCommands'
@@ -665,7 +669,7 @@ export default function App() {
    */
   const pluginLoad = useMemo(() => loadPluginBlocks(files), [files])
 
-  const builder = useBuilder({ notify, plugins: pluginLoad.blocks })
+  const builder = useBuilder({ notify, plugins: pluginLoad.blocks, pluginManifests: pluginLoad.manifests })
   const [builderOpen, setBuilderOpen] = useState(false)
   const BUILDER_OUTPUT = BUILDER_SYNC_PATH
 
@@ -700,6 +704,26 @@ export default function App() {
   }, [notify, openFile])
 
   /**
+   * Language-server diagnostics on the generated file, pointed back at the
+   * blocks that produced those lines.
+   *
+   * The compiler is the authority on whether generated code is valid, so a
+   * type error it reports marks the block red and freezes compilation, the
+   * same as an error the canvas found itself.
+   */
+  const builderProblems = useMemo(() => problems
+    .filter((problem) => problem.path === BUILDER_SYNC_PATH)
+    .map((problem) => ({
+      line: problem.line,
+      message: problem.message,
+      severity: problem.severity === 1 ? ('error' as const) : ('warning' as const),
+      source: 'TypeScript',
+    })), [problems])
+
+  const { setExternalProblems } = builder
+  useEffect(() => { setExternalProblems(builderProblems) }, [builderProblems, setExternalProblems])
+
+  /**
    * The builder's program, mirrored into the workspace as a real file.
    *
    * Edit it in any editor tab and the blocks follow; move the blocks and the
@@ -714,6 +738,41 @@ export default function App() {
     adoptCode: builder.adoptCode,
     notify,
   })
+
+  /**
+   * The code assistant.
+   *
+   * Its edits go through `updateFileAt` -- the same path a keystroke takes
+   * -- so an accepted edit is indistinguishable from typing, and everything
+   * downstream (dirty marks, diagnostics, the builder's file sync) reacts
+   * without being told.
+   */
+  const ai = useAiAssistant({ onEdit: updateFileAt, notify })
+
+  /**
+   * What the assistant is looking at: the active file, narrowed to the
+   * selection when there is one.
+   *
+   * Read from Monaco at the moment of asking rather than tracked as state:
+   * a selection changes on every cursor move, and none of those are worth a
+   * re-render of the workbench.
+   */
+  const aiContext = useCallback((): AiContext | undefined => {
+    if (!activeFile) return undefined
+    const selection = editorInstance?.getSelection?.()
+    const model = editorInstance?.getModel?.()
+    const selected = selection && model && !selection.isEmpty?.()
+      ? model.getValueInRange(selection)
+      : ''
+    return {
+      path: activeFile.path,
+      buffer: activeFile.content,
+      selection: selected,
+      startLine: selected ? selection!.startLineNumber : 1,
+      endLine: selected ? selection!.endLineNumber : activeFile.content.split('\n').length,
+      language: activeFile.language,
+    }
+  }, [activeFile, editorInstance])
 
   /** Compiles the graph for a target and drops the result in the workspace. */
   const buildBuilderTarget = useCallback((target: CompileTarget) => {
@@ -1084,6 +1143,10 @@ export default function App() {
       { id: 'builder.buildWeb', label: 'Builder: Build the Web Bundle', detail: 'index.html, the program, and the UI schema', icon: Hammer, action: () => buildBuilderTarget('web') },
       { id: 'builder.buildMobile', label: 'Builder: Export Mobile Source', detail: 'Flutter widgets and handlers from the same graph', icon: Hammer, action: () => buildBuilderTarget('mobile') },
       { id: 'builder.buildRunner', label: 'Builder: Build the Local Runner', detail: 'A dependency-free server for the built bundle', icon: Rocket, action: () => buildBuilderTarget('node') },
+      { id: 'ai.ask', label: 'Assistant: Ask About the Selection', detail: ai.open ? 'The assistant panel is open' : 'Opens the assistant panel', icon: Sparkles, when: 'editorIsOpen', action: () => { ai.setOpen(true) } },
+      { id: 'ai.advisor', label: 'Assistant: Advisor Mode', detail: 'Answers only — never edits a buffer', icon: Sparkles, action: () => { ai.setMode('advisor'); ai.setOpen(true) } },
+      { id: 'ai.diff', label: 'Assistant: Diff Preview Mode', detail: 'Shows the change; you accept or discard it', icon: Sparkles, action: () => { ai.setMode('diff'); ai.setOpen(true) } },
+      { id: 'ai.autonomous', label: 'Assistant: Autonomous Mode', detail: 'Applies edits as they stream in', icon: Sparkles, action: () => { ai.setMode('autonomous'); ai.setOpen(true) } },
       { id: 'dictionary.open', label: 'Shell Dictionary: Browse Commands', detail: `${dictionary.entries.length} commands, searchable`, icon: BookOpen, action: () => showView('dictionary') },
       { id: 'dictionary.explain', label: 'Shell Dictionary: Explain the Terminal Command', detail: terminal.input.trim() ? terminal.input.trim() : 'Type a command in the terminal first', icon: BookOpen, action: () => explainTerminalInput() },
       { id: 'dictionary.man', label: 'Shell Dictionary: Read a Manual Page in the Terminal', detail: 'man <command>, answered from the dictionary', icon: BookOpen, action: () => { showPanel('terminal'); terminal.setInput('man '); terminal.focusInput() } },
@@ -1993,6 +2056,29 @@ export default function App() {
               {panelContent()}
             </section>}
           </div>
+
+          {/* Floats over the editor: it is a conversation about what is on
+              screen, so moving the code aside to make room defeats it. */}
+          {ai.open && (
+            <AiPanel
+              mode={ai.mode}
+              onModeChange={ai.setMode}
+              turns={ai.turns}
+              busy={ai.busy}
+              context={aiContext()}
+              providerLabel={ai.provider.label}
+              theme={monacoThemeName(activeTheme)}
+              onAsk={(prompt) => {
+                const context = aiContext()
+                if (context) void ai.ask(prompt, context)
+              }}
+              onAccept={ai.accept}
+              onDiscard={ai.discard}
+              onClear={ai.clear}
+              onClose={() => ai.setOpen(false)}
+              preview={ai.preview}
+            />
+          )}
         </section>
       </main>
 

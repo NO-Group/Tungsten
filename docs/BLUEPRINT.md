@@ -66,6 +66,35 @@ watch for in a browser:
 | unparseable text | — | the canvas goes read-only; the file is left exactly as typed |
 | sync off | — | nothing, and the agreement is remembered so turning it back on does not discard the canvas |
 
+## The assistant, and who is allowed to write
+
+`src/editor/ai/` adds an assistant to the editor with three permission
+tiers, and the rule about who may write is one function — `mayMutate` —
+rather than something spread through the UI:
+
+| Mode | What it may do |
+| --- | --- |
+| **Advisor** | Answers in the floating panel. Cannot reach a buffer at all. |
+| **Diff preview** | Prepares the edit, shows it as a real Monaco diff, applies it only when accepted. |
+| **Autonomous** | Applies as it streams, and says what it did. |
+
+A provider never writes anything. It returns text; the permission engine
+decides what becomes of it. Edits reach the file through the workbench's
+ordinary "this file changed" path, which is why propagation is free: an
+accepted edit is indistinguishable from typing, so the tab goes dirty, the
+language server re-checks it, and — if the file is the builder's — the blocks
+move.
+
+Two providers ship, and neither pretends to be the other. **The local rules
+assistant** is offline and deterministic: it recognises concrete jobs (wrap
+this in try/catch, document this function, log this value, add a TODO,
+convert to an arrow function, explain this) and performs them exactly, the
+same way every time. It cannot invent code it was not taught, and it does not
+claim to. **The remote assistant** streams from any OpenAI-compatible
+endpoint the user configures; Tungsten ships no key and no default endpoint,
+so until one is set the local assistant answers. The SSE reader is tested
+against split frames, keep-alives and `[DONE]`.
+
 ## Part 1 — Core engine and bidirectional sync
 
 | Specified | Built | Where |
@@ -105,6 +134,8 @@ byte-stable for every block in the library.
 | Specified | Built | Where |
 | --- | --- | --- |
 | Checker runs on every state mutation | Yes | `useBuilder.ts` |
+| …as a background worker, off the main thread | Yes, with an inline fallback | `integrityWorker.ts`, `useIntegrityCheck.ts` |
+| Compiler/runtime diagnostics mapped to blocks, compilation frozen | Yes | `externalDiagnostics.ts` |
 | Strongly-typed port matching, bad links red, compilation blocked | Yes | `integrity.ts`, `BuilderView.tsx` |
 | Tarjan's SCC for loops and unawaited promises | Yes | `integrity.ts` |
 | Orphan pruning as a non-blocking warning | Yes | `integrity.ts` |
@@ -140,12 +171,15 @@ chains distinct from data flow, and diagnostics rendered on the wires — all of
 which would have meant fighting its model. The canvas is about four hundred
 lines of SVG and pointer handling, with no dependency to track.
 
-One thing in Part 3 is intentionally **not** done: the checker runs as a
-memoised pure function rather than a background worker. It costs about 0.4 ms
-on a 2,000-block graph, which is far below a frame; moving it to a worker would
-add message-passing latency and a second copy of the graph in exchange for
-nothing measurable. The seam is there if a graph ever gets big enough to need
-it — the `report` memo in `useBuilder.ts` is the only thing that would move.
+The checker now runs in a real worker where one exists, and inline where one
+does not (jsdom, server rendering). Only data crosses the boundary: a block's
+generator and parser are functions and cannot be cloned, so the worker
+rebuilds an identical registry from the built-in library plus the workspace's
+plugin manifests — which are JSON by design. Answers are keyed by
+`docVersion`, so a reply that arrives after the graph moved on is discarded
+rather than shown, and the previous report stays on screen meanwhile. A canvas
+is never left without a report, because rendering "no problems" while the
+answer is in flight would be a lie.
 
 ## Proving it
 

@@ -635,3 +635,104 @@ describe('the builder and the editor, as one program', () => {
     expect(container.querySelector('.builder-sync')?.textContent).toContain('Not synced')
   })
 })
+
+describe('the code assistant', () => {
+  function panel() {
+    return container.querySelector('.ai-panel')
+  }
+
+  function askIn(mode: string, prompt: string) {
+    run(`Assistant: ${mode}`)
+    const input = container.querySelector<HTMLInputElement>('[aria-label="Ask the assistant"]')!
+    type(input, prompt)
+    act(() => { input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true })) })
+  }
+
+  /** The assistant streams; a microtask turn or two settles it. */
+  async function settle() {
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 20) }) })
+  }
+
+  function editorValue() {
+    return container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')?.value ?? ''
+  }
+
+  it('opens from the palette, with advisor as the safe default', () => {
+    run('Assistant: Ask About the Selection')
+    expect(panel()).not.toBeNull()
+    expect(container.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe('Advisor')
+    expect(container.querySelector('.ai-mode-detail')?.textContent).toContain('Never edits')
+  })
+
+  it('answers in advisor mode without touching the buffer', async () => {
+    await act(async () => undefined)
+    const before = editorValue()
+
+    askIn('Advisor Mode', 'wrap this in try/catch')
+    await settle()
+
+    expect(container.querySelector('.ai-answer')?.textContent).toBeTruthy()
+    expect(container.querySelector('.ai-turn')?.className).toContain('answered')
+    // The strongest assertion in this file: advisor mode did not write.
+    expect(editorValue()).toBe(before)
+    expect(container.querySelector('.ai-actions')).toBeNull()
+  })
+
+  it('proposes an edit in diff mode and waits to be told', async () => {
+    await act(async () => undefined)
+    const before = editorValue()
+
+    askIn('Diff Preview Mode', 'wrap this in try/catch')
+    await settle()
+
+    expect(container.querySelector('.ai-turn')?.className).toContain('proposed')
+    expect(container.querySelector('.ai-actions')).not.toBeNull()
+    expect(editorValue()).toBe(before)
+  })
+
+  it('applies the proposal when it is accepted', async () => {
+    await act(async () => undefined)
+    askIn('Diff Preview Mode', 'wrap this in try/catch')
+    await settle()
+
+    click([...container.querySelectorAll('.ai-actions button')][0])
+    await act(async () => undefined)
+
+    expect(editorValue()).toContain('try {')
+    expect(editorValue()).toContain('catch (error)')
+    expect(container.querySelector('.ai-turn')?.className).toContain('applied')
+  })
+
+  it('leaves the buffer alone when the proposal is discarded', async () => {
+    await act(async () => undefined)
+    const before = editorValue()
+    askIn('Diff Preview Mode', 'wrap this in try/catch')
+    await settle()
+
+    click([...container.querySelectorAll('.ai-actions button')][1])
+    await act(async () => undefined)
+
+    expect(editorValue()).toBe(before)
+    expect(container.querySelector('.ai-turn')?.className).toContain('discarded')
+  })
+
+  it('writes straight into the buffer in autonomous mode', async () => {
+    await act(async () => undefined)
+    askIn('Autonomous Mode', 'add a todo: check this with the team')
+    await settle()
+
+    expect(editorValue()).toContain('// TODO: check this with the team')
+    expect(container.querySelector('.ai-turn')?.className).toContain('applied')
+  })
+
+  it('an assistant edit is an ordinary edit: the tab goes dirty', async () => {
+    await act(async () => undefined)
+    expect(container.querySelector('.tab-dirty')).toBeNull()
+
+    askIn('Autonomous Mode', 'add a todo: remember this')
+    await settle()
+
+    expect(editorValue()).toContain('// TODO: remember this')
+    expect(container.querySelector('.tab-dirty')).not.toBeNull()
+  })
+})

@@ -18,6 +18,7 @@ import { checkIntegrity } from './integrity'
 import { incoming, nodeById, outgoing } from './graph'
 import { createFetchers, createMigration, type DataSchema } from './dataSchema'
 import { previewHtml } from './previewRuntime'
+import { uiThemeDart } from './uiTokens'
 import { renderDocumentBody, schemaFromGraph, type ComponentSchema, type UiDocument } from './uiSchema'
 
 export const IR_VERSION = 1
@@ -270,12 +271,24 @@ import 'runtime.dart';
 
 void main() => runApp(const BuilderApp());
 
+/// Graphene, from src/theme/tokens.json. The same palette the web target and
+/// the IDE itself use, so a generated app is not a different product.
+class AppTheme {
+${uiThemeDart()}
+}
+
 class BuilderApp extends StatelessWidget {
   const BuilderApp({super.key});
 
   @override
   Widget build(BuildContext context) => MaterialApp(
-        theme: ThemeData.dark(useMaterial3: true),
+        theme: ThemeData.dark(useMaterial3: true).copyWith(
+          scaffoldBackgroundColor: AppTheme.surface,
+          colorScheme: ColorScheme.fromSeed(
+            seedColor: AppTheme.accent,
+            brightness: Brightness.dark,
+          ).copyWith(primary: AppTheme.accent, onPrimary: AppTheme.accentInk),
+        ),
         home: const BuilderScreen(),
       );
 }

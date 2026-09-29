@@ -33,6 +33,13 @@ export type PluginManifest = {
 
 export type PluginLoad = {
   blocks: BlockDefinition[]
+  /**
+   * The manifests the blocks came from.
+   *
+   * A block carries functions and cannot be sent to a worker; its manifest
+   * is data and can, so the integrity worker rebuilds the same registry.
+   */
+  manifests: PluginManifest[]
   /** One line per file that could not be loaded, shown in the palette. */
   problems: Array<{ path: string; message: string }>
 }
@@ -108,6 +115,7 @@ export function blockFromManifest(manifest: PluginManifest): BlockDefinition | s
  */
 export function loadPluginBlocks(files: Array<{ path: string; content: string }>): PluginLoad {
   const blocks: BlockDefinition[] = []
+  const manifests: PluginManifest[] = []
   const problems: PluginLoad['problems'] = []
 
   const candidates = files
@@ -129,9 +137,10 @@ export function loadPluginBlocks(files: Array<{ path: string; content: string }>
       continue
     }
     blocks.push(result)
+    manifests.push(manifest)
   }
 
-  return { blocks, problems }
+  return { blocks, manifests, problems }
 }
 
 /** A starter manifest, written when the user asks for an example plugin. */
