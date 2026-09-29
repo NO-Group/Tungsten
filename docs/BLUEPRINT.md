@@ -23,6 +23,33 @@ Three ways in, because different hands reach for different ones:
   the sequence, and snapping must never silently replace a connection you
   made on purpose.
 
+## What the app remembers
+
+Page and app variables, declared in the file itself:
+
+```js
+const state = app.state({ page: { query: "" }, app: { token: "" } })
+```
+
+That line is the one statement allowed outside a handler, the parser reads
+it back, and the round trip is byte-stable — so the Variables panel and the
+code are two views of one declaration rather than two copies of it.
+
+Two scopes, and only two. **Page** belongs to a screen; **app** is global
+and persisted, which the preview honours literally — an app variable is
+written through to storage, so a reload keeps it. Setting one re-runs the
+handlers, and because every renderer upserts by id rather than appending,
+what draws a variable is simply drawn again. That is what makes the preview
+an application instead of a screenshot.
+
+**Read Variable** is a pure block, so it wires into anything that takes a
+value — including a component's own properties. Binding a label to state is
+therefore not a feature: it is the graph doing what it already did.
+**Set Variable** occupies a step. Naming a variable the file does not
+declare is an `unknown-variable` error that names the fix and blocks
+compilation, because generated code reading `undefined` at runtime is
+exactly what the canvas exists to prevent.
+
 ## Properties are ports
 
 The inspector is CorelDRAW's right-hand docker: whatever is selected, and

@@ -13,21 +13,28 @@
  * into the single snapshot taken before the gesture began.
  */
 
-import type { BlockGraph } from './blockSchema'
+/**
+ * What a snapshot contains is the caller's business.
+ *
+ * It began as the graph alone, which quietly excluded the app's variables
+ * from undo: adding one and pressing Ctrl+Z put the blocks back and left
+ * the declaration behind. Making the stack generic means the caller
+ * decides what "the document" is, and cannot forget part of it.
+ */
 
 /** How many steps back the canvas remembers. */
 export const HISTORY_LIMIT = 100
 /** Mutations with the same key this close together count as one gesture. */
 export const COALESCE_WINDOW = 600
 
-export type History = {
-  past: BlockGraph[]
-  future: BlockGraph[]
+export type History<T> = {
+  past: T[]
+  future: T[]
   /** The key and time of the last recorded mutation, for coalescing. */
   last?: { key: string; at: number }
 }
 
-export const EMPTY_HISTORY: History = { past: [], future: [] }
+export const EMPTY_HISTORY: History<never> = { past: [], future: [] }
 
 export type RecordOptions = {
   /** Mutations sharing this key collapse into one step. */
@@ -42,7 +49,7 @@ export type RecordOptions = {
  * Called with the *previous* graph, not the next one: undo restores what was
  * there, and redo is rebuilt from the graph that is current at the time.
  */
-export function record(history: History, previous: BlockGraph, options: RecordOptions = {}): History {
+export function record<T>(history: History<T>, previous: T, options: RecordOptions = {}): History<T> {
   const { coalesce, at = Date.now() } = options
   const continues = Boolean(
     coalesce
@@ -62,20 +69,20 @@ export function record(history: History, previous: BlockGraph, options: RecordOp
   return { past, future: [], last: coalesce ? { key: coalesce, at } : undefined }
 }
 
-export function canUndo(history: History): boolean {
+export function canUndo<T>(history: History<T>): boolean {
   return history.past.length > 0
 }
 
-export function canRedo(history: History): boolean {
+export function canRedo<T>(history: History<T>): boolean {
   return history.future.length > 0
 }
 
 /** Steps back. The current graph goes onto the redo stack. */
-export function undo(history: History, current: BlockGraph): { history: History; graph: BlockGraph } | undefined {
+export function undo<T>(history: History<T>, current: T): { history: History<T>; snapshot: T } | undefined {
   if (!history.past.length) return undefined
-  const graph = history.past[history.past.length - 1]
+  const snapshot = history.past[history.past.length - 1]
   return {
-    graph,
+    snapshot,
     history: {
       past: history.past.slice(0, -1),
       future: [...history.future, current],
@@ -86,11 +93,11 @@ export function undo(history: History, current: BlockGraph): { history: History;
 }
 
 /** Steps forward again. */
-export function redo(history: History, current: BlockGraph): { history: History; graph: BlockGraph } | undefined {
+export function redo<T>(history: History<T>, current: T): { history: History<T>; snapshot: T } | undefined {
   if (!history.future.length) return undefined
-  const graph = history.future[history.future.length - 1]
+  const snapshot = history.future[history.future.length - 1]
   return {
-    graph,
+    snapshot,
     history: {
       past: [...history.past, current],
       future: history.future.slice(0, -1),

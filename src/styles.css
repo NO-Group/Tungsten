@@ -1973,3 +1973,71 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 
 .inspector-swatches button.active { outline: 2px solid var(--accent); outline-offset: 1px; }
 .inspector-position { margin: 0; color: var(--muted); font-family: var(--mono); font-size: 10px; }
+
+/* -- Builder: the variables panel ---------------------------------------- */
+
+.state-panel { padding: 8px 10px; overflow-y: auto; }
+.state-head { display: flex; align-items: center; gap: 6px; margin-bottom: 7px; color: var(--muted); font-size: 10.5px; }
+
+.state-head button {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+}
+
+.state-head button:hover:not(:disabled) { background: var(--list-hover); color: var(--strong); }
+.state-empty, .state-note { margin: 6px 0 0; color: var(--muted); font-size: 10.5px; line-height: 1.5; }
+.state-note { color: var(--faint); }
+
+.state-row { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+.state-row.unused { opacity: 0.55; }
+
+.state-row input,
+.state-row select {
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: var(--input-bg);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  outline: none;
+}
+
+.state-row input:focus, .state-row select:focus { border-color: var(--accent); }
+.state-name { width: 130px; }
+.state-initial { flex: 1; min-width: 80px; }
+
+.state-scope {
+  width: 46px;
+  padding: 3px 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.state-scope.app { border-color: var(--accent); color: var(--accent); }
+
+.state-remove {
+  padding: 3px;
+  border: none;
+  background: none;
+  color: var(--faint);
+  cursor: pointer;
+}
+
+.state-remove:hover:not(:disabled) { color: var(--danger); }

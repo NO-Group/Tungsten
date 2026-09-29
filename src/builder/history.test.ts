@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest'
 import {
   COALESCE_WINDOW, EMPTY_HISTORY, HISTORY_LIMIT, canRedo, canUndo, record, redo, undo,
 } from './history'
+import type { History } from './history'
 import type { BlockGraph } from './blockSchema'
 
 /** Graphs are compared by identity here; the contents do not matter. */
@@ -26,7 +27,7 @@ describe('history', () => {
   it('steps back to the graph that was replaced', () => {
     const history = record(EMPTY_HISTORY, graph('first'))
     const step = undo(history, graph('second'))
-    expect(step?.graph.nodes[0].id).toBe('first')
+    expect(step?.snapshot.nodes[0].id).toBe('first')
     expect(canUndo(step!.history)).toBe(false)
     expect(canRedo(step!.history)).toBe(true)
   })
@@ -34,8 +35,8 @@ describe('history', () => {
   it('steps forward again to exactly what was undone', () => {
     const history = record(EMPTY_HISTORY, graph('first'))
     const back = undo(history, graph('second'))!
-    const forward = redo(back.history, back.graph)!
-    expect(forward.graph.nodes[0].id).toBe('second')
+    const forward = redo(back.history, back.snapshot)!
+    expect(forward.snapshot.nodes[0].id).toBe('second')
     expect(canUndo(forward.history)).toBe(true)
   })
 
@@ -46,7 +47,7 @@ describe('history', () => {
     history = record(history, graph('during-2'), { coalesce: 'move:1', at: 1080 })
 
     expect(history.past).toHaveLength(1)
-    expect(undo(history, graph('after'))?.graph.nodes[0].id).toBe('before')
+    expect(undo(history, graph('after'))?.snapshot.nodes[0].id).toBe('before')
   })
 
   it('starts a new step once the gesture has paused', () => {
@@ -82,7 +83,7 @@ describe('history', () => {
   })
 
   it('remembers a bounded number of steps', () => {
-    let history = EMPTY_HISTORY
+    let history: History<BlockGraph> = EMPTY_HISTORY
     for (let step = 0; step < HISTORY_LIMIT + 25; step += 1) history = record(history, graph(`s${step}`))
     expect(history.past).toHaveLength(HISTORY_LIMIT)
     // The oldest were dropped, the newest kept.

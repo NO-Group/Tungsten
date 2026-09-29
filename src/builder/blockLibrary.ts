@@ -444,6 +444,42 @@ const logicLog = defineBlock({
 
 // ------------------------------------------------------------------ Data
 
+// ------------------------------------------------------------- App state
+
+const stateGet = defineBlock({
+  type: 'state.get',
+  label: 'Read Variable',
+  category: 'Data',
+  description: 'The current value of an app or page variable.',
+  inputs: [{ id: 'name', label: 'Variable', type: 'String', default: '', required: true, property: true }],
+  outputs: [{ id: 'value', label: 'Value', type: 'Any' }],
+  // Pure: it reads, it does not occupy a step, and it can be wired into
+  // anything that takes a value -- including a component's own properties.
+  generate: ({ node }) => `state.get(${quote(String(node.values.name ?? ''))})`,
+  parse: (statement) => {
+    const match = /^state\.get\("([A-Za-z0-9_]*)"\)$/.exec(statement)
+    return match ? { inputs: { name: `"${match[1]}"` } } : undefined
+  },
+})
+
+const stateSet = defineBlock({
+  type: 'state.set',
+  label: 'Set Variable',
+  category: 'Data',
+  description: 'Stores a value in an app or page variable.',
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'name', label: 'Variable', type: 'String', default: '', required: true, property: true },
+    { id: 'value', label: 'Value', type: 'Any', default: '', required: true },
+  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  generate: ({ input, node }) => `state.set(${quote(String(node.values.name ?? ''))}, ${input('value')})`,
+  parse: (statement) => {
+    const match = /^state\.set\("([A-Za-z0-9_]*)", (.*)\)$/.exec(statement)
+    return match ? { inputs: { name: `"${match[1]}"`, value: match[2] } } : undefined
+  },
+})
+
 const dataQuery = defineBlock({
   type: 'data.query',
   label: 'Query Table',
@@ -630,6 +666,7 @@ export const builtinBlocks: BlockDefinition[] = [
   uiButton, uiText, uiInput, uiValue,
   logicIf, logicForEach, logicCompare, logicMath, logicExists, logicLog,
   dataQuery, dataInsert, dataVariable, dataNumber,
+  stateGet, stateSet,
   networkFetch,
   authSignUp, authOauth, authSession,
   storageUpload,

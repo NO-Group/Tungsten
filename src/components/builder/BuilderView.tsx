@@ -16,6 +16,7 @@ import {
 import Editor from '../ConfiguredEditor'
 import { BuilderCanvas } from './BuilderCanvas'
 import { InspectorPanel } from './InspectorPanel'
+import { StatePanel } from './StatePanel'
 import { BuilderPreview } from './BuilderPreview'
 import { DataSchemaPanel } from './DataSchemaPanel'
 import { diagnosticsByNode } from '../../builder/integrity'
@@ -56,7 +57,7 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
   const [tool, setTool] = useState<ToolId>('pick')
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [rightPane, setRightPane] = useState<'code' | 'preview'>('code')
-  const [bottomPane, setBottomPane] = useState<'integrity' | 'data'>('integrity')
+  const [bottomPane, setBottomPane] = useState<'integrity' | 'data' | 'state'>('integrity')
   const [target, setTarget] = useState<CompileTarget>('web')
 
   /**
@@ -174,6 +175,14 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
     copySelection, cutSelection, duplicateBlock, moveBlock, paste, redo, removeSelection,
     selectAll, selectedNode, selection.length, undo,
   ])
+
+  /** Variables some block actually reads or writes, for the dimming. */
+  const usedVariables = useMemo(() => new Set(
+    graph.nodes
+      .filter((node) => node.type === 'state.get' || node.type === 'state.set')
+      .map((node) => String(node.values.name ?? '').replace(/^"|"$/g, ''))
+      .filter(Boolean),
+  ), [graph.nodes])
 
   const errors = report.diagnostics.filter((entry) => entry.severity === 'error')
   const warnings = report.diagnostics.filter((entry) => entry.severity === 'warning')
@@ -347,6 +356,10 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
                   {warnings.length === 1 ? '' : 's'}
                 </span>
               </button>
+              <button className={bottomPane === 'state' ? 'active' : ''} onClick={() => setBottomPane('state')}>
+                Variables
+                <span className="builder-problem-counts">{builder.state.length}</span>
+              </button>
               <button className={bottomPane === 'data' ? 'active' : ''} onClick={() => setBottomPane('data')}>
                 Data
                 <span className="builder-problem-counts">{builder.schema.tables.length} tables</span>
@@ -376,6 +389,18 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
                   ))}
                 </ul>
               </div>
+            ) : bottomPane === 'state' ? (
+              <StatePanel
+                state={builder.state}
+                used={usedVariables}
+                readOnly={Boolean(parseError)}
+                onAdd={builder.addVariable}
+                onRename={builder.renameVariable}
+                onScope={builder.setVariableScope}
+                onType={builder.setVariableType}
+                onInitial={builder.setVariableInitial}
+                onRemove={builder.removeVariable}
+              />
             ) : (
               <DataSchemaPanel
                 schema={builder.schema}

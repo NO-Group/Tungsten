@@ -95,7 +95,46 @@ const render = {
   },
 }
 
+/**
+ * Re-runs the start handlers.
+ *
+ * Every renderer here upserts by id rather than appending, so running the
+ * handlers again updates the elements that exist instead of duplicating
+ * them. That is what makes a variable change visible: set it, and what
+ * draws it is drawn again.
+ */
+function rerender() {
+  for (const handler of starts) void guarded(handler)
+}
+
 const app = {
+  /**
+   * The variables, in the sandbox.
+   *
+   * Page state is a plain object. App state is written through to
+   * localStorage, so a reload keeps it -- which is the distinction
+   * between the two scopes, made real rather than described.
+   */
+  state: (initial) => {
+    const scopes = { page: { ...(initial.page || {}) }, app: { ...(initial.app || {}) } }
+    try {
+      Object.assign(scopes.app, JSON.parse(localStorage.getItem('tungsten.preview.state') || '{}'))
+    } catch { /* Nothing stored, or storage refused: the defaults stand. */ }
+
+    const scopeOf = (name) => (name in scopes.page ? 'page' : 'app')
+    return {
+      get: (name) => scopes[scopeOf(name)][name],
+      set: (name, value) => {
+        const scope = scopeOf(name)
+        scopes[scope][name] = value
+        if (scope === 'app') {
+          try { localStorage.setItem('tungsten.preview.state', JSON.stringify(scopes.app)) } catch { /* ignore */ }
+        }
+        rerender()
+        return value
+      },
+    }
+  },
   onStart: (handler) => { starts.push(handler) },
   onClick: (target, handler) => {
     const bind = () => {

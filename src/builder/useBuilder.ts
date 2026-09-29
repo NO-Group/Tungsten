@@ -20,6 +20,10 @@ import { generateProgram, type GeneratedProgram } from './codeGenerator'
 import { parseProgram, type ParseFailure } from './codeParser'
 import { EMPTY_HISTORY, canRedo, canUndo, record, redo, undo, type History } from './history'
 import { instantiate, recipeById } from './recipes'
+import {
+  EMPTY_STATE, INITIAL_FOR, isValidName, uniqueName, type AppVariable, type StateScope,
+  type StateType,
+} from './appState'
 import { copyNodes, moveNodes, parseClipboard, pasteNodes, removeNodes, serialise } from './clipboard'
 import { mergeSelection, nodesInRect, pruneSelection, selectionAfterClick, type Rect } from './selection'
 import { tidy as tidyGraph, isTidy } from './layout'
@@ -63,7 +67,7 @@ export type BuilderHost = {
   pluginManifests?: PluginManifest[]
 }
 
-type Stored = { graph: BlockGraph; schema: DataSchema }
+type Stored = { graph: BlockGraph; schema: DataSchema; state: AppVariable[] }
 
 export type BuilderState = {
   graph: BlockGraph
@@ -156,6 +160,14 @@ export type BuilderState = {
   syncEnabled: boolean
   setSyncEnabled: (enabled: boolean) => void
   clear: () => void
+  /** The variables the app keeps, and the actions that change them. */
+  state: AppVariable[]
+  addVariable: (scope?: StateScope) => void
+  renameVariable: (index: number, name: string) => void
+  setVariableScope: (index: number, scope: StateScope) => void
+  setVariableType: (index: number, type: StateType) => void
+  setVariableInitial: (index: number, initial: string) => void
+  removeVariable: (index: number) => void
   addTable: (name?: string) => void
   renameTable: (index: number, name: string) => void
   removeTable: (index: number) => void
@@ -180,7 +192,7 @@ export type BuilderState = {
 }
 
 function load(): Stored {
-  const empty: Stored = { graph: { nodes: [], connections: [] }, schema: EMPTY_SCHEMA }
+  const empty: Stored = { graph: { nodes: [], connections: [] }, schema: EMPTY_SCHEMA, state: EMPTY_STATE }
   try {
     const stored = localStorage.getItem(BUILDER_STORAGE_KEY)
     if (!stored) return empty
@@ -191,7 +203,8 @@ function load(): Stored {
       ? { nodes: parsed.nodes, connections: parsed.connections }
       : empty.graph)
     const schema = parsed.schema?.tables ? parsed.schema : EMPTY_SCHEMA
-    return { graph, schema }
+    const state = Array.isArray(parsed.state) ? parsed.state : EMPTY_STATE
+    return { graph, schema, state }
   } catch {
     return empty
   }
@@ -204,14 +217,17 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [initial] = useState(load)
   const [graph, setGraph] = useState<BlockGraph>(initial.graph)
   const [schema, setSchema] = useState<DataSchema>(initial.schema)
-  const [code, setCode] = useState(() => generateProgram(initial.graph, registry).code)
+  const [state, setState] = useState<AppVariable[]>(initial.state)
+  const [code, setCode] = useState(() => generateProgram(initial.graph, registry, initial.state).code)
   const [parseError, setParseError] = useState<ParseFailure | undefined>(undefined)
   const [selection, setSelection] = useState<string[]>([])
   /** The last thing copied here, so paste works without clipboard permission. */
   const [internalClipboard, setInternalClipboard] = useState<string | undefined>(undefined)
   const selected = selection.length ? selection[selection.length - 1] : undefined
   const [revealed, setRevealed] = useState<string | undefined>(undefined)
-  const [history, setHistory] = useState<History>(EMPTY_HISTORY)
+  /** One undo stack over the whole document, not over the graph alone. */
+  type Snapshot = { graph: BlockGraph; state: AppVariable[] }
+  const [history, setHistory] = useState<History<Snapshot>>(EMPTY_HISTORY)
   const [docVersion, setDocVersion] = useState(0)
   const [syncEnabled, setSyncEnabled] = useState(() => {
     try {
@@ -223,7 +239,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [logs, setLogs] = useState<string[]>([])
   const [failure, setFailure] = useState<Traceback | undefined>(undefined)
 
-  const program = useMemo(() => generateProgram(graph, registry), [graph, registry])
+  const program = useMemo(() => generateProgram(graph, registry, state), [graph, registry, state])
   const ui = useMemo(() => schemaFromGraph(graph, registry), [graph, registry])
 
   /**
@@ -235,7 +251,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
    */
   const [externalProblems, setExternalProblems] = useState<ExternalProblem[]>([])
   const manifests = useMemo(() => host.pluginManifests ?? [], [host.pluginManifests])
-  const check = useIntegrityCheck(graph, registry, docVersion, manifests)
+  const check = useIntegrityCheck(graph, registry, docVersion, manifests, state)
   const report = useMemo(
     () => withExternalProblems(check.report, program, externalProblems),
     [check.report, externalProblems, program],
@@ -260,7 +276,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
    * effect then depends on one string, so it writes exactly when the saved
    * bytes would differ and not merely when an object identity changed.
    */
-  const persisted = useMemo(() => JSON.stringify({ graph, schema }), [graph, schema])
+  const persisted = useMemo(() => JSON.stringify({ graph, schema, state }), [graph, schema, state])
 
   useEffect(() => {
     try {
@@ -281,28 +297,35 @@ export function useBuilder(host: BuilderHost): BuilderState {
    */
   const apply = useCallback((next: BlockGraph, coalesce?: string) => {
     if (timer.current) clearTimeout(timer.current)
-    setHistory((current) => record(current, graph, { coalesce }))
+    setHistory((current) => record(current, { graph, state }, { coalesce }))
     setDocVersion((current) => current + 1)
     setSelection((current) => pruneSelection(current, next))
     setGraph(next)
-    setCode(generateProgram(next, registry).code)
+    setCode(generateProgram(next, registry, state).code)
     setParseError(undefined)
-  }, [graph, registry])
+  }, [graph, registry, state])
 
-  /** Restores a graph from the history stacks. */
-  const restore = useCallback((step: { history: History; graph: BlockGraph } | undefined) => {
+  /** Restores a whole document -- graph and variables -- from the stacks. */
+  const restore = useCallback((step: { history: History<Snapshot>; snapshot: Snapshot } | undefined) => {
     if (!step) return
     if (timer.current) clearTimeout(timer.current)
     setHistory(step.history)
     setDocVersion((current) => current + 1)
-    setGraph(step.graph)
-    setCode(generateProgram(step.graph, registry).code)
+    setGraph(step.snapshot.graph)
+    setState(step.snapshot.state)
+    setCode(generateProgram(step.snapshot.graph, registry, step.snapshot.state).code)
     setParseError(undefined)
-    setSelection((current) => pruneSelection(current, step.graph))
+    setSelection((current) => pruneSelection(current, step.snapshot.graph))
   }, [registry])
 
-  const undoAction = useCallback(() => restore(undo(history, graph)), [graph, history, restore])
-  const redoAction = useCallback(() => restore(redo(history, graph)), [graph, history, restore])
+  const undoAction = useCallback(
+    () => restore(undo(history, { graph, state })),
+    [graph, history, restore, state],
+  )
+  const redoAction = useCallback(
+    () => restore(redo(history, { graph, state })),
+    [graph, history, restore, state],
+  )
 
   const addBlock = useCallback((type: string, position?: { x: number; y: number }) => {
     if (!registry.get(type)) return
@@ -500,6 +523,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
       }
       setParseError(undefined)
       setDocVersion((current) => current + 1)
+      setState(parsed.state)
       setGraph(parsed.graph)
     }, PARSE_DEBOUNCE)
   }, [registry])
@@ -521,10 +545,11 @@ export function useBuilder(host: BuilderHost): BuilderState {
       return
     }
     setParseError(undefined)
-    setHistory((current) => record(current, graph, { coalesce: 'file' }))
+    setHistory((current) => record(current, { graph, state }, { coalesce: 'file' }))
     setDocVersion((current) => current + 1)
+    setState(parsed.state)
     setGraph(parsed.graph)
-  }, [graph, registry])
+  }, [graph, registry, state])
 
   const chooseSync = useCallback((enabled: boolean) => {
     setSyncEnabled(enabled)
@@ -543,6 +568,59 @@ export function useBuilder(host: BuilderHost): BuilderState {
   }, [])
 
   // ------------------------------------------------------- the database
+
+  // ------------------------------------------------------ the variables
+
+  /**
+   * Changing a variable rewrites the file, so it goes through the same
+   * path a canvas edit does: one undo step, one document version, and the
+   * code pane updated to match.
+   */
+  const applyState = useCallback((next: AppVariable[], coalesce?: string) => {
+    setHistory((current) => record(current, { graph, state }, { coalesce }))
+    setDocVersion((current) => current + 1)
+    setState(next)
+    setCode(generateProgram(graph, registry, next).code)
+    setParseError(undefined)
+  }, [graph, registry, state])
+
+  const addVariable = useCallback((scope: StateScope = 'page') => {
+    const name = uniqueName('value', state)
+    applyState([...state, { name, scope, type: 'String', initial: INITIAL_FOR.String }])
+  }, [applyState, state])
+
+  const renameVariable = useCallback((index: number, name: string) => {
+    const cleaned = name.trim()
+    if (!isValidName(cleaned)) {
+      // Rejected rather than silently corrected: a variable renamed behind
+      // the user's back is worse than one that refuses to be renamed.
+      notify('A variable name starts with a lowercase letter and has no spaces')
+      return
+    }
+    applyState(state.map((variable, position) => (
+      position === index ? { ...variable, name: cleaned } : variable
+    )), `rename:${index}`)
+  }, [applyState, notify, state])
+
+  const setVariableScope = useCallback((index: number, scope: StateScope) => {
+    applyState(state.map((variable, position) => (position === index ? { ...variable, scope } : variable)))
+  }, [applyState, state])
+
+  const setVariableType = useCallback((index: number, type: StateType) => {
+    applyState(state.map((variable, position) => (
+      position === index ? { ...variable, type, initial: INITIAL_FOR[type] } : variable
+    )))
+  }, [applyState, state])
+
+  const setVariableInitial = useCallback((index: number, initial: string) => {
+    applyState(state.map((variable, position) => (
+      position === index ? { ...variable, initial } : variable
+    )), `initial:${index}`)
+  }, [applyState, state])
+
+  const removeVariable = useCallback((index: number) => {
+    applyState(state.filter((_, position) => position !== index))
+  }, [applyState, state])
 
   const addTable = useCallback((name?: string) => {
     // Guarded rather than trusted: a handler wired straight to onClick would
@@ -672,6 +750,13 @@ export function useBuilder(host: BuilderHost): BuilderState {
     syncEnabled,
     setSyncEnabled: chooseSync,
     clear,
+    state,
+    addVariable,
+    renameVariable,
+    setVariableScope,
+    setVariableType,
+    setVariableInitial,
+    removeVariable,
     addTable,
     renameTable,
     removeTable,

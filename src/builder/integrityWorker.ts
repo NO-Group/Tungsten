@@ -23,6 +23,8 @@ export type IntegrityRequest = {
   docVersion: number
   graph: BlockGraph
   manifests: PluginManifest[]
+  /** The declared variables, so the worker can judge what a block names. */
+  state?: Array<{ name: string }>
 }
 
 export type IntegrityResponse = {
@@ -37,7 +39,10 @@ export function runIntegrity(request: IntegrityRequest): IntegrityResponse {
     .filter((block): block is Exclude<ReturnType<typeof blockFromManifest>, string> => typeof block !== 'string')
 
   const registry = createRegistry([...builtinBlocks, ...plugins])
-  return { docVersion: request.docVersion, report: checkIntegrity(request.graph, registry) }
+  return {
+    docVersion: request.docVersion,
+    report: checkIntegrity(request.graph, registry, request.state ?? []),
+  }
 }
 
 // The worker entry point. Guarded because this module is imported directly by

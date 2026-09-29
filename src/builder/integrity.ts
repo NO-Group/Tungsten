@@ -49,6 +49,7 @@ export type IntegrityRule =
   | 'unreachable-value'
   | 'out-of-scope'
   | 'unused-result'
+  | 'unknown-variable'
 
 export type IntegrityReport = {
   diagnostics: BuilderDiagnostic[]
@@ -136,9 +137,37 @@ function stronglyConnected(graph: BlockGraph): string[][] {
   return components
 }
 
-export function checkIntegrity(graph: BlockGraph, registry: BlockRegistry): IntegrityReport {
+export function checkIntegrity(
+  graph: BlockGraph,
+  registry: BlockRegistry,
+  state: readonly { name: string }[] = [],
+): IntegrityReport {
+  /** Variables the file declares. A block may only name one of these. */
+  const declared = new Set(state.map((variable) => variable.name))
   const diagnostics: BuilderDiagnostic[] = []
   const cyclic = new Set<string>()
+
+  // ------------------------------------------------- unknown variables
+  // A block naming a variable the file does not declare would generate
+  // code that reads undefined at runtime, which is exactly the class of
+  // mistake the canvas exists to make impossible.
+  for (const node of graph.nodes) {
+    if (node.type !== 'state.get' && node.type !== 'state.set') continue
+    const name = String(node.values.name ?? '').replace(/^"|"$/g, '')
+    if (name && declared.has(name)) continue
+    diagnostics.push({
+      severity: 'error',
+      nodeId: node.id,
+      portId: 'name',
+      message: name
+        ? `There is no variable called “${name}”.`
+        : 'This block does not say which variable it means.',
+      fix: name
+        ? `Add “${name}” in the Variables panel, or pick one that exists.`
+        : 'Choose a variable in the inspector, or add one in the Variables panel.',
+      code: 'unknown-variable',
+    })
+  }
 
   // ---------------------------------------------------- unknown blocks
   for (const node of graph.nodes) {

@@ -1086,3 +1086,102 @@ describe('the inspector', () => {
     expect(container.querySelector('[aria-label="Input Text of Button"]')).not.toBeNull()
   })
 })
+
+describe('app and page variables', () => {
+  const variablesTab = () => [...container.querySelectorAll('.builder-tabs button')]
+    .find((button) => button.textContent?.includes('Variables'))!
+
+  function openVariables() {
+    click(variablesTab())
+  }
+
+  it('starts with none, and explains the two scopes', () => {
+    openVariables()
+    expect(container.querySelector('.state-empty')?.textContent).toContain('outlives a reload')
+  })
+
+  it('declares a variable in the generated file', () => {
+    openVariables()
+    click([...container.querySelectorAll('.state-head button')][0])
+    expect(code()).toContain('const state = app.state({ page: { value: "" } })')
+    expect(variablesTab().textContent).toContain('1')
+  })
+
+  it('puts an app variable in the other group', () => {
+    openVariables()
+    click([...container.querySelectorAll('.state-head button')][1])
+    expect(code()).toContain('app: { value: "" }')
+  })
+
+  it('renames, retypes and re-scopes, each landing in the code', () => {
+    openVariables()
+    click([...container.querySelectorAll('.state-head button')][0])
+
+    const name = container.querySelector<HTMLInputElement>('[aria-label="Name of variable 1"]')!
+    type(name, 'greeting')
+    act(() => { name.dispatchEvent(new FocusEvent('focusout', { bubbles: true })) })
+    expect(code()).toContain('greeting')
+
+    const type_ = container.querySelector<HTMLSelectElement>('[aria-label="Type of greeting"]')!
+    act(() => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(type_, 'Number')
+      type_.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(code()).toContain('greeting: 0')
+
+    click(container.querySelector('[aria-label="Scope of greeting"]')!)
+    expect(code()).toContain('app: { greeting: 0 }')
+  })
+
+  it('refuses a name that could not be one', () => {
+    openVariables()
+    click([...container.querySelectorAll('.state-head button')][0])
+    const name = container.querySelector<HTMLInputElement>('[aria-label="Name of variable 1"]')!
+    type(name, 'two words')
+    act(() => { name.dispatchEvent(new FocusEvent('focusout', { bubbles: true })) })
+
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('lowercase letter'))
+    expect(code()).toContain('value:')
+  })
+
+  it('flags a block that names a variable which does not exist', () => {
+    click(palette('On App Start'))
+    click(palette('Set Variable'))
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Set Variable'))
+
+    expect(container.querySelector('.builder-state')?.textContent).toContain('error')
+    expect(container.textContent).toContain('does not say which variable')
+  })
+
+  it('is satisfied once the variable exists and is chosen', () => {
+    openVariables()
+    click([...container.querySelectorAll('.state-head button')][0])
+
+    click(palette('On App Start'))
+    click(palette('Set Variable'))
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Set Variable'))
+
+    // The inspector names the variable, because it is a property.
+    type(container.querySelector<HTMLInputElement>('[aria-label="Variable of state.set"]')!, 'value')
+    type(container.querySelector<HTMLInputElement>('[aria-label="Value of state.set"]')!, 'hello')
+    expect(code()).toContain('state.set("value", "hello")')
+    expect(container.querySelector('.builder-state')?.textContent).toContain('Ready to compile')
+  })
+
+  it('undoes a variable in one step', () => {
+    openVariables()
+    click([...container.querySelectorAll('.state-head button')][0])
+    expect(code()).toContain('app.state(')
+    press('z', { ctrlKey: true })
+    expect(code()).not.toContain('app.state(')
+  })
+
+  it('dims a variable nothing reads yet', () => {
+    openVariables()
+    click([...container.querySelectorAll('.state-head button')][0])
+    expect(container.querySelector('.state-row')?.className).toContain('unused')
+    expect(container.querySelector('.state-note')?.textContent).toContain('nothing reads or writes them')
+  })
+})

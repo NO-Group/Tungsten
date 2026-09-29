@@ -21,6 +21,7 @@
 
 import type { BlockGraph, BlockNode, BlockRegistry, Connection } from './blockSchema'
 import { nextId } from './graph'
+import { parseState, type AppVariable } from './appState'
 
 export type ParseFailure = {
   ok: false
@@ -30,7 +31,9 @@ export type ParseFailure = {
   reason: string
 }
 
-export type ParseResult = { ok: true; graph: BlockGraph } | ParseFailure
+export type ParseResult =
+  | { ok: true; graph: BlockGraph; state: AppVariable[] }
+  | ParseFailure
 
 /** Vertical rhythm of the rebuilt layout, in canvas units. */
 const ROW = 110
@@ -65,6 +68,8 @@ type Frame = {
 }
 
 export function parseProgram(code: string, registry: BlockRegistry): ParseResult {
+  /** The variables declared at the top, if the file declares any. */
+  let state: AppVariable[] = []
   const nodes: BlockNode[] = []
   const connections: Connection[] = []
   /** Variable name to the node that assigned it, for restoring data links. */
@@ -174,6 +179,11 @@ export function parseProgram(code: string, registry: BlockRegistry): ParseResult
     const lineNumber = index + 1
     if (!raw || raw.startsWith('//')) continue
 
+    // The declaration of what the app remembers. It is the one statement
+    // allowed outside a handler, and it must come before them.
+    const declared = parseState(raw)
+    if (declared) { state = declared; continue }
+
     const frame = stack[stack.length - 1]
 
     // ------------------------------------------------- closing a body
@@ -257,5 +267,5 @@ export function parseProgram(code: string, registry: BlockRegistry): ParseResult
     return { ok: false, line: lines.length, reason: 'The file ends with a block still open.' }
   }
 
-  return { ok: true, graph: { nodes, connections } }
+  return { ok: true, graph: { nodes, connections }, state }
 }
