@@ -1818,3 +1818,19 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .spin { animation: ai-spin 1s linear infinite; }
 
 @keyframes ai-spin { to { transform: rotate(360deg); } }
+
+/* -- Builder: working on many blocks at once ----------------------------- */
+
+.builder-marquee {
+  position: absolute;
+  z-index: 3;
+  border: 1px solid var(--accent);
+  border-radius: 2px;
+  background: var(--wash);
+  pointer-events: none;
+}
+
+/* Every block in the selection is outlined; the primary one a little more,
+   because that is the one a single-block action would act on. */
+.builder-node.selected { outline: 1px solid var(--accent); }
+.builder-node.selected.primary { outline-width: 2px; }

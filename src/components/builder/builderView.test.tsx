@@ -692,3 +692,152 @@ describe('building at speed', () => {
     expect(container.querySelector<HTMLButtonElement>('[aria-label="Undo"]')!.disabled).toBe(false)
   })
 })
+
+describe('working on many blocks at once', () => {
+  /** Drags a marquee across the canvas from one point to another. */
+  function marquee(from: { x: number; y: number }, to: { x: number; y: number }, modifiers: Partial<MouseEventInit> = {}) {
+    const surface = canvas()
+    act(() => {
+      surface.dispatchEvent(new MouseEvent('mousedown', {
+        bubbles: true, cancelable: true, clientX: from.x, clientY: from.y, ...modifiers,
+      }))
+    })
+    fireMouse(window, 'mousemove', to)
+    fireMouse(window, 'mouseup', to)
+  }
+
+  const selected = () => [...container.querySelectorAll('.builder-node.selected')]
+
+  beforeEach(() => {
+    click(palette('On App Start'))
+    click(palette('Log'))
+    click(palette('Text Value'))
+  })
+
+  it('catches every block a marquee is dragged across', () => {
+    // jsdom reports no layout, so every node sits at its style position;
+    // a box over the whole canvas catches all three.
+    marquee({ x: 0, y: 0 }, { x: 900, y: 900 })
+    expect(selected()).toHaveLength(3)
+    expect(container.querySelector('.builder-count')?.textContent).toContain('3 of 3 blocks')
+  })
+
+  it('shows the marquee while it is being dragged', () => {
+    const surface = canvas()
+    act(() => {
+      surface.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 10, clientY: 10 }))
+    })
+    fireMouse(window, 'mousemove', { x: 400, y: 400 })
+    expect(container.querySelector('[data-testid="builder-marquee"]')).not.toBeNull()
+    fireMouse(window, 'mouseup', { x: 400, y: 400 })
+    expect(container.querySelector('[data-testid="builder-marquee"]')).toBeNull()
+  })
+
+  it('treats a click on bare canvas as a deselect, not a marquee', () => {
+    marquee({ x: 0, y: 0 }, { x: 900, y: 900 })
+    expect(selected()).toHaveLength(3)
+    marquee({ x: 800, y: 800 }, { x: 801, y: 801 })
+    expect(selected()).toHaveLength(0)
+  })
+
+  it('adds to the selection with shift, and takes away again', () => {
+    const blocks = nodes()
+    fireMouse(blocks[0], 'mousedown', { x: 60, y: 20 })
+    fireMouse(window, 'mouseup', { x: 60, y: 20 })
+    expect(selected()).toHaveLength(1)
+
+    act(() => {
+      blocks[1].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 60, clientY: 200, shiftKey: true }))
+    })
+    fireMouse(window, 'mouseup', { x: 60, y: 200 })
+    expect(selected()).toHaveLength(2)
+
+    act(() => {
+      blocks[1].dispatchEvent(new MouseEvent('mousedown', { bubbles: true, clientX: 60, clientY: 200, shiftKey: true }))
+    })
+    fireMouse(window, 'mouseup', { x: 60, y: 200 })
+    expect(selected()).toHaveLength(1)
+  })
+
+  it('drags the whole selection when one of its blocks is dragged', () => {
+    marquee({ x: 0, y: 0 }, { x: 900, y: 900 })
+    const before = nodes().map((node) => Number.parseInt(node.style.left, 10))
+
+    fireMouse(nodes()[0], 'mousedown', { x: 60, y: 20 })
+    fireMouse(window, 'mousemove', { x: 260, y: 20 })
+    fireMouse(window, 'mouseup', { x: 260, y: 20 })
+
+    const after = nodes().map((node) => Number.parseInt(node.style.left, 10))
+    expect(after.every((value, index) => value === before[index] + 200)).toBe(true)
+    // And the group still holds together for the next gesture.
+    expect(selected()).toHaveLength(3)
+  })
+
+  it('selects everything with the keyboard, and deletes it in one step', () => {
+    press('a', { ctrlKey: true })
+    expect(selected()).toHaveLength(3)
+    press('Delete')
+    expect(nodes()).toHaveLength(0)
+
+    press('z', { ctrlKey: true })
+    expect(nodes()).toHaveLength(3)
+  })
+
+  it('copies a selection and pastes it back, wires and all', () => {
+    click(palette('On App Start'))
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Log'))
+    const wires = container.querySelectorAll('.builder-wire').length
+    expect(wires).toBe(1)
+
+    press('a', { ctrlKey: true })
+    press('c', { ctrlKey: true })
+    press('v', { ctrlKey: true })
+
+    expect(nodes()).toHaveLength(8)
+    expect(container.querySelectorAll('.builder-wire').length).toBe(wires * 2)
+    // What was pasted is what is now selected, ready to be moved.
+    expect(selected()).toHaveLength(4)
+  })
+
+  it('cuts a selection out and puts it back', () => {
+    press('a', { ctrlKey: true })
+    press('x', { ctrlKey: true })
+    expect(nodes()).toHaveLength(0)
+    press('v', { ctrlKey: true })
+    expect(nodes()).toHaveLength(3)
+  })
+
+  it('nudges everything selected together', () => {
+    press('a', { ctrlKey: true })
+    const before = nodes().map((node) => Number.parseInt(node.style.left, 10))
+    press('ArrowRight')
+    expect(nodes().map((node) => Number.parseInt(node.style.left, 10)))
+      .toEqual(before.map((value) => value + 8))
+  })
+
+  it('tidies the canvas into columns, and then says it is tidy', () => {
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Log'))
+
+    const tidyButton = () => container.querySelector<HTMLButtonElement>('[aria-label="Tidy the canvas"]')!
+    expect(tidyButton().disabled).toBe(false)
+    click(tidyButton())
+
+    const [start, log] = nodes()
+    expect(Number.parseInt(log.style.left, 10)).toBeGreaterThan(Number.parseInt(start.style.left, 10))
+    expect(tidyButton().disabled).toBe(true)
+    expect(notify).toHaveBeenCalledWith('Canvas tidied')
+  })
+
+  it('undoes a tidy in one step', () => {
+    // Three loose blocks share column zero, so it is the vertical packing
+    // that changes here, not the column.
+    const positions = () => nodes().map((node) => `${node.style.left},${node.style.top}`)
+    const before = positions()
+    click(container.querySelector('[aria-label="Tidy the canvas"]')!)
+    expect(positions()).not.toEqual(before)
+    press('z', { ctrlKey: true })
+    expect(positions()).toEqual(before)
+  })
+})

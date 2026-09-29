@@ -23,7 +23,31 @@ Three ways in, because different hands reach for different ones:
   the sequence, and snapping must never silently replace a connection you
   made on purpose.
 
-And once a canvas is moving, the things that make it fast:
+And once a canvas has more than a handful of blocks on it:
+
+- **Select many.** Drag a marquee across bare canvas, or shift-click to add
+  and remove. Anything the box touches is caught — requiring full
+  containment reads as broken. A plain click on a block that is already in
+  the selection keeps the group, so picking a group up by one of its members
+  does not collapse it first.
+- **Move, duplicate and delete the group.** Dragging one selected block
+  drags all of them by the same delta; Delete takes the lot; the arrows
+  nudge them together.
+- **Copy and paste, across windows.** The clipboard payload is JSON with a
+  marker, so a selection can be pasted into another workspace, and text that
+  came from somewhere else is recognised as not ours and refused. Wires are
+  carried only when both of their ends were copied — half a wire is worse
+  than none. A block type the receiving workspace does not have is skipped
+  and named, which is exactly when a missing plugin shows up. The system
+  clipboard is used when it will have us, and the builder keeps its own copy
+  so a denied permission never means a broken paste.
+- **Tidy.** One button lays the graph out the way it reads: flow left to
+  right, one column per step of depth, blocks stacked in the order they
+  already had. It is stable — tidying twice changes nothing the second time
+  — it cannot lose a block even when the graph has a cycle in it, and it
+  changes nothing about the program itself.
+
+And the things that make it fast:
 
 - **Start from a recipe.** Six of them ship — a sign-in form, OAuth, listing a
   table, calling an API, sign-up writing a profile row, a session guard. One

@@ -20,6 +20,9 @@ import { generateProgram, type GeneratedProgram } from './codeGenerator'
 import { parseProgram, type ParseFailure } from './codeParser'
 import { EMPTY_HISTORY, canRedo, canUndo, record, redo, undo, type History } from './history'
 import { instantiate, recipeById } from './recipes'
+import { copyNodes, moveNodes, parseClipboard, pasteNodes, removeNodes, serialise } from './clipboard'
+import { mergeSelection, nodesInRect, pruneSelection, selectionAfterClick, type Rect } from './selection'
+import { tidy as tidyGraph, isTidy } from './layout'
 import { BUILDER_SYNC_KEY, readSyncPreference, writeSyncPreference } from './fileSync'
 import { useIntegrityCheck } from './useIntegrityCheck'
 import type { PluginManifest } from './pluginBlocks'
@@ -93,6 +96,9 @@ export type BuilderState = {
    * diffing graphs or comparing strings.
    */
   docVersion: number
+  /** Everything selected, in the order it was added. */
+  selection: string[]
+  /** The most recent of those, for anything that needs exactly one. */
   selected?: string
   /** The block the traceback last pointed at, for the canvas to reveal. */
   revealed?: string
@@ -119,7 +125,24 @@ export type BuilderState = {
   setValue: (id: string, portId: string, value: string | number | boolean) => void
   link: (from: Connection['from'], to: Connection['to']) => void
   unlink: (connectionId: string) => void
-  select: (id?: string) => void
+  select: (id?: string, options?: { additive?: boolean }) => void
+  /** Selects everything a marquee caught, adding to the selection or replacing it. */
+  selectInRect: (rect: Rect, options?: { additive?: boolean }) => void
+  selectAll: () => void
+  /** Deletes everything selected. */
+  removeSelection: () => void
+  /** Copies the selection out as text, and returns it for the system clipboard. */
+  copySelection: () => string | undefined
+  cutSelection: () => string | undefined
+  /**
+   * Pastes blocks. Text from the system clipboard is preferred; when it is
+   * not ours, or not available, the last internal copy is used.
+   */
+  paste: (text?: string) => void
+  canPaste: boolean
+  /** Straightens the whole canvas: flow left to right, one column per step. */
+  tidy: () => void
+  isTidy: boolean
   /** Reveals the block behind a line of generated code. */
   revealNode: (id: string) => void
   editCode: (next: string) => void
@@ -183,7 +206,10 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [schema, setSchema] = useState<DataSchema>(initial.schema)
   const [code, setCode] = useState(() => generateProgram(initial.graph, registry).code)
   const [parseError, setParseError] = useState<ParseFailure | undefined>(undefined)
-  const [selected, setSelected] = useState<string | undefined>(undefined)
+  const [selection, setSelection] = useState<string[]>([])
+  /** The last thing copied here, so paste works without clipboard permission. */
+  const [internalClipboard, setInternalClipboard] = useState<string | undefined>(undefined)
+  const selected = selection.length ? selection[selection.length - 1] : undefined
   const [revealed, setRevealed] = useState<string | undefined>(undefined)
   const [history, setHistory] = useState<History>(EMPTY_HISTORY)
   const [docVersion, setDocVersion] = useState(0)
@@ -257,6 +283,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     if (timer.current) clearTimeout(timer.current)
     setHistory((current) => record(current, graph, { coalesce }))
     setDocVersion((current) => current + 1)
+    setSelection((current) => pruneSelection(current, next))
     setGraph(next)
     setCode(generateProgram(next, registry).code)
     setParseError(undefined)
@@ -271,7 +298,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     setGraph(step.graph)
     setCode(generateProgram(step.graph, registry).code)
     setParseError(undefined)
-    setSelected((current) => (step.graph.nodes.some((node) => node.id === current) ? current : undefined))
+    setSelection((current) => pruneSelection(current, step.graph))
   }, [registry])
 
   const undoAction = useCallback(() => restore(undo(history, graph)), [graph, history, restore])
@@ -283,7 +310,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     const lowest = graph.nodes.reduce((value, node) => Math.max(value, node.position.y), -110)
     const node = createNode(type, position ?? { x: 40, y: lowest + 110 })
     apply(addNode(graph, node))
-    setSelected(node.id)
+    setSelection([node.id])
   }, [apply, graph, registry])
 
   /**
@@ -323,8 +350,76 @@ export function useBuilder(host: BuilderHost): BuilderState {
     }
 
     apply(next)
-    setSelected(node.id)
+    setSelection([node.id])
     if (!linked) notify(`${definition.label} has no port that fits that connection`)
+  }, [apply, graph, notify, registry])
+
+  /**
+   * Selecting.
+   *
+   * A plain click replaces the selection unless the block is already in it
+   * -- otherwise picking up a group by one of its members would collapse
+   * the group first and move one block.
+   */
+  const select = useCallback((id?: string, options: { additive?: boolean } = {}) => {
+    setSelection((current) => (id ? selectionAfterClick(current, id, options) : []))
+  }, [])
+
+  const selectInRect = useCallback((rect: Rect, options: { additive?: boolean } = {}) => {
+    const caught = nodesInRect(graph, registry, rect)
+    setSelection((current) => (options.additive ? mergeSelection(current, caught) : caught))
+  }, [graph, registry])
+
+  const selectAll = useCallback(() => {
+    setSelection(graph.nodes.map((node) => node.id))
+  }, [graph.nodes])
+
+  const removeSelection = useCallback(() => {
+    if (!selection.length) return
+    apply(removeNodes(graph, selection))
+    setSelection([])
+  }, [apply, graph, selection])
+
+  const copySelection = useCallback(() => {
+    const payload = copyNodes(graph, selection)
+    if (!payload) return undefined
+    const text = serialise(payload)
+    setInternalClipboard(text)
+    return text
+  }, [graph, selection])
+
+  const cutSelection = useCallback(() => {
+    const text = copySelection()
+    if (text) removeSelection()
+    return text
+  }, [copySelection, removeSelection])
+
+  const paste = useCallback((text?: string) => {
+    // Text from the system clipboard wins when it is ours; anything else
+    // falls back to the last copy made here, so a denied clipboard
+    // permission does not break paste.
+    const payload = (text ? parseClipboard(text) : undefined)
+      ?? (internalClipboard ? parseClipboard(internalClipboard) : undefined)
+    if (!payload) return
+
+    const result = pasteNodes(graph, registry, payload, {
+      x: payload.origin.x + 40,
+      y: payload.origin.y + 40,
+    })
+    if (!result.added.length) {
+      notify(result.skipped.length
+        ? `Nothing pasted: ${result.skipped.join(', ')} ${result.skipped.length === 1 ? 'is' : 'are'} not installed here`
+        : 'Nothing to paste')
+      return
+    }
+    apply(result.graph)
+    setSelection(result.added)
+    if (result.skipped.length) notify(`Pasted, without ${result.skipped.join(', ')}: not installed here`)
+  }, [apply, graph, internalClipboard, notify, registry])
+
+  const tidy = useCallback(() => {
+    apply(tidyGraph(graph, registry))
+    notify('Canvas tidied')
   }, [apply, graph, notify, registry])
 
   const duplicateBlock = useCallback((id: string) => {
@@ -333,7 +428,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     const copy = createNode(node.type, { x: node.position.x + 32, y: node.position.y + 32 })
     copy.values = { ...node.values }
     apply(addNode(graph, copy))
-    setSelected(copy.id)
+    setSelection([copy.id])
   }, [apply, graph])
 
   /** Drops a whole feature in, already wired. */
@@ -342,7 +437,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     if (!recipe) return
     const result = instantiate(recipe, graph, registry)
     apply(result.graph)
-    setSelected(result.added[0])
+    setSelection([result.added[0]])
     notify(
       result.rejected.length
         ? `${recipe.name} added, but ${result.rejected.length} link was refused`
@@ -351,12 +446,22 @@ export function useBuilder(host: BuilderHost): BuilderState {
   }, [apply, graph, notify, registry])
 
   const moveBlock = useCallback((id: string, position: { x: number; y: number }) => {
+    // Dragging a block that is part of a selection drags the whole
+    // selection, by the same delta.
+    if (selection.length > 1 && selection.includes(id)) {
+      const node = graph.nodes.find((candidate) => candidate.id === id)
+      if (node) {
+        const delta = { x: position.x - node.position.x, y: position.y - node.position.y }
+        apply(moveNodes(graph, selection, delta), `move:${id}`)
+        return
+      }
+    }
     apply(moveNode(graph, id, position), `move:${id}`)
-  }, [apply, graph])
+  }, [apply, graph, selection])
 
   const removeBlock = useCallback((id: string) => {
     apply(removeNode(graph, id))
-    setSelected((current) => (current === id ? undefined : current))
+    setSelection((current) => current.filter((entry) => entry !== id))
   }, [apply, graph])
 
   const setValue = useCallback((id: string, portId: string, value: string | number | boolean) => {
@@ -433,7 +538,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const clear = useCallback(() => apply({ nodes: [], connections: [] }), [apply])
 
   const revealNode = useCallback((id: string) => {
-    setSelected(id)
+    setSelection([id])
     setRevealed(id)
   }, [])
 
@@ -514,7 +619,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     )
     setFailure(explained)
     if (explained.nodeId) {
-      setSelected(explained.nodeId)
+      setSelection([explained.nodeId])
       setRevealed(explained.nodeId)
     }
   }, [graph.nodes, program, registry])
@@ -535,7 +640,17 @@ export function useBuilder(host: BuilderHost): BuilderState {
     code,
     parseError,
     docVersion,
+    selection,
     selected,
+    selectInRect,
+    selectAll,
+    removeSelection,
+    copySelection,
+    cutSelection,
+    paste,
+    canPaste: Boolean(internalClipboard),
+    tidy,
+    isTidy: isTidy(graph, registry),
     revealed,
     addBlock,
     addConnectedBlock,
@@ -550,7 +665,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     setValue,
     link,
     unlink,
-    select: setSelected,
+    select,
     revealNode,
     editCode,
     adoptCode,

@@ -27,17 +27,22 @@ import {
   BLOCK_DRAG_TYPE, HEADER_HEIGHT, NODE_WIDTH, ROW_HEIGHT, portPosition, round, snapCandidate,
   type Snap,
 } from '../../builder/canvasLayout'
+import { rectFrom } from '../../builder/selection'
 
 export type BuilderCanvasProps = {
   graph: BlockGraph
   registry: BlockRegistry
   report: IntegrityReport
   diagnostics: Map<string, BuilderDiagnostic[]>
+  /** Everything selected. The last one is the "primary" for single actions. */
+  selection?: string[]
   selected?: string
   revealed?: string
   /** Blocks cannot be edited while the text does not parse. */
   readOnly?: boolean
-  onSelect: (id?: string) => void
+  onSelect: (id?: string, options?: { additive?: boolean }) => void
+  /** A marquee was dragged across the canvas. */
+  onSelectInRect?: (rect: { x: number; y: number; width: number; height: number }, options?: { additive?: boolean }) => void
   onMove: (id: string, position: { x: number; y: number }) => void
   onRemove: (id: string) => void
   onValue: (id: string, portId: string, value: string | number | boolean) => void
@@ -59,12 +64,15 @@ type Linking = Pending & { side: 'in' | 'out'; x: number; y: number }
 export function BuilderCanvas(props: BuilderCanvasProps) {
   const { graph, registry, report, diagnostics, selected, revealed, readOnly } = props
   const { onSelect, onMove, onRemove, onValue, onLink, onUnlink, onDropBlock, onQuickAdd } = props
+  const { onSelectInRect } = props
+  const selection = props.selection ?? (selected ? [selected] : [])
 
   const [pending, setPending] = useState<Pending | undefined>(undefined)
   const [linking, setLinking] = useState<Linking | undefined>(undefined)
   const [snap, setSnap] = useState<Snap | undefined>(undefined)
   const [dropHint, setDropHint] = useState<{ x: number; y: number } | undefined>(undefined)
   const [quickAdd, setQuickAdd] = useState<(Linking & { query: string }) | undefined>(undefined)
+  const [marquee, setMarquee] = useState<{ from: { x: number; y: number }; to: { x: number; y: number }; additive: boolean } | undefined>(undefined)
 
   const surface = useRef<HTMLDivElement | null>(null)
   const drag = useRef<{ id: string; dx: number; dy: number; moved: boolean } | undefined>(undefined)
@@ -87,13 +95,13 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
     element?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
   }, [revealed])
 
-  const startDrag = useCallback((event: React.MouseEvent, id: string) => {
+  const startDrag = useCallback((event: React.MouseEvent, id: string, additive = false) => {
     if (readOnly) return
     const node = graph.nodes.find((candidate) => candidate.id === id)
     const point = toCanvas(event.clientX, event.clientY)
     if (!node || !point) return
     drag.current = { id, dx: point.x - node.position.x, dy: point.y - node.position.y, moved: false }
-    onSelect(id)
+    onSelect(id, { additive })
   }, [graph.nodes, onSelect, readOnly, toCanvas])
 
   // Moving a block: the grid keeps layouts tidy, and the snap check runs on
@@ -106,7 +114,11 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
       if (!current || !point) return
       current.moved = true
       const position = { x: round(point.x - current.dx), y: round(point.y - current.dy) }
-      const candidate = snapCandidate(graph, registry, current.id, position)
+      // Snapping a whole group onto one pin is ambiguous, so it applies
+      // only when a single block is being dragged.
+      const candidate = selection.length > 1
+        ? undefined
+        : snapCandidate(graph, registry, current.id, position)
       snapRef.current = candidate
       setSnap(candidate)
       onMove(current.id, candidate ? candidate.position : position)
@@ -125,7 +137,32 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
       window.removeEventListener('mousemove', move)
       window.removeEventListener('mouseup', up)
     }
-  }, [graph, onLink, onMove, readOnly, registry, toCanvas])
+  }, [graph, onLink, onMove, readOnly, registry, selection.length, toCanvas])
+
+  // Dragging a marquee across the canvas.
+  useEffect(() => {
+    if (!marquee) return undefined
+    const move = (event: MouseEvent) => {
+      const point = toCanvas(event.clientX, event.clientY)
+      if (point) setMarquee((current) => (current ? { ...current, to: point } : current))
+    }
+    const up = () => {
+      setMarquee((current) => {
+        if (current) {
+          const rect = rectFrom(current.from, current.to)
+          // A click is not a marquee: below a few pixels it was a deselect.
+          if (rect.width > 4 || rect.height > 4) onSelectInRect?.(rect, { additive: current.additive })
+        }
+        return undefined
+      })
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    return () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+  }, [marquee, onSelectInRect, toCanvas])
 
   // Dragging a wire out of a pin.
   useEffect(() => {
@@ -240,7 +277,15 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
     <div
       className={`builder-canvas${readOnly ? ' read-only' : ''}${dropHint ? ' dropping' : ''}`}
       ref={surface}
-      onMouseDown={(event) => { if (event.target === surface.current) onSelect(undefined) }}
+      onMouseDown={(event) => {
+        if (event.target !== surface.current) return
+        const point = toCanvas(event.clientX, event.clientY)
+        const additive = event.shiftKey || event.metaKey || event.ctrlKey
+        if (!additive) onSelect(undefined)
+        // A press on bare canvas begins a marquee; a press that never moves
+        // is just the deselect above.
+        if (point && onSelectInRect) setMarquee({ from: point, to: point, additive })
+      }}
       onDragOver={(event) => {
         if (readOnly || !event.dataTransfer.types.includes(BLOCK_DRAG_TYPE)) return
         // Without this the browser refuses the drop.
@@ -288,6 +333,17 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
         )}
       </svg>
 
+      {marquee && (() => {
+        const rect = rectFrom(marquee.from, marquee.to)
+        return (
+          <div
+            className="builder-marquee"
+            data-testid="builder-marquee"
+            style={{ left: rect.x, top: rect.y, width: rect.width, height: rect.height }}
+          />
+        )
+      })()}
+
       {dropHint && (
         <div
           className="builder-drop-ghost"
@@ -303,7 +359,8 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
         const outputs = definition ? [...definition.outputs, ...(definition.slots ?? [])] : []
         const classes = [
           'builder-node',
-          selected === node.id ? 'selected' : '',
+          selection.includes(node.id) ? 'selected' : '',
+          selected === node.id && selection.length > 1 ? 'primary' : '',
           report.orphans.has(node.id) ? 'orphan' : '',
           errors.length ? 'faulty' : '',
           snap && (snap.to.node === node.id || snap.from.node === node.id) ? 'snapping' : '',
@@ -315,7 +372,7 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
             data-node={node.id}
             className={classes}
             style={{ left: node.position.x, top: node.position.y, width: NODE_WIDTH }}
-            onMouseDown={(event) => startDrag(event, node.id)}
+            onMouseDown={(event) => startDrag(event, node.id, event.shiftKey || event.metaKey || event.ctrlKey)}
           >
             <header className={`builder-node-header ${definition?.category.toLowerCase() ?? 'unknown'}`}>
               <span className="builder-node-title">{definition?.label ?? node.type}</span>

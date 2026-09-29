@@ -9,8 +9,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
-  AlertTriangle, Code2, Copy, Eraser, FileDown, Hammer, Info, Link2, Link2Off, Play, Redo2,
-  Undo2, X,
+  AlertTriangle, Code2, Copy, Eraser, FileDown, Hammer, Info, LayoutGrid, Link2, Link2Off, Play,
+  Redo2, Undo2, X,
 } from 'lucide-react'
 
 import Editor from '../ConfiguredEditor'
@@ -62,11 +62,29 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
    * focus happens to be in the builder -- except in a field, where every one
    * of these means something else to the person typing.
    */
-  const { selected, removeBlock, duplicateBlock, moveBlock, undo, redo } = builder
+  const { selection, selected, duplicateBlock, moveBlock, undo, redo } = builder
+  const { removeSelection, selectAll, copySelection, cutSelection, paste } = builder
   const selectedNode = useMemo(
     () => graph.nodes.find((node) => node.id === selected),
     [graph.nodes, selected],
   )
+  const selectedNodes = useMemo(
+    () => graph.nodes.filter((node) => selection.includes(node.id)),
+    [graph.nodes, selection],
+  )
+
+  /**
+   * The system clipboard, used when it will have us.
+   *
+   * It is permission-gated and unavailable outside a secure context, so
+   * every call is best-effort: the builder keeps its own copy, and paste
+   * falls back to that. Failing to reach the OS clipboard must never mean
+   * failing to copy.
+   */
+  const toClipboard = (text?: string) => {
+    if (!text) return
+    void navigator.clipboard?.writeText?.(text).catch(() => undefined)
+  }
 
   useEffect(() => {
     const handle = (event: KeyboardEvent) => {
@@ -76,6 +94,31 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
       if (typing) return
 
       const accel = event.metaKey || event.ctrlKey
+
+      if (accel && event.key.toLowerCase() === 'a') {
+        event.preventDefault()
+        selectAll()
+        return
+      }
+      if (accel && event.key.toLowerCase() === 'c') {
+        event.preventDefault()
+        toClipboard(copySelection())
+        return
+      }
+      if (accel && event.key.toLowerCase() === 'x') {
+        event.preventDefault()
+        toClipboard(cutSelection())
+        return
+      }
+      if (accel && event.key.toLowerCase() === 'v') {
+        event.preventDefault()
+        // Ask the OS first; `paste` falls back to the internal copy when
+        // the read is refused or the text is not ours.
+        const read = navigator.clipboard?.readText?.()
+        if (read) void read.then((text) => paste(text)).catch(() => paste())
+        else paste()
+        return
+      }
       if (accel && event.key.toLowerCase() === 'z') {
         event.preventDefault()
         if (event.shiftKey) redo()
@@ -87,12 +130,15 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
 
       if (accel && event.key.toLowerCase() === 'd') {
         event.preventDefault()
-        duplicateBlock(selectedNode.id)
+        // Duplicating a group is a copy and a paste, which is exactly what
+        // it means, rather than a second code path.
+        if (selection.length > 1) { copySelection(); paste() }
+        else duplicateBlock(selectedNode.id)
         return
       }
       if (event.key === 'Delete' || event.key === 'Backspace') {
         event.preventDefault()
-        removeBlock(selectedNode.id)
+        removeSelection()
         return
       }
 
@@ -104,6 +150,7 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
       const delta = nudge[event.key]
       if (!delta) return
       event.preventDefault()
+      // moveBlock carries the rest of the selection with it.
       moveBlock(selectedNode.id, {
         x: Math.max(0, selectedNode.position.x + delta[0]),
         y: Math.max(0, selectedNode.position.y + delta[1]),
@@ -111,7 +158,10 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
     }
     document.addEventListener('keydown', handle)
     return () => document.removeEventListener('keydown', handle)
-  }, [duplicateBlock, moveBlock, redo, removeBlock, selectedNode, undo])
+  }, [
+    copySelection, cutSelection, duplicateBlock, moveBlock, paste, redo, removeSelection,
+    selectAll, selectedNode, selection.length, undo,
+  ])
 
   const errors = report.diagnostics.filter((entry) => entry.severity === 'error')
   const warnings = report.diagnostics.filter((entry) => entry.severity === 'warning')
@@ -122,7 +172,7 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
       <header className="builder-toolbar">
         <span className="builder-title"><Code2 size={13} /> Builder</span>
         <span className="builder-count">
-          {graph.nodes.length} blocks · {builder.ui.components.length} components · {builder.schema.tables.length} tables
+          {selection.length > 1 ? `${selection.length} of ` : ''}{graph.nodes.length} blocks · {builder.ui.components.length} components · {builder.schema.tables.length} tables
         </span>
 
         <span className={`builder-state ${blocked ? 'blocked' : 'ready'}`}>
@@ -167,10 +217,23 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
           <Redo2 size={13} />
         </button>
         <button
+          aria-label="Tidy the canvas"
+          title="Lay the graph out left to right, one column per step"
+          onClick={builder.tidy}
+          disabled={!graph.nodes.length || builder.isTidy}
+        >
+          <LayoutGrid size={13} />
+        </button>
+        <button
           aria-label="Duplicate block"
-          title="Duplicate the selected block (Ctrl+D)"
-          onClick={() => selectedNode && duplicateBlock(selectedNode.id)}
-          disabled={!selectedNode}
+          title={selection.length > 1
+            ? `Duplicate the ${selection.length} selected blocks (Ctrl+D)`
+            : 'Duplicate the selected block (Ctrl+D)'}
+          onClick={() => {
+            if (selection.length > 1) { copySelection(); paste() }
+            else if (selectedNode) duplicateBlock(selectedNode.id)
+          }}
+          disabled={!selectedNodes.length}
         >
           <Copy size={13} />
         </button>
@@ -213,7 +276,9 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
             revealed={builder.revealed}
             readOnly={Boolean(parseError)}
             onSelect={builder.select}
-            onDropBlock={(type, position) => builder.addBlock(type, position)}
+            selection={builder.selection}
+        onSelectInRect={builder.selectInRect}
+        onDropBlock={(type, position) => builder.addBlock(type, position)}
         onQuickAdd={builder.addConnectedBlock}
         onMove={builder.moveBlock}
             onRemove={builder.removeBlock}
