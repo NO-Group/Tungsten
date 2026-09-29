@@ -261,7 +261,12 @@ beside the canvas. Start from a recipe when the shape is a familiar one: a
 sign-in form, an OAuth button, a list drawn from a table, an API call, all
 wired in a click. Drag a wire into empty space and the quick-add menu offers
 only the blocks that fit it, then creates and connects one in the same
-gesture. Ctrl+Z undoes a whole gesture, Ctrl+D duplicates, the arrows nudge. Edit that code by hand and the blocks follow, 300ms after
+gesture. Ctrl+Z undoes a whole gesture, Ctrl+D duplicates, the arrows nudge.
+
+The program is not trapped in the builder: it is `src/generated/blocks.ts`, a
+real file in the workspace. Open it in any editor tab and what you type moves
+the blocks; move the blocks and the tab updates under you. The toolbar says
+which file it is bound to, and the binding can be switched off. Edit that code by hand and the blocks follow, 300ms after
 you stop typing; break the syntax and the canvas goes read-only with a banner
 instead of guessing. An integrity checker refuses to compile a graph with a
 type mismatch, a cycle or an unreachable read, and every diagnostic names the

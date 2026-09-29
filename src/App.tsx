@@ -90,6 +90,8 @@ import { BlockPalette } from './components/builder/BlockPalette'
 import { BuilderView } from './components/builder/BuilderView'
 import { useBuilder } from './builder/useBuilder'
 import { EXAMPLE_PLUGIN, PLUGIN_DIRECTORY, PLUGIN_SUFFIX, loadPluginBlocks } from './builder/pluginBlocks'
+import { BUILDER_SYNC_PATH } from './builder/fileSync'
+import { useBuilderFileSync } from './builder/useBuilderFileSync'
 import { createDictionary } from './shell/commandDictionary'
 import { explainCommandLine } from './shell/explainShell'
 import { DICTIONARY_DIRECTORY, EXAMPLE_COMMAND_FILE, loadWorkspaceCommands } from './shell/workspaceCommands'
@@ -665,7 +667,7 @@ export default function App() {
 
   const builder = useBuilder({ notify, plugins: pluginLoad.blocks })
   const [builderOpen, setBuilderOpen] = useState(false)
-  const BUILDER_OUTPUT = 'src/generated/blocks.ts'
+  const BUILDER_OUTPUT = BUILDER_SYNC_PATH
 
   /** Writes generated files into the workspace, replacing what is there. */
   const writeGeneratedFiles = useCallback((written: Array<{ path: string; contents: string }>) => {
@@ -696,6 +698,22 @@ export default function App() {
     openFile(BUILDER_OUTPUT)
     notify(`Blocks written to ${BUILDER_OUTPUT}`)
   }, [notify, openFile])
+
+  /**
+   * The builder's program, mirrored into the workspace as a real file.
+   *
+   * Edit it in any editor tab and the blocks follow; move the blocks and the
+   * tab updates. There is no export step between the canvas and the file.
+   */
+  useBuilderFileSync({
+    code: builder.code,
+    hasBlocks: builder.graph.nodes.length > 0,
+    enabled: builder.syncEnabled,
+    file: files.find((file) => file.path === BUILDER_SYNC_PATH)?.content,
+    writeFile: (path, content) => { writeGeneratedFiles([{ path, contents: content }]) },
+    adoptCode: builder.adoptCode,
+    notify,
+  })
 
   /** Compiles the graph for a target and drops the result in the workspace. */
   const buildBuilderTarget = useCallback((target: CompileTarget) => {
@@ -1924,6 +1942,7 @@ export default function App() {
                 editorOptions={editorOptions.editor}
                 theme={monacoThemeName(activeTheme)}
                 onExport={exportBuilderCode}
+            onOpenFile={openFile}
                 onBuild={buildBuilderTarget}
                 onClose={() => setBuilderOpen(false)}
               />

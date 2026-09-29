@@ -20,6 +20,7 @@ import { generateProgram, type GeneratedProgram } from './codeGenerator'
 import { parseProgram, type ParseFailure } from './codeParser'
 import { EMPTY_HISTORY, canRedo, canUndo, record, redo, undo, type History } from './history'
 import { instantiate, recipeById } from './recipes'
+import { BUILDER_SYNC_KEY, readSyncPreference, writeSyncPreference } from './fileSync'
 import { checkIntegrity, type IntegrityReport } from './integrity'
 import { compile, type CompileResult, type CompileTarget } from './compile'
 import { EMPTY_SCHEMA, type Column, type DataSchema, type Table } from './dataSchema'
@@ -104,6 +105,15 @@ export type BuilderState = {
   /** Reveals the block behind a line of generated code. */
   revealNode: (id: string) => void
   editCode: (next: string) => void
+  /**
+   * Text arriving from outside the builder -- the workspace file, edited in
+   * an ordinary editor tab. Parsed at once, because the caller has already
+   * waited for the typing to pause.
+   */
+  adoptCode: (next: string) => void
+  /** True while the program is mirrored into a workspace file. */
+  syncEnabled: boolean
+  setSyncEnabled: (enabled: boolean) => void
   clear: () => void
   addTable: (name?: string) => void
   renameTable: (index: number, name: string) => void
@@ -150,6 +160,13 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [selected, setSelected] = useState<string | undefined>(undefined)
   const [revealed, setRevealed] = useState<string | undefined>(undefined)
   const [history, setHistory] = useState<History>(EMPTY_HISTORY)
+  const [syncEnabled, setSyncEnabled] = useState(() => {
+    try {
+      return readSyncPreference(localStorage.getItem(BUILDER_SYNC_KEY))
+    } catch {
+      return true
+    }
+  })
   const [logs, setLogs] = useState<string[]>([])
   const [failure, setFailure] = useState<Traceback | undefined>(undefined)
 
@@ -345,6 +362,36 @@ export function useBuilder(host: BuilderHost): BuilderState {
     }, PARSE_DEBOUNCE)
   }, [registry])
 
+  /**
+   * The same read as `editCode`, without the wait.
+   *
+   * History is recorded so a change that arrived from the file is as
+   * undoable as one made on the canvas, and the text is kept exactly as it
+   * was written -- reformatting someone's file underneath them is not sync,
+   * it is vandalism.
+   */
+  const adoptCode = useCallback((next: string) => {
+    if (timer.current) clearTimeout(timer.current)
+    setCode(next)
+    const parsed = parseProgram(next, registry)
+    if (!parsed.ok) {
+      setParseError(parsed)
+      return
+    }
+    setParseError(undefined)
+    setHistory((current) => record(current, graph, { coalesce: 'file' }))
+    setGraph(parsed.graph)
+  }, [graph, registry])
+
+  const chooseSync = useCallback((enabled: boolean) => {
+    setSyncEnabled(enabled)
+    try {
+      localStorage.setItem(BUILDER_SYNC_KEY, writeSyncPreference(enabled))
+    } catch {
+      // A full quota is not a reason to refuse the choice for this session.
+    }
+  }, [])
+
   const clear = useCallback(() => apply({ nodes: [], connections: [] }), [apply])
 
   const revealNode = useCallback((id: string) => {
@@ -464,6 +511,9 @@ export function useBuilder(host: BuilderHost): BuilderState {
     select: setSelected,
     revealNode,
     editCode,
+    adoptCode,
+    syncEnabled,
+    setSyncEnabled: chooseSync,
     clear,
     addTable,
     renameTable,

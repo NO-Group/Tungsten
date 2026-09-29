@@ -43,6 +43,29 @@ The geometry, the snapping rules and the undo stack are pure functions in
 `src/builder/canvasLayout.ts` and `src/builder/history.ts`, so they are tested
 as rules rather than through a rendered canvas.
 
+## The code is a file, not a preview
+
+The canvas, the builder's code pane and `src/generated/blocks.ts` are one
+program in three places. Move a block and the file changes. Open that file in
+an ordinary editor tab, type into it, and 300ms after you stop the blocks
+move. There is no export step in between, and the toolbar says **Synced** so
+you can see the binding rather than trust it.
+
+The whole difficulty is echoes: writing the file looks like an edit, which
+would rewrite the blocks, which would rewrite the file. `fileSync.ts` settles
+it by remembering the exact text both sides last agreed on — whichever side
+no longer matches it is the side that changed, and the other follows. It is a
+pure function, so every case is a row in a test rather than something to
+watch for in a browser:
+
+| Canvas | File | What happens |
+| --- | --- | --- |
+| changed | unchanged | the file is written |
+| unchanged | changed | the blocks are rebuilt |
+| changed | changed | the file wins, and says so |
+| unparseable text | — | the canvas goes read-only; the file is left exactly as typed |
+| sync off | — | nothing, and the agreement is remembered so turning it back on does not discard the canvas |
+
 ## Part 1 — Core engine and bidirectional sync
 
 | Specified | Built | Where |
@@ -53,6 +76,7 @@ as rules rather than through a rendered canvas.
 | Flow A: blocks → AST → code | Yes, deterministic and ordered | `src/builder/codeGenerator.ts` |
 | Monaco updated with an external-update marker | Yes, breaks the echo loop | `useBuilder.ts` |
 | Flow B: code → blocks, 300 ms debounce | Yes, `PARSE_DEBOUNCE = 300` | `src/builder/codeParser.ts` |
+| The program as a live workspace file, both ways | Yes | `src/builder/fileSync.ts`, `useBuilderFileSync.ts` |
 | Canvas re-renders affected nodes | Yes | `BuilderView.tsx` |
 | Static type/domain safety on ports | Yes, `type-mismatch` | `src/builder/integrity.ts` |
 | Orphan and dead-code detection, dimmed and excluded | Yes, `orphan` | `integrity.ts`, `codeGenerator.ts` |

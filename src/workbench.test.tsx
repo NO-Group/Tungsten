@@ -558,3 +558,80 @@ describe('the terminal, when a real shell is behind it', () => {
     expect(container.querySelectorAll('.terminal-line').length).toBe(0)
   })
 })
+
+describe('the builder and the editor, as one program', () => {
+  /** The builder's block palette lives in the sidebar. */
+  function paletteItem(label: string) {
+    return [...container.querySelectorAll('.block-palette-item')]
+      .find((item) => item.querySelector('.block-palette-label')?.textContent === label)!
+  }
+
+  function openBuilder() {
+    click(buttonsLabelled('Builder')[0])
+  }
+
+  it('mirrors the canvas into a real workspace file', async () => {
+    openBuilder()
+    click(paletteItem('On App Start'))
+    await act(async () => undefined)
+
+    // The file is in the workspace, not merely in the builder's pane.
+    expect(text()).toContain('blocks.ts')
+    expect(container.querySelector('.builder-sync')?.textContent).toContain('Synced')
+  })
+
+  it('drops a whole recipe and keeps the file in step', async () => {
+    openBuilder()
+    click(paletteItem('Call an API'))
+    await act(async () => undefined)
+
+    const code = container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')
+    expect(code?.value).toContain('http.request')
+    expect(container.querySelector('.builder-state')?.textContent).toContain('Ready to compile')
+  })
+
+  it('opens the synced file in an ordinary editor tab', async () => {
+    openBuilder()
+    click(paletteItem('On App Start'))
+    await act(async () => undefined)
+
+    click(buttonsLabelled('Open the synced file')[0])
+    // The builder covers the editor area, so the tab it opened is behind it.
+    click(buttonsLabelled('Close the builder')[0])
+    await act(async () => undefined)
+    const tabs = [...container.querySelectorAll('.editor-tab')].map((tab) => tab.textContent)
+    expect(tabs.some((label) => label?.includes('blocks.ts'))).toBe(true)
+  })
+
+  it('moves the blocks when that file is edited in the editor', async () => {
+    openBuilder()
+    click(paletteItem('On App Start'))
+    await act(async () => undefined)
+
+    // Leave the builder and edit the generated file as any other file.
+    click(buttonsLabelled('Open the synced file')[0])
+    click(buttonsLabelled('Close the builder')[0])
+    await act(async () => undefined)
+
+    const editor = container.querySelector<HTMLTextAreaElement>('[data-testid="editor"]')!
+    typeInEditor(editor.value.replace(
+      'app.onStart(async () => {',
+      'app.onStart(async () => {\n  console.log("typed into the file")',
+    ))
+    // The read is debounced exactly as the builder's own pane is.
+    await act(async () => { await new Promise((resolve) => { setTimeout(resolve, 400) }) })
+
+    openBuilder()
+    expect(container.querySelectorAll('.builder-node')).toHaveLength(2)
+    expect(text()).toContain('typed into the file')
+  })
+
+  it('turns the binding off and leaves the file alone', async () => {
+    openBuilder()
+    click(paletteItem('On App Start'))
+    await act(async () => undefined)
+
+    click(container.querySelector('.builder-sync')!)
+    expect(container.querySelector('.builder-sync')?.textContent).toContain('Not synced')
+  })
+})

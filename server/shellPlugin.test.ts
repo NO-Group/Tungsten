@@ -42,7 +42,12 @@ beforeAll(async () => {
   await server.listen()
   const address = server.httpServer?.address()
   port = typeof address === 'object' && address ? address.port : 0
-}, 60_000)
+
+  // The dictionary is loaded through Vite on first use. Warming it here
+  // keeps that one-off transform out of the shell tests, which would
+  // otherwise time out on a cold module graph rather than on a real fault.
+  await fetch(`http://127.0.0.1:${port}${SHELL_HTTP_PREFIX}/man?name=ls`)
+}, 120_000)
 
 afterAll(async () => { await server?.close() })
 

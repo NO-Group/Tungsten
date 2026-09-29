@@ -9,7 +9,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
-  AlertTriangle, Code2, Copy, Eraser, FileDown, Hammer, Info, Play, Redo2, Undo2, X,
+  AlertTriangle, Code2, Copy, Eraser, FileDown, Hammer, Info, Link2, Link2Off, Play, Redo2,
+  Undo2, X,
 } from 'lucide-react'
 
 import Editor from '../ConfiguredEditor'
@@ -20,6 +21,7 @@ import { diagnosticsByNode } from '../../builder/integrity'
 import { lineOfNode, nodeAtLine } from '../../builder/codeGenerator'
 import type { CompileTarget } from '../../builder/compile'
 import type { BuilderState } from '../../builder/useBuilder'
+import { BUILDER_SYNC_PATH } from '../../builder/fileSync'
 
 export type BuilderViewProps = {
   builder: BuilderState
@@ -32,6 +34,8 @@ export type BuilderViewProps = {
   theme: string
   /** Writes the generated program into the workspace. */
   onExport: (code: string) => void
+  /** Opens the mirrored file in an editor tab, without closing the builder. */
+  onOpenFile?: (path: string) => void
   /** Writes a compiled target into the workspace. */
   onBuild: (target: CompileTarget) => void
   onClose: () => void
@@ -43,7 +47,7 @@ const TARGETS: Array<{ id: CompileTarget; label: string }> = [
   { id: 'node', label: 'Local runner' },
 ]
 
-export function BuilderView({ builder, editorOptions, theme, onExport, onBuild, onClose }: BuilderViewProps) {
+export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFile, onBuild, onClose }: BuilderViewProps) {
   const { graph, registry, report, program, code, parseError } = builder
   const diagnostics = useMemo(() => diagnosticsByNode(report), [report])
 
@@ -130,6 +134,31 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onBuild, 
         </span>
 
         <span className="builder-toolbar-spacer" />
+
+        {/*
+          The mirrored file, said plainly: what it is bound to, and a way to
+          go look at it. A sync you cannot see is a sync you cannot trust.
+        */}
+        <button
+          className={`builder-sync ${builder.syncEnabled ? 'on' : 'off'}`}
+          aria-label={builder.syncEnabled ? 'Turn off file sync' : 'Turn on file sync'}
+          title={builder.syncEnabled
+            ? `Two-way sync with ${BUILDER_SYNC_PATH} — edits there move the blocks`
+            : `Not synced with ${BUILDER_SYNC_PATH}`}
+          onClick={() => builder.setSyncEnabled(!builder.syncEnabled)}
+        >
+          {builder.syncEnabled ? <Link2 size={13} /> : <Link2Off size={13} />}
+          <span>{builder.syncEnabled ? 'Synced' : 'Not synced'}</span>
+        </button>
+        {Boolean(onOpenFile) && (
+          <button
+            aria-label="Open the synced file"
+            title={`Open ${BUILDER_SYNC_PATH} in an editor tab`}
+            onClick={() => onOpenFile?.(BUILDER_SYNC_PATH)}
+          >
+            <Code2 size={13} /> {BUILDER_SYNC_PATH.split('/').pop()}
+          </button>
+        )}
 
         <button aria-label="Undo" title="Undo (Ctrl+Z)" onClick={undo} disabled={!builder.canUndo}>
           <Undo2 size={13} />
