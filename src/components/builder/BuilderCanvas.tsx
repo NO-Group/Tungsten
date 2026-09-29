@@ -18,7 +18,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { AlertTriangle, Trash2 } from 'lucide-react'
+import { AlertTriangle, Maximize2, Minus, Plus, Trash2 } from 'lucide-react'
 
 import { isAssignable, type BlockGraph, type BlockRegistry, type Connection, type Port } from '../../builder/blockSchema'
 import type { BuilderDiagnostic, IntegrityReport } from '../../builder/integrity'
@@ -27,7 +27,12 @@ import {
   BLOCK_DRAG_TYPE, HEADER_HEIGHT, NODE_WIDTH, ROW_HEIGHT, portPosition, round, snapCandidate,
   type Snap,
 } from '../../builder/canvasLayout'
-import { rectFrom } from '../../builder/selection'
+import { nodeBounds, rectFrom } from '../../builder/selection'
+import {
+  DEFAULT_VIEWPORT, centreOn, contentBounds, fitTo, nextZoomStop, pan as panViewport,
+  toCanvas as pointToCanvas, transformOf, zoomAt, zoomLabel, zoomTo, type Viewport,
+} from '../../builder/viewport'
+import { cursorFor, effectiveTool, type ToolId } from '../../builder/tools'
 
 export type BuilderCanvasProps = {
   graph: BlockGraph
@@ -40,6 +45,8 @@ export type BuilderCanvasProps = {
   revealed?: string
   /** Blocks cannot be edited while the text does not parse. */
   readOnly?: boolean
+  /** Which pointer tool is active. */
+  tool?: ToolId
   onSelect: (id?: string, options?: { additive?: boolean }) => void
   /** A marquee was dragged across the canvas. */
   onSelectInRect?: (rect: { x: number; y: number; width: number; height: number }, options?: { additive?: boolean }) => void
@@ -63,6 +70,7 @@ type Linking = Pending & { side: 'in' | 'out'; x: number; y: number }
 
 export function BuilderCanvas(props: BuilderCanvasProps) {
   const { graph, registry, report, diagnostics, selected, revealed, readOnly } = props
+  const tool = props.tool ?? 'pick'
   const { onSelect, onMove, onRemove, onValue, onLink, onUnlink, onDropBlock, onQuickAdd } = props
   const { onSelectInRect } = props
   const selection = props.selection ?? (selected ? [selected] : [])
@@ -74,26 +82,69 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
   const [quickAdd, setQuickAdd] = useState<(Linking & { query: string }) | undefined>(undefined)
   const [marquee, setMarquee] = useState<{ from: { x: number; y: number }; to: { x: number; y: number }; additive: boolean } | undefined>(undefined)
 
+  const [viewport, setViewport] = useState<Viewport>(DEFAULT_VIEWPORT)
+  const [spaceHeld, setSpaceHeld] = useState(false)
+  const [panning, setPanning] = useState(false)
   const surface = useRef<HTMLDivElement | null>(null)
+  /** Where the pan drag last saw the pointer. */
+  const panFrom = useRef<{ x: number; y: number } | undefined>(undefined)
   const drag = useRef<{ id: string; dx: number; dy: number; moved: boolean } | undefined>(undefined)
   const snapRef = useRef<Snap | undefined>(undefined)
   const draggedWire = useRef(false)
 
-  /** Client coordinates to canvas coordinates, scroll included. */
+  /**
+   * Client coordinates to canvas coordinates, through the camera.
+   *
+   * Every pointer path in this file goes through here, which is what keeps
+   * dropping, dragging, wiring and marqueeing correct at any zoom: the
+   * transform is applied in one place and undone in one place.
+   */
   const toCanvas = useCallback((clientX: number, clientY: number) => {
     const bounds = surface.current?.getBoundingClientRect()
     if (!bounds) return undefined
-    return {
-      x: clientX - bounds.left + (surface.current?.scrollLeft ?? 0),
-      y: clientY - bounds.top + (surface.current?.scrollTop ?? 0),
-    }
+    return pointToCanvas(viewport, { x: clientX - bounds.left, y: clientY - bounds.top })
+  }, [viewport])
+
+  /** The size of the viewport itself, for fitting and centring. */
+  const viewSize = useCallback(() => {
+    const bounds = surface.current?.getBoundingClientRect()
+    return { width: bounds?.width || 800, height: bounds?.height || 600 }
   }, [])
+
+  const boxes = useCallback(
+    () => graph.nodes.map((node) => nodeBounds(registry, node)),
+    [graph.nodes, registry],
+  )
+
+  /** The middle of the view, which is what a keyboard zoom zooms about. */
+  const centreOfView = useCallback(() => {
+    const size = viewSize()
+    return { x: size.width / 2, y: size.height / 2 }
+  }, [viewSize])
+
+  const zoomBy = useCallback((factor: number, anchor?: { x: number; y: number }) => {
+    const size = viewSize()
+    setViewport((current) => zoomAt(current, factor, anchor ?? { x: size.width / 2, y: size.height / 2 }))
+  }, [viewSize])
+
+  const fit = useCallback(() => {
+    setViewport(fitTo(contentBounds(boxes()), viewSize()))
+  }, [boxes, viewSize])
 
   useEffect(() => {
     if (!revealed) return
-    const element = surface.current?.querySelector(`[data-node="${revealed}"]`)
-    element?.scrollIntoView({ block: 'center', inline: 'center', behavior: 'smooth' })
-  }, [revealed])
+    const node = graph.nodes.find((candidate) => candidate.id === revealed)
+    if (!node) return
+    // There is no scrolling any more: showing a block means moving the
+    // camera to it.
+    const box = nodeBounds(registry, node)
+    const size = surface.current?.getBoundingClientRect()
+    setViewport((current) => centreOn(
+      current,
+      { x: box.x + box.width / 2, y: box.y + box.height / 2 },
+      { width: size?.width || 800, height: size?.height || 600 },
+    ))
+  }, [graph.nodes, registry, revealed])
 
   const startDrag = useCallback((event: React.MouseEvent, id: string, additive = false) => {
     if (readOnly) return
@@ -138,6 +189,30 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
       window.removeEventListener('mouseup', up)
     }
   }, [graph, onLink, onMove, readOnly, registry, selection.length, toCanvas])
+
+  // Dragging the view.
+  useEffect(() => {
+    if (!panning) return undefined
+    // The delta is measured against the last position rather than read
+    // from `movementX`: that property is only dependable under pointer
+    // lock, and on some platforms it is scaled by the device pixel ratio.
+    const move = (event: MouseEvent) => {
+      const last = panFrom.current
+      panFrom.current = { x: event.clientX, y: event.clientY }
+      if (!last) return
+      setViewport((current) => panViewport(current, {
+        x: event.clientX - last.x,
+        y: event.clientY - last.y,
+      }))
+    }
+    const up = () => { setPanning(false); panFrom.current = undefined }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    return () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+  }, [panning])
 
   // Dragging a marquee across the canvas.
   useEffect(() => {
@@ -188,6 +263,58 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
       window.removeEventListener('pointerup', up)
     }
   }, [linking, toCanvas])
+
+  // Space is held to pan, whatever tool is active.
+  useEffect(() => {
+    const down = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      const typing = target instanceof HTMLElement
+        && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
+      if (event.code === 'Space' && !typing) { event.preventDefault(); setSpaceHeld(true) }
+    }
+    const up = (event: KeyboardEvent) => { if (event.code === 'Space') setSpaceHeld(false) }
+    // Losing focus mid-hold would otherwise leave the canvas stuck panning.
+    const blur = () => setSpaceHeld(false)
+    window.addEventListener('keydown', down)
+    window.addEventListener('keyup', up)
+    window.addEventListener('blur', blur)
+    return () => {
+      window.removeEventListener('keydown', down)
+      window.removeEventListener('keyup', up)
+      window.removeEventListener('blur', blur)
+    }
+  }, [])
+
+  // Ctrl+plus / Ctrl+minus / Shift+1, the shortcuts every canvas has.
+  useEffect(() => {
+    const keys = (event: KeyboardEvent) => {
+      const target = event.target as HTMLElement | null
+      if (target instanceof HTMLElement && ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName)) return
+      const accel = event.metaKey || event.ctrlKey
+
+      if (accel && (event.key === '+' || event.key === '=')) {
+        event.preventDefault()
+        setViewport((current) => zoomTo(current, nextZoomStop(current.zoom, 1), centreOfView()))
+        return
+      }
+      if (accel && event.key === '-') {
+        event.preventDefault()
+        setViewport((current) => zoomTo(current, nextZoomStop(current.zoom, -1), centreOfView()))
+        return
+      }
+      if (accel && event.key === '0') {
+        event.preventDefault()
+        setViewport((current) => zoomTo(current, 1, centreOfView()))
+        return
+      }
+      if (event.shiftKey && event.key === '!') {
+        event.preventDefault()
+        fit()
+      }
+    }
+    window.addEventListener('keydown', keys)
+    return () => window.removeEventListener('keydown', keys)
+  }, [centreOfView, fit])
 
   useEffect(() => {
     const escape = (event: KeyboardEvent) => {
@@ -277,13 +404,33 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
     <div
       className={`builder-canvas${readOnly ? ' read-only' : ''}${dropHint ? ' dropping' : ''}`}
       ref={surface}
+      style={{ cursor: cursorFor(effectiveTool(tool, { space: spaceHeld }), { panning }) }}
+      onWheel={(event) => {
+        // Ctrl or the pinch gesture zooms about the pointer; everything
+        // else scrolls the view, which is what a trackpad expects.
+        const bounds = surface.current?.getBoundingClientRect()
+        if (!bounds) return
+        if (event.ctrlKey || event.metaKey) {
+          const anchor = { x: event.clientX - bounds.left, y: event.clientY - bounds.top }
+          setViewport((current) => zoomAt(current, event.deltaY < 0 ? 1.12 : 1 / 1.12, anchor))
+          return
+        }
+        setViewport((current) => panViewport(current, { x: -event.deltaX, y: -event.deltaY }))
+      }}
       onMouseDown={(event) => {
-        if (event.target !== surface.current) return
+        const active = effectiveTool(tool, { space: spaceHeld, middleButton: event.button === 1 })
+        if (active === 'pan') {
+          event.preventDefault()
+          panFrom.current = { x: event.clientX, y: event.clientY }
+          setPanning(true)
+          return
+        }
+        // The marquee tool boxes from anywhere; pick only from bare canvas.
+        const onSurface = event.target === surface.current
+        if (active !== 'marquee' && !onSurface) return
         const point = toCanvas(event.clientX, event.clientY)
         const additive = event.shiftKey || event.metaKey || event.ctrlKey
         if (!additive) onSelect(undefined)
-        // A press on bare canvas begins a marquee; a press that never moves
-        // is just the deselect above.
         if (point && onSelectInRect) setMarquee({ from: point, to: point, additive })
       }}
       onDragOver={(event) => {
@@ -307,6 +454,7 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
         })
       }}
     >
+      <div className="builder-scene" style={{ transform: transformOf(viewport) }} data-testid="builder-scene">
       <svg className="builder-wires">
         {graph.connections.map((connection) => {
           const from = portPosition(graph, registry, connection.from.node, connection.from.port, 'out')
@@ -442,6 +590,29 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
           </article>
         )
       })}
+
+      </div>
+
+      {/* The camera controls sit outside the transformed layer, so they do
+          not scale with what they are pointing at. */}
+      <div className="builder-camera">
+        <button aria-label="Zoom out" title="Zoom out (Ctrl+-)" onClick={() => zoomBy(1 / 1.25)}>
+          <Minus size={12} />
+        </button>
+        <button
+          className="builder-zoom-label"
+          aria-label="Reset zoom to 100%"
+          onClick={() => setViewport((current) => zoomAt(current, 1 / current.zoom, { x: viewSize().width / 2, y: viewSize().height / 2 }))}
+        >
+          {zoomLabel(viewport.zoom)}
+        </button>
+        <button aria-label="Zoom in" title="Zoom in (Ctrl++)" onClick={() => zoomBy(1.25)}>
+          <Plus size={12} />
+        </button>
+        <button aria-label="Fit the graph in view" title="Fit (Shift+1)" onClick={fit} disabled={!graph.nodes.length}>
+          <Maximize2 size={12} />
+        </button>
+      </div>
 
       {!graph.nodes.length && (
         <p className="builder-empty">

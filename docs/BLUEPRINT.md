@@ -23,6 +23,33 @@ Three ways in, because different hands reach for different ones:
   the sequence, and snapping must never silently replace a connection you
   made on purpose.
 
+## The canvas as a camera
+
+The first item in the CorelDRAW-style hierarchy is the one everything else
+stands on: a canvas you can actually navigate. `src/builder/viewport.ts`
+holds one equation —
+
+    screen = canvas * zoom + offset
+
+— and every pointer path in the canvas goes through it, which is what keeps
+dropping, dragging, wiring, marqueeing and snapping correct at any zoom.
+Node positions never change when the view does: a zoom is not an edit.
+
+- **Zoom 10%–500%**, by button, by Ctrl+wheel about the pointer, and by
+  Ctrl+plus / Ctrl+minus / Ctrl+0 through fixed stops. The property that
+  makes it feel like a camera rather than a document jumping away from you
+  — the pixel under the cursor does not move — is a test, not an intention.
+- **Pan** with the Pan tool, with the middle button, or by holding space
+  with any tool. The delta is measured from the pointer rather than read
+  from `movementX`, which is only dependable under pointer lock and is
+  scaled by the device pixel ratio on some platforms.
+- **Fit** frames the whole graph, centred, and never zooms past 100%:
+  filling the screen with four enormous blocks because that is all there is
+  reads as broken.
+- **Three tools, CorelDRAW-style**, each a real mode with its own cursor and
+  single-key shortcut: Pick (V), Pan (H), Marquee (M). Pick marquees from
+  bare canvas; the Marquee tool boxes even when the drag starts on a block.
+
 And once a canvas has more than a handful of blocks on it:
 
 - **Select many.** Drag a marquee across bare canvas, or shift-click to add

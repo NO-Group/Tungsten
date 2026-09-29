@@ -1834,3 +1834,75 @@ kbd { font-family: 'JetBrains Mono', monospace; }
    because that is the one a single-block action would act on. */
 .builder-node.selected { outline: 1px solid var(--accent); }
 .builder-node.selected.primary { outline-width: 2px; }
+
+/* -- Builder: the camera and the tool rail -------------------------------- */
+
+.builder-canvas { overflow: hidden; }
+
+/* Everything in canvas coordinates lives in here, and the camera moves it
+   as one layer -- so a zoom is one transform rather than a recalculation. */
+.builder-scene {
+  position: absolute;
+  inset: 0;
+  transform-origin: 0 0;
+  will-change: transform;
+}
+
+.builder-tools {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  z-index: 5;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 3px;
+  background: var(--chrome);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px #0006;
+}
+
+.builder-tools button,
+.builder-camera button {
+  display: grid;
+  place-items: center;
+  width: 26px;
+  height: 26px;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--muted);
+  cursor: pointer;
+}
+
+.builder-tools button:hover,
+.builder-camera button:hover:not(:disabled) { background: var(--list-hover); color: var(--strong); }
+.builder-tools button.active { background: var(--wash); color: var(--accent); }
+
+.builder-camera {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  padding: 3px;
+  background: var(--chrome);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  box-shadow: 0 6px 18px #0006;
+}
+
+.builder-camera button:disabled { opacity: 0.35; cursor: default; }
+
+.builder-camera .builder-zoom-label {
+  width: auto;
+  min-width: 46px;
+  padding: 0 6px;
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+}

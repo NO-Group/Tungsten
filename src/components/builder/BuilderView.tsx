@@ -9,8 +9,8 @@
 
 import { useEffect, useMemo, useState } from 'react'
 import {
-  AlertTriangle, Code2, Copy, Eraser, FileDown, Hammer, Info, LayoutGrid, Link2, Link2Off, Play,
-  Redo2, Undo2, X,
+  AlertTriangle, BoxSelect, Code2, Copy, Eraser, FileDown, Hammer, Hand, Info, LayoutGrid, Link2,
+  Link2Off, MousePointer2, Play, Redo2, Undo2, X,
 } from 'lucide-react'
 
 import Editor from '../ConfiguredEditor'
@@ -22,6 +22,7 @@ import { lineOfNode, nodeAtLine } from '../../builder/codeGenerator'
 import type { CompileTarget } from '../../builder/compile'
 import type { BuilderState } from '../../builder/useBuilder'
 import { BUILDER_SYNC_PATH } from '../../builder/fileSync'
+import { TOOLS, toolForKey, type ToolId } from '../../builder/tools'
 
 export type BuilderViewProps = {
   builder: BuilderState
@@ -51,6 +52,7 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
   const { graph, registry, report, program, code, parseError } = builder
   const diagnostics = useMemo(() => diagnosticsByNode(report), [report])
 
+  const [tool, setTool] = useState<ToolId>('pick')
   const [rightPane, setRightPane] = useState<'code' | 'preview'>('code')
   const [bottomPane, setBottomPane] = useState<'integrity' | 'data'>('integrity')
   const [target, setTarget] = useState<CompileTarget>('web')
@@ -92,6 +94,14 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
       const typing = target instanceof HTMLElement
         && (target.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(target.tagName))
       if (typing) return
+
+      // A bare letter picks a tool, the way it does in a drawing program.
+      const picked = !event.metaKey && !event.ctrlKey && !event.altKey ? toolForKey(event.key) : undefined
+      if (picked) {
+        event.preventDefault()
+        setTool(picked)
+        return
+      }
 
       const accel = event.metaKey || event.ctrlKey
 
@@ -267,7 +277,25 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
 
       <div className="builder-panes">
         <div className="builder-pane blocks">
-          <BuilderCanvas
+          <div className="builder-tools" role="toolbar" aria-label="Canvas tools">
+          {TOOLS.map((entry) => (
+            <button
+              key={entry.id}
+              className={tool === entry.id ? 'active' : ''}
+              aria-pressed={tool === entry.id}
+              aria-label={entry.label}
+              title={`${entry.label} (${entry.shortcut.toUpperCase()}) — ${entry.hint}`}
+              onClick={() => setTool(entry.id)}
+            >
+              {entry.id === 'pick' && <MousePointer2 size={14} />}
+              {entry.id === 'pan' && <Hand size={14} />}
+              {entry.id === 'marquee' && <BoxSelect size={14} />}
+            </button>
+          ))}
+        </div>
+
+        <BuilderCanvas
+          tool={tool}
             graph={graph}
             registry={registry}
             report={report}

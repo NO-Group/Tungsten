@@ -106,7 +106,7 @@ function palette(label: string) {
 
 const code = () => (container.querySelector('[data-testid="code"]') as HTMLTextAreaElement).value
 
-const canvas = () => container.querySelector('.builder-canvas')!
+const canvas = () => container.querySelector<HTMLElement>('.builder-canvas')!
 const nodes = () => [...container.querySelectorAll('.builder-node')] as HTMLElement[]
 const pin = (label: string) => container.querySelector<HTMLElement>(`[aria-label="${label}"]`)!
 
@@ -839,5 +839,163 @@ describe('working on many blocks at once', () => {
     expect(positions()).not.toEqual(before)
     press('z', { ctrlKey: true })
     expect(positions()).toEqual(before)
+  })
+})
+
+describe('navigating the canvas', () => {
+  const scene = () => container.querySelector<HTMLElement>('[data-testid="builder-scene"]')!
+  const zoomLabel = () => container.querySelector('.builder-zoom-label')?.textContent
+  const camera = (label: string) => container.querySelector<HTMLButtonElement>(`[aria-label="${label}"]`)!
+
+  /** The scene's transform, parsed back into numbers. */
+  function transform() {
+    const match = /translate\(([-\d.]+)px, ([-\d.]+)px\) scale\(([\d.]+)\)/.exec(scene().style.transform)!
+    return { x: Number(match[1]), y: Number(match[2]), zoom: Number(match[3]) }
+  }
+
+  function wheel(delta: number, at: { x: number; y: number }, modifiers: Partial<WheelEventInit> = {}) {
+    act(() => {
+      canvas().dispatchEvent(new WheelEvent('wheel', {
+        bubbles: true, cancelable: true, deltaY: delta, clientX: at.x, clientY: at.y, ...modifiers,
+      }))
+    })
+  }
+
+  it('starts at actual size, with everything in one transformed layer', () => {
+    expect(zoomLabel()).toBe('100%')
+    expect(transform()).toEqual({ x: 0, y: 0, zoom: 1 })
+  })
+
+  it('zooms with the buttons, and back to 100% with the label', () => {
+    click(camera('Zoom in'))
+    expect(transform().zoom).toBeCloseTo(1.25, 5)
+    expect(zoomLabel()).toBe('125%')
+
+    click(camera('Zoom out'))
+    expect(transform().zoom).toBeCloseTo(1, 5)
+
+    click(camera('Zoom in'))
+    click(camera('Reset zoom to 100%'))
+    expect(zoomLabel()).toBe('100%')
+  })
+
+  it('zooms about the pointer on ctrl+wheel, and scrolls the view otherwise', () => {
+    wheel(-100, { x: 300, y: 200 }, { ctrlKey: true })
+    expect(transform().zoom).toBeGreaterThan(1)
+
+    const before = transform()
+    wheel(120, { x: 300, y: 200 })
+    // A plain wheel moves the view and leaves the zoom alone.
+    expect(transform().zoom).toBe(before.zoom)
+    expect(transform().y).toBeLessThan(before.y)
+  })
+
+  it('keeps blocks where they were dropped, even while zoomed', () => {
+    click(camera('Zoom in'))
+    click(camera('Zoom in'))
+    const { zoom, x, y } = transform()
+
+    fireDrag(canvas(), 'drop', { x: 400, y: 300 })
+    const node = nodes()[0]
+
+    // The drop point in canvas coordinates, centred on the block, rounded
+    // to the grid: the same arithmetic the canvas must have done.
+    const expected = {
+      x: Math.round(((400 - x) / zoom - 216 / 2) / 8) * 8,
+      y: Math.round(((300 - y) / zoom - 30 / 2) / 8) * 8,
+    }
+    expect(Number.parseInt(node.style.left, 10)).toBe(expected.x)
+    expect(Number.parseInt(node.style.top, 10)).toBe(expected.y)
+  })
+
+  it('moves a block by the distance the pointer moved, not the pixels on screen', () => {
+    click(palette('Log'))
+    click(camera('Zoom out'))
+    const { zoom } = transform()
+    expect(zoom).toBeLessThan(1)
+
+    const before = Number.parseInt(nodes()[0].style.left, 10)
+    fireMouse(nodes()[0], 'mousedown', { x: 100, y: 100 })
+    fireMouse(window, 'mousemove', { x: 300, y: 100 })
+    fireMouse(window, 'mouseup', { x: 300, y: 100 })
+
+    // 200 screen pixels at 75% is a bigger move in the document.
+    const moved = Number.parseInt(nodes()[0].style.left, 10) - before
+    expect(moved).toBeGreaterThan(200)
+    expect(moved).toBeCloseTo(200 / zoom, -1)
+  })
+
+  it('fits the whole graph in view', () => {
+    click(palette('On App Start'))
+    click(camera('Zoom in'))
+    click(camera('Fit the graph in view'))
+    // jsdom reports a zero-sized surface, so fit falls back to a sane view
+    // rather than dividing by nothing.
+    expect(Number.isFinite(transform().zoom)).toBe(true)
+    expect(transform().zoom).toBeGreaterThan(0)
+  })
+
+  it('offers the three tools, with Pick active', () => {
+    const rail = container.querySelector('[aria-label="Canvas tools"]')!
+    expect(rail.querySelectorAll('button')).toHaveLength(3)
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Pick"]')!.getAttribute('aria-pressed')).toBe('true')
+  })
+
+  it('switches tool with a single key, and with the rail', () => {
+    press('h')
+    expect(container.querySelector('[aria-label="Pan"]')?.getAttribute('aria-pressed')).toBe('true')
+    expect(canvas().style.cursor).toBe('grab')
+
+    press('v')
+    expect(container.querySelector('[aria-label="Pick"]')?.getAttribute('aria-pressed')).toBe('true')
+
+    click(container.querySelector('[aria-label="Marquee"]')!)
+    expect(canvas().style.cursor).toBe('crosshair')
+  })
+
+  it('drags the view with the pan tool instead of selecting', () => {
+    click(palette('Log'))
+    press('h')
+
+    const before = transform()
+    const blockAt = nodes()[0].style.left
+    act(() => {
+      canvas().dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 100, clientY: 100, button: 0 }))
+    })
+    fireMouse(window, 'mousemove', { x: 160, y: 140 })
+    fireMouse(window, 'mouseup', { x: 160, y: 140 })
+
+    expect(transform().x).toBe(before.x + 60)
+    expect(transform().y).toBe(before.y + 40)
+    // The view moved; the document did not. A pan is not an edit.
+    expect(nodes()[0].style.left).toBe(blockAt)
+  })
+
+  it('pans while space is held, whatever the tool', () => {
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', bubbles: true })) })
+    expect(canvas().style.cursor).toBe('grab')
+
+    act(() => { window.dispatchEvent(new KeyboardEvent('keyup', { code: 'Space', bubbles: true })) })
+    expect(canvas().style.cursor).toBe('default')
+  })
+
+  it('lets go of space when the window loses focus', () => {
+    act(() => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'Space', bubbles: true })) })
+    act(() => { window.dispatchEvent(new Event('blur')) })
+    expect(canvas().style.cursor).toBe('default')
+  })
+
+  it('marquees from on top of a block with the marquee tool', () => {
+    click(palette('Log'))
+    press('m')
+
+    const block = nodes()[0]
+    act(() => {
+      block.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true, clientX: 60, clientY: 60 }))
+    })
+    fireMouse(window, 'mousemove', { x: 600, y: 600 })
+    expect(container.querySelector('[data-testid="builder-marquee"]')).not.toBeNull()
+    fireMouse(window, 'mouseup', { x: 600, y: 600 })
+    expect(container.querySelectorAll('.builder-node.selected')).toHaveLength(1)
   })
 })
