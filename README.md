@@ -180,6 +180,39 @@ browser does: probe, connect, start bash, run `echo`, check that `cd /tmp`
 persists into the next command, read a manual page through the shell function,
 and confirm a foreign origin is turned away.
 
+## The boot screen
+
+`index.html` carries the boot screen inline — markup and CSS both — so it
+paints on the first frame, before the bundle, the stylesheet or React exist.
+A lime hexagonal lattice draws itself, two rings counter-rotate, an arc
+strikes across it and a sheen crosses the metal; the wordmark rises a letter
+at a time.
+
+The checklist beneath it is not decoration. Each line is ticked when the
+thing it names has actually loaded — the workbench chunk, the language
+grammars, the shell dictionary, the block library, the workspace — because a
+bar that animates on a timer while the app is still fetching is a lie told
+with a spinner. `src/boot/splash.ts` holds the rules: a minimum time on
+screen so a fast start does not flash something illegible, a shorter one
+when the machine asks for reduced motion, and a failsafe that takes the
+screen away regardless if start-up never reports finishing.
+
+## The application icon
+
+`resources/icon.png` is what every packager reads. Artwork can arrive in any
+format: drop it in `resources/` as `icon.jpg`, `icon.jpeg`, `icon.webp` or
+`icon.source.png` and run
+
+```bash
+npm run icon            # convert the newest source to resources/icon.png
+npm run icon -- --check # fail if icon.png is stale
+```
+
+The source file is kept, never deleted. `resources/icon.svg` is the vector
+master and is deliberately not used as a conversion source: rasterising SVG
+needs a delegate ImageMagick often lacks, and failing at packaging time over
+a missing library is not a good surprise.
+
 ## Graphene, the design language
 
 `src/theme/tokens.json` is the single source of truth for how Tungsten looks: the

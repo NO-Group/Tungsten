@@ -217,7 +217,17 @@ function mergeKeybindings(overrides: Record<string, string>): KeybindingRule[] {
   return rules
 }
 
-export default function App() {
+export type AppProps = {
+  /**
+   * Called once the workbench has mounted and the workspace is on screen.
+   *
+   * The boot screen waits for this rather than for a timer, so the last
+   * step it ticks is one that actually happened.
+   */
+  onReady?: (fileCount: number) => void
+}
+
+export default function App({ onReady }: AppProps = {}) {
   const [files, setFiles] = useState<WorkspaceFile[]>(loadFiles)
   const workbench = useWorkbenchLayout()
   const {
@@ -1255,6 +1265,15 @@ export default function App() {
 
   // Keystroke dispatch reads through a ref so the listener never goes stale.
   useEffect(() => { runCommandRef.current = runCommandById }, [runCommandById])
+
+  // Tells the boot screen the workbench is really up. Once only: a remount
+  // in StrictMode must not make the screen reappear.
+  const announced = useRef(false)
+  useEffect(() => {
+    if (announced.current) return
+    announced.current = true
+    onReady?.(files.length)
+  }, [files.length, onReady])
 
   /**
    * Quick access, scored with VS Code's fuzzy algorithm.

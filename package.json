@@ -23,7 +23,8 @@
     "bench:workspace": "node scripts/workspace-benchmark.mjs",
     "check": "npm run graphene -- --check && npm run lint && npm run test && npm run build",
     "preview": "vite preview --host 0.0.0.0",
-    "graphene": "node scripts/build-graphene.mjs"
+    "graphene": "node scripts/build-graphene.mjs",
+    "icon": "node scripts/prepare-icon.mjs"
   },
   "keywords": [
     "ide",

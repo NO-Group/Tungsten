@@ -5,10 +5,332 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#111311" />
     <meta name="description" content="Tungsten — a rugged development environment." />
+    <link rel="icon" type="image/png" href="./resources/icon.png" />
     <title>Tungsten IDE</title>
+
+    <!--
+      The boot screen.
+
+      Inline, because it has to paint on the first frame: a <link> to a
+      stylesheet or a React mount both arrive after the bundle, which is
+      exactly the wait this is here to cover. Nothing below needs
+      JavaScript to animate -- the script only advances the checklist and
+      takes the screen away at the end.
+
+      The colours are Graphene, copied here as first-paint values the same
+      way the :root block in styles.css is. `src/boot/splash.test.ts` fails
+      if any of them drifts from src/theme/tokens.json.
+    -->
+    <style>
+      #boot {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 26px;
+        background:
+          radial-gradient(120% 90% at 50% 12%, #1d201d 0%, #111311 42%, #0e100e 100%);
+        color: #d5d9d5;
+        font-family: 'DM Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+        overflow: hidden;
+        transition: opacity 560ms ease, transform 560ms ease, filter 560ms ease;
+      }
+
+      #boot.done {
+        opacity: 0;
+        transform: scale(1.06);
+        filter: blur(9px);
+        pointer-events: none;
+      }
+
+      /* A drifting lattice, because tungsten is a crystal before it is a metal. */
+      #boot .grid {
+        position: absolute;
+        inset: -60px;
+        background-image:
+          linear-gradient(#2b302b 1px, transparent 1px),
+          linear-gradient(90deg, #2b302b 1px, transparent 1px);
+        background-size: 46px 46px;
+        opacity: 0.22;
+        mask-image: radial-gradient(70% 60% at 50% 45%, #000 20%, transparent 78%);
+        animation: boot-drift 14s linear infinite;
+      }
+
+      @keyframes boot-drift {
+        to { transform: translate(46px, 46px); }
+      }
+
+      #boot .glow {
+        position: absolute;
+        width: 620px;
+        height: 620px;
+        border-radius: 50%;
+        background: radial-gradient(circle, #c8f16920 0%, transparent 62%);
+        animation: boot-breathe 3.4s ease-in-out infinite;
+      }
+
+      @keyframes boot-breathe {
+        0%, 100% { opacity: 0.55; transform: scale(0.94); }
+        50% { opacity: 1; transform: scale(1.06); }
+      }
+
+      #boot .mark {
+        position: relative;
+        width: 168px;
+        height: 168px;
+      }
+
+      #boot .mark svg { position: absolute; inset: 0; overflow: visible; }
+
+      /* The hexagonal cell draws itself, then the inner lattice fills in. */
+      #boot .cell {
+        fill: none;
+        stroke: #c8f169;
+        stroke-width: 2.5;
+        stroke-linejoin: round;
+        stroke-dasharray: 340;
+        stroke-dashoffset: 340;
+        animation: boot-draw 1.5s cubic-bezier(0.65, 0, 0.35, 1) forwards;
+        filter: drop-shadow(0 0 7px #c8f16960);
+      }
+
+      #boot .strut {
+        stroke: #8fae4b;
+        stroke-width: 1.4;
+        stroke-dasharray: 120;
+        stroke-dashoffset: 120;
+        animation: boot-draw 1.1s ease-out forwards;
+      }
+
+      #boot .strut:nth-of-type(2) { animation-delay: 0.85s; }
+      #boot .strut:nth-of-type(3) { animation-delay: 1s; }
+      #boot .strut:nth-of-type(4) { animation-delay: 1.15s; }
+
+      @keyframes boot-draw {
+        to { stroke-dashoffset: 0; }
+      }
+
+      /* Two rings, counter-rotating, one dashed like a caliper scale. */
+      #boot .ring {
+        fill: none;
+        stroke: #383e38;
+        stroke-width: 1.2;
+        transform-origin: 50% 50%;
+        animation: boot-spin 9s linear infinite;
+      }
+
+      #boot .ring.inner {
+        stroke: #2b302b;
+        stroke-dasharray: 3 9;
+        animation: boot-spin 6s linear infinite reverse;
+      }
+
+      @keyframes boot-spin {
+        to { transform: rotate(360deg); }
+      }
+
+      /* The arc: a bolt that strikes the cell every couple of seconds. */
+      #boot .bolt {
+        fill: none;
+        stroke: #eaffb0;
+        stroke-width: 2;
+        stroke-linecap: round;
+        opacity: 0;
+        filter: drop-shadow(0 0 6px #c8f169);
+        animation: boot-strike 2.6s steps(1, end) infinite;
+      }
+
+      #boot .bolt.second { animation-delay: 1.3s; }
+
+      @keyframes boot-strike {
+        0%, 6% { opacity: 0; }
+        8% { opacity: 1; }
+        10% { opacity: 0.1; }
+        12% { opacity: 0.95; }
+        16% { opacity: 0; }
+        100% { opacity: 0; }
+      }
+
+      /*
+        A sheen crossing the mark: the metal read.
+
+        The background is moved rather than the element, so the highlight
+        never leaves the mark's box -- translating it would slide a bright
+        band across the rest of the screen, since nothing here clips.
+      */
+      #boot .sheen {
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(105deg, transparent 38%, #f0f3ef2e 48%, transparent 58%);
+        background-size: 260% 100%;
+        background-position: 130% 0;
+        animation: boot-sheen 2.8s ease-in-out infinite;
+      }
+
+      @keyframes boot-sheen {
+        0% { background-position: 130% 0; }
+        60%, 100% { background-position: -130% 0; }
+      }
+
+      #boot .wordmark {
+        display: flex;
+        gap: 9px;
+        font-size: 27px;
+        font-weight: 600;
+        letter-spacing: 0.34em;
+        color: #f0f3ef;
+      }
+
+      #boot .wordmark span {
+        opacity: 0;
+        transform: translateY(9px);
+        animation: boot-letter 620ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+      }
+
+      @keyframes boot-letter {
+        to { opacity: 1; transform: translateY(0); }
+      }
+
+      #boot .tagline {
+        margin: -14px 0 0;
+        color: #5b615c;
+        font-size: 11px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        opacity: 0;
+        animation: boot-fade 700ms ease 1.5s forwards;
+      }
+
+      @keyframes boot-fade {
+        to { opacity: 1; }
+      }
+
+      #boot .console {
+        position: relative;
+        width: 330px;
+        opacity: 0;
+        animation: boot-fade 600ms ease 0.7s forwards;
+      }
+
+      #boot .track {
+        height: 3px;
+        border-radius: 2px;
+        background: #1d201d;
+        overflow: hidden;
+      }
+
+      #boot .fill {
+        height: 100%;
+        width: 4%;
+        border-radius: 2px;
+        background: linear-gradient(90deg, #8fae4b, #c8f169);
+        box-shadow: 0 0 10px #c8f16980;
+        transition: width 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+
+      #boot .steps {
+        margin: 13px 0 0;
+        padding: 0;
+        list-style: none;
+        font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+        font-size: 10.5px;
+      }
+
+      #boot .steps li {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 2px 0;
+        color: #5b615c;
+        transition: color 260ms ease;
+      }
+
+      #boot .steps li::before {
+        content: '○';
+        width: 10px;
+        color: #383e38;
+        transition: color 260ms ease;
+      }
+
+      #boot .steps li.active { color: #d5d9d5; }
+      #boot .steps li.active::before { content: '◌'; color: #68c3c8; animation: boot-spin 1.1s linear infinite; }
+      #boot .steps li.done { color: #858c86; }
+      #boot .steps li.done::before { content: '●'; color: #c8f169; }
+      #boot .steps li .detail { margin-left: auto; color: #5b615c; }
+
+      #boot .hint {
+        position: absolute;
+        bottom: 26px;
+        color: #5b615c;
+        font-size: 10.5px;
+        letter-spacing: 0.08em;
+      }
+
+      /*
+        Someone who asked for less movement gets less movement, and gets it
+        over with: no drift, no sheen, no strike, and the minimum time on
+        screen drops to almost nothing.
+      */
+      @media (prefers-reduced-motion: reduce) {
+        #boot .grid, #boot .glow, #boot .sheen, #boot .bolt, #boot .ring { animation: none; }
+        #boot .cell, #boot .strut { animation-duration: 1ms; }
+        #boot .wordmark span, #boot .tagline, #boot .console { animation-duration: 1ms; animation-delay: 0ms; }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+
+    <div id="boot" role="status" aria-live="polite" aria-label="Tungsten is starting">
+      <div class="grid"></div>
+      <div class="glow"></div>
+
+      <div class="mark">
+        <svg viewBox="0 0 168 168" aria-hidden="true">
+          <circle class="ring" cx="84" cy="84" r="78" />
+          <circle class="ring inner" cx="84" cy="84" r="64" />
+          <!-- The cell: tungsten's body-centred cube, read as a hexagon. -->
+          <path class="cell" d="M84 22 L137 53 L137 115 L84 146 L31 115 L31 53 Z" />
+          <path class="strut" d="M84 22 L84 146" />
+          <path class="strut" d="M31 53 L137 115" />
+          <path class="strut" d="M137 53 L31 115" />
+          <circle class="strut" cx="84" cy="84" r="13" fill="#c8f169" stroke="none" />
+          <path class="bolt" d="M96 40 L78 82 L92 82 L70 128" />
+          <path class="bolt second" d="M128 66 L104 90 L116 94 L96 120" />
+        </svg>
+        <div class="sheen"></div>
+      </div>
+
+      <div class="wordmark" aria-hidden="true">
+        <span style="animation-delay: 0.62s">T</span>
+        <span style="animation-delay: 0.69s">U</span>
+        <span style="animation-delay: 0.76s">N</span>
+        <span style="animation-delay: 0.83s">G</span>
+        <span style="animation-delay: 0.90s">S</span>
+        <span style="animation-delay: 0.97s">T</span>
+        <span style="animation-delay: 1.04s">E</span>
+        <span style="animation-delay: 1.11s">N</span>
+      </div>
+      <p class="tagline">A rugged development environment</p>
+
+      <div class="console">
+        <div class="track"><div class="fill" data-boot-fill></div></div>
+        <ul class="steps" data-boot-steps>
+          <li data-step="chrome">Graphene theme</li>
+          <li data-step="workbench">Workbench</li>
+          <li data-step="grammars">Language grammars</li>
+          <li data-step="shell">Shell dictionary</li>
+          <li data-step="blocks">Block library</li>
+          <li data-step="workspace">Workspace</li>
+        </ul>
+      </div>
+
+      <p class="hint">Press Ctrl+Shift+P for the command palette</p>
+    </div>
+
     <script type="module" src="/src/main.tsx"></script>
   </body>
 </html>
