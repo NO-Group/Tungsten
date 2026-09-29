@@ -208,10 +208,16 @@ npm run icon            # convert the newest source to resources/icon.png
 npm run icon -- --check # fail if icon.png is stale
 ```
 
-The source file is kept, never deleted. `resources/icon.svg` is the vector
-master and is deliberately not used as a conversion source: rasterising SVG
-needs a delegate ImageMagick often lacks, and failing at packaging time over
-a missing library is not a good surprise.
+The source file is kept, never deleted, and `resources/icon.lock.json`
+records the SHA-256 it was built from — modification times are meaningless
+after a clone, so `--check` compares hashes and gives the same answer on
+every machine. `resources/icon.svg` is the vector master and is deliberately
+not used as a conversion source: rasterising SVG needs a delegate ImageMagick
+often lacks, and failing at packaging time over a missing library is not a
+good surprise.
+
+The boot screen draws the same shield, T and chevrons as line work, so what
+you see while Tungsten starts is recognisably the icon in your dock.
 
 ## Graphene, the design language
 

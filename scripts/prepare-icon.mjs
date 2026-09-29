@@ -16,11 +16,21 @@
  */
 
 import { execFileSync } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 const RESOURCES = join(process.cwd(), 'resources')
 const TARGET = join(RESOURCES, 'icon.png')
+/**
+ * Records which source the PNG was built from.
+ *
+ * Modification times cannot answer that question: a fresh clone writes
+ * every file at the same moment, in arbitrary order, so an mtime check
+ * would pass or fail at random on CI. A hash of the source is the same on
+ * every machine.
+ */
+const LOCK = join(RESOURCES, 'icon.lock.json')
 /**
  * In the order they are preferred as a source.
  *
@@ -79,14 +89,27 @@ if (!found.length) {
 }
 
 const source = found[0]
-const fresh = existsSync(TARGET) && statSync(TARGET).mtimeMs >= statSync(source).mtimeMs
+const name = (path) => path.replace(`${process.cwd()}/`, '')
+const digest = createHash('sha256').update(readFileSync(source)).digest('hex')
+
+function recorded() {
+  if (!existsSync(LOCK)) return undefined
+  try {
+    return JSON.parse(readFileSync(LOCK, 'utf8'))
+  } catch {
+    return undefined
+  }
+}
 
 if (check) {
-  if (fresh) {
-    console.log(`icon: resources/icon.png is up to date with ${source.replace(`${process.cwd()}/`, '')}.`)
+  const lock = recorded()
+  if (existsSync(TARGET) && lock?.sha256 === digest) {
+    console.log(`icon: resources/icon.png was built from ${name(source)} and is current.`)
     process.exit(0)
   }
-  console.error(`icon: resources/icon.png is stale. Run \`npm run icon\` (source: ${source.replace(`${process.cwd()}/`, '')}).`)
+  console.error(existsSync(TARGET)
+    ? `icon: resources/icon.png does not match ${name(source)}. Run \`npm run icon\`.`
+    : 'icon: resources/icon.png is missing. Run `npm run icon`.')
   process.exit(1)
 }
 
@@ -101,14 +124,12 @@ if (!tool) {
   process.exit(1)
 }
 
-const relative = (path) => path.replace(`${process.cwd()}/`, '')
-
 try {
   execFileSync(tool.command, tool.build(source, TARGET), { stdio: 'inherit' })
 } catch (error) {
   console.error([
     '',
-    `icon: ${tool.command} could not read ${relative(source)}.`,
+    `icon: ${tool.command} could not read ${name(source)}.`,
     `       ${error.message.split('\n')[0]}`,
     '',
     'If the source is a vector, export it to PNG or JPEG first: the raster',
@@ -117,5 +138,12 @@ try {
   process.exit(1)
 }
 
-console.log(`icon: ${relative(source)} → ${relative(TARGET)} at ${SIZE}×${SIZE} (via ${tool.command}).`)
+writeFileSync(LOCK, `${JSON.stringify({
+  source: name(source),
+  sha256: digest,
+  size: SIZE,
+  tool: tool.command,
+}, null, 2)}\n`)
+
+console.log(`icon: ${name(source)} → ${name(TARGET)} at ${SIZE}×${SIZE} (via ${tool.command}).`)
 console.log('icon: the source file was left where it is; nothing in the build reads it directly.')

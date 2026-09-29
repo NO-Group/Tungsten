@@ -84,30 +84,49 @@
       }
 
       #boot .mark svg { position: absolute; inset: 0; overflow: visible; }
+      #boot .chevron { transform-box: fill-box; transform-origin: center; }
 
-      /* The hexagonal cell draws itself, then the inner lattice fills in. */
-      #boot .cell {
+      /* The shield draws itself first, in metal. */
+      #boot .shield {
         fill: none;
-        stroke: #c8f169;
-        stroke-width: 2.5;
+        stroke: #d5d9d5;
+        stroke-width: 3;
         stroke-linejoin: round;
-        stroke-dasharray: 340;
-        stroke-dashoffset: 340;
+        stroke-dasharray: 420;
+        stroke-dashoffset: 420;
         animation: boot-draw 1.5s cubic-bezier(0.65, 0, 0.35, 1) forwards;
-        filter: drop-shadow(0 0 7px #c8f16960);
+        filter: drop-shadow(0 1px 0 #383e38);
       }
 
       #boot .strut {
-        stroke: #8fae4b;
-        stroke-width: 1.4;
-        stroke-dasharray: 120;
-        stroke-dashoffset: 120;
+        fill: none;
+        stroke-dasharray: 130;
+        stroke-dashoffset: 130;
         animation: boot-draw 1.1s ease-out forwards;
       }
 
-      #boot .strut:nth-of-type(2) { animation-delay: 0.85s; }
-      #boot .strut:nth-of-type(3) { animation-delay: 1s; }
-      #boot .strut:nth-of-type(4) { animation-delay: 1.15s; }
+      #boot .metal { stroke: #858c86; stroke-width: 2.4; stroke-linecap: round; }
+      #boot .strut:nth-of-type(1) { animation-delay: 0.8s; }
+      #boot .strut:nth-of-type(2) { animation-delay: 0.95s; }
+
+      /* Then the chevrons arrive, lit. */
+      #boot .chevron {
+        fill: none;
+        stroke: #c8f169;
+        stroke-width: 6;
+        stroke-linecap: round;
+        stroke-linejoin: round;
+        opacity: 0;
+        filter: drop-shadow(0 0 8px #c8f16980);
+        animation: boot-light 700ms ease 1.15s forwards;
+      }
+
+      #boot .chevron.right { animation-delay: 1.3s; }
+
+      @keyframes boot-light {
+        from { opacity: 0; transform: scale(0.82); }
+        to { opacity: 1; transform: scale(1); }
+      }
 
       @keyframes boot-draw {
         to { stroke-dashoffset: 0; }
@@ -276,7 +295,7 @@
       */
       @media (prefers-reduced-motion: reduce) {
         #boot .grid, #boot .glow, #boot .sheen, #boot .bolt, #boot .ring { animation: none; }
-        #boot .cell, #boot .strut { animation-duration: 1ms; }
+        #boot .shield, #boot .strut, #boot .chevron { animation-duration: 1ms; animation-delay: 0ms; }
         #boot .wordmark span, #boot .tagline, #boot .console { animation-duration: 1ms; animation-delay: 0ms; }
       }
     </style>
@@ -290,16 +309,20 @@
 
       <div class="mark">
         <svg viewBox="0 0 168 168" aria-hidden="true">
-          <circle class="ring" cx="84" cy="84" r="78" />
-          <circle class="ring inner" cx="84" cy="84" r="64" />
-          <!-- The cell: tungsten's body-centred cube, read as a hexagon. -->
-          <path class="cell" d="M84 22 L137 53 L137 115 L84 146 L31 115 L31 53 Z" />
-          <path class="strut" d="M84 22 L84 146" />
-          <path class="strut" d="M31 53 L137 115" />
-          <path class="strut" d="M137 53 L31 115" />
-          <circle class="strut" cx="84" cy="84" r="13" fill="#c8f169" stroke="none" />
-          <path class="bolt" d="M96 40 L78 82 L92 82 L70 128" />
-          <path class="bolt second" d="M128 66 L104 90 L116 94 L96 120" />
+          <circle class="ring" cx="84" cy="84" r="80" />
+          <circle class="ring inner" cx="84" cy="84" r="66" />
+          <!--
+            The application icon, drawn as line work: the shield, the T
+            through it, and the two chevrons. The boot screen and the icon
+            in the dock should be recognisably the same object.
+          -->
+          <path class="shield" d="M30 46 L84 20 L138 46 L138 94 L84 150 L30 94 Z" />
+          <path class="strut metal" d="M50 62 H118" />
+          <path class="strut metal" d="M84 62 V142" />
+          <path class="chevron" d="M72 86 L58 100 L72 114" />
+          <path class="chevron right" d="M96 86 L110 100 L96 114" />
+          <path class="bolt" d="M104 30 L86 74 L100 74 L74 126" />
+          <path class="bolt second" d="M136 60 L112 86 L124 90 L104 118" />
         </svg>
         <div class="sheen"></div>
       </div>
