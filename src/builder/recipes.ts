@@ -125,6 +125,27 @@ export const recipes: Recipe[] = [
     ],
   },
   {
+    id: 'card-row',
+    name: 'Card with a row of buttons',
+    summary: 'A container holding a title and two buttons side by side.',
+    outcome: 'a card with a button row',
+    blocks: [
+      { type: 'event.start', at: { x: 0, y: 0 } },
+      { type: 'ui.stack', at: { x: COLUMN, y: 0 }, values: { id: 'card', direction: 'column', gap: 12, padding: '16', background: 'raised', radius: 10 } },
+      { type: 'ui.text', at: { x: COLUMN * 2, y: 0 }, values: { value: 'Ready to publish?' } },
+      { type: 'ui.stack', at: { x: COLUMN * 2, y: ROW }, values: { id: 'actions', direction: 'row', gap: 8 } },
+      { type: 'ui.button', at: { x: COLUMN * 3, y: ROW }, values: { text: 'Publish', id: 'publish' } },
+      { type: 'ui.button', at: { x: COLUMN * 3, y: ROW * 2 }, values: { text: 'Cancel', id: 'cancel', background: 'border', color: 'text' } },
+    ],
+    links: [
+      [0, 'exec', 1, 'exec'],
+      [1, 'children', 2, 'exec'],
+      [2, 'exec', 3, 'exec'],
+      [3, 'children', 4, 'exec'],
+      [4, 'exec', 5, 'exec'],
+    ],
+  },
+  {
     id: 'signup-save',
     name: 'Sign up and save the profile',
     summary: 'Create the account, then write the row it returns to the database.',

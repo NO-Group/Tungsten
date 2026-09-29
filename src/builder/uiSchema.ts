@@ -12,8 +12,9 @@
  */
 
 import type { BlockDefinition, BlockGraph, BlockNode, BlockRegistry } from './blockSchema'
+import { outgoing } from './graph'
 
-export type ComponentType = 'button' | 'text' | 'input' | 'unknown'
+export type ComponentType = 'button' | 'text' | 'input' | 'stack' | 'unknown'
 
 export type ComponentSchema = {
   /** The element id in the rendered output, and what an event block targets. */
@@ -30,6 +31,8 @@ export type ComponentSchema = {
   events: Record<string, string>
   /** The block this came from, so a preview error can point at it. */
   nodeId: string
+  /** What is laid out inside this one, for a container. */
+  children?: ComponentSchema[]
 }
 
 export type UiDocument = { components: ComponentSchema[] }
@@ -57,6 +60,7 @@ const TYPE_BY_BLOCK: Record<string, ComponentType> = {
   'ui.button': 'button',
   'ui.text': 'text',
   'ui.input': 'input',
+  'ui.stack': 'stack',
 }
 
 /**
@@ -67,6 +71,17 @@ const TYPE_BY_BLOCK: Record<string, ComponentType> = {
  * id is `save` -- so the preview and the program agree on what is wired to
  * what without either one consulting the other.
  */
+/** The nodes on the execution chain that starts at a slot, in order. */
+function chainFrom(graph: BlockGraph, nodeId: string, port: string): string[] {
+  const seen: string[] = []
+  let link = outgoing(graph, nodeId, port)[0]
+  while (link && !seen.includes(link.to.node)) {
+    seen.push(link.to.node)
+    link = outgoing(graph, link.to.node, 'exec')[0]
+  }
+  return seen
+}
+
 export function schemaFromGraph(graph: BlockGraph, registry: BlockRegistry): UiDocument {
   const ordered = [...graph.nodes].sort((a, b) => (
     a.position.y - b.position.y || a.position.x - b.position.x || a.id.localeCompare(b.id)
@@ -78,16 +93,23 @@ export function schemaFromGraph(graph: BlockGraph, registry: BlockRegistry): UiD
     clickHandlers.set(staticValue(node, registry.get(node.type), 'target', 'submit'), node.id)
   }
 
-  const components: ComponentSchema[] = []
+  /** Every UI component, by node id, before they are nested. */
+  const built = new Map<string, ComponentSchema>()
+  let texts = 0
 
   ordered.forEach((node) => {
     const definition = registry.get(node.type)
     if (!definition || definition.category !== 'UI') return
 
     const type = TYPE_BY_BLOCK[node.type] ?? 'unknown'
+    // Text has no id of its own, so it is numbered by the order text is
+    // drawn in -- counting *text only*, because that is what the runtime
+    // does. Numbering them differently made the first paint and the first
+    // render disagree, which showed up as duplicated, reordered rows.
+    if (type === 'text') texts += 1
     const id = type === 'text'
-      ? `text-${components.length + 1}`
-      : staticValue(node, definition, 'id', `${type}-${components.length + 1}`)
+      ? `text-${texts}`
+      : staticValue(node, definition, 'id', `${type}-${built.size + 1}`)
 
     const properties: Record<string, string | number | boolean> = {}
     if (type === 'button') properties.text = staticValue(node, definition, 'text', 'Submit')
@@ -105,17 +127,33 @@ export function schemaFromGraph(graph: BlockGraph, registry: BlockRegistry): UiD
 
     const handler = clickHandlers.get(id)
 
-    components.push({
+    built.set(node.id, {
       id,
       type,
       properties,
-      layout: { x: node.position.x, y: node.position.y, order: components.length },
+      layout: { x: node.position.x, y: node.position.y, order: built.size },
       events: handler ? { click: handler } : {},
       nodeId: node.id,
+      ...(type === 'stack' ? { children: [] } : {}),
     })
   })
 
-  return { components }
+  // A component drawn inside a container belongs to it. Parentage comes
+  // from the execution chain hanging off the container's slot, which is
+  // the same thing the generated code nests.
+  const owned = new Set<string>()
+  for (const node of ordered) {
+    const component = built.get(node.id)
+    if (!component?.children) continue
+    for (const id of chainFrom(graph, node.id, 'children')) {
+      const child = built.get(id)
+      if (!child || owned.has(id)) continue
+      component.children.push(child)
+      owned.add(id)
+    }
+  }
+
+  return { components: [...built.values()].filter((component) => !owned.has(component.nodeId)) }
 }
 
 /** Escapes text for HTML, since component text is user input. */
@@ -174,6 +212,18 @@ export function renderComponent(component: ComponentSchema): string {
     return `<p id="${id}" data-node="${escapeHtml(component.nodeId)}"${style}>${
       escapeHtml(String(component.properties.value ?? ''))
     }</p>`
+  }
+  if (component.type === 'stack') {
+    const direction = String(component.properties.direction ?? 'column') === 'row' ? 'row' : 'column'
+    const gap = Number(component.properties.gap ?? 10)
+    const layout = `display:flex;flex-direction:${direction};gap:${gap}px;align-items:${
+      direction === 'row' ? 'center' : 'flex-start'}`
+    const merged = style
+      ? style.replace('style="', `style="${layout};`)
+      : ` style="${layout}"`
+    return `<div id="${id}" data-node="${escapeHtml(component.nodeId)}"${merged}>${
+      (component.children ?? []).map(renderComponent).join('')
+    }</div>`
   }
   return `<div id="${id}"></div>`
 }

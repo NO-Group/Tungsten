@@ -82,6 +82,7 @@ let anonymous = 0
 function beginPass() {
   claimed = new Map()
   touched = new Set()
+  drawInto = root
   // Components with no id of their own are numbered by the order they are
   // drawn in. Counting the elements already on the page instead -- which
   // is what this did -- made the numbers climb on every pass, so a
@@ -90,10 +91,28 @@ function beginPass() {
 }
 
 function endPass() {
-  for (const element of [...root.children]) {
+  // Everything with an id, at any depth: a row removed from a list takes
+  // its container and that container's children with it.
+  for (const element of [...root.querySelectorAll('[id]')]) {
     if (!touched.has(element.id)) element.remove()
   }
 }
+
+/**
+ * Where new elements go.
+ *
+ * A container sets this while the blocks inside it draw, so nesting needs
+ * no knowledge anywhere else: every renderer appends to "here", and the
+ * stack decides what here means.
+ *
+ * Emphatically not named after the window property this frame posts its
+ * messages to: shadowing that cut the preview off from the workbench
+ * entirely, and every message with it.
+ *
+ * Note also that this whole runtime lives inside a template literal, so a
+ * backtick in a comment ends it. That is how this line was written twice.
+ */
+let drawInto = root
 
 function upsert(baseId, create) {
   const count = (claimed.get(baseId) || 0) + 1
@@ -105,14 +124,31 @@ function upsert(baseId, create) {
   if (!element) {
     element = create()
     element.id = id
-    root.append(element)
   }
+  // Re-appending is how an element follows its container when the graph
+  // moves it, and is a no-op when it is already in the right place.
+  if (element.parentElement !== drawInto) drawInto.append(element)
   return element
 }
 
 /** True when an element is one of the copies a repeat produced. */
 function isCopyOf(id, baseId) {
   return id === baseId || id.indexOf(baseId + '~') === 0
+}
+
+/** The token names a style property may name, mirroring uiSchema. */
+const TOKENS = ['surface', 'raised', 'border', 'text', 'muted', 'accent', 'accent-ink', 'danger']
+const colour = (value) => (TOKENS.indexOf(String(value)) >= 0 ? 'var(--app-' + value + ')' : String(value))
+
+/** Applies the style properties a component carries. */
+function applyStyle(element, style) {
+  if (!style) return
+  if (typeof style.radius === 'number') element.style.borderRadius = style.radius + 'px'
+  if (style.padding) element.style.padding = String(style.padding)
+  if (style.background) element.style.background = colour(style.background)
+  if (style.color) element.style.color = colour(style.color)
+  if (style.width) element.style.width = String(style.width)
+  if (style.align) element.style.textAlign = String(style.align)
 }
 
 const render = {
@@ -125,6 +161,30 @@ const render = {
     anonymous += 1
     const element = upsert('text-' + anonymous, () => document.createElement('p'))
     element.textContent = format(value)
+    return element
+  },
+  /**
+   * A row or a column, with whatever is drawn inside it.
+   *
+   * The body is awaited while this element is the current parent, which
+   * is safe because the generated program runs its statements in order --
+   * there is never a second body drawing at the same time.
+   */
+  stack: async ({ id, direction, gap, ...style }, body) => {
+    const element = upsert(String(id), () => document.createElement('div'))
+    element.style.display = 'flex'
+    element.style.flexDirection = direction === 'row' ? 'row' : 'column'
+    element.style.gap = (Number(gap) || 0) + 'px'
+    element.style.alignItems = direction === 'row' ? 'center' : 'flex-start'
+    applyStyle(element, style)
+
+    const previous = drawInto
+    drawInto = element
+    try {
+      await body()
+    } finally {
+      drawInto = previous
+    }
     return element
   },
   /** What is in a field right now, by element id. */

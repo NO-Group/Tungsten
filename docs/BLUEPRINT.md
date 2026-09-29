@@ -23,6 +23,36 @@ Three ways in, because different hands reach for different ones:
   the sequence, and snapping must never silently replace a connection you
   made on purpose.
 
+## Containers
+
+One **Stack** block, not a Row block and a Column block, because they are
+the same box with one property different and a palette that says otherwise
+teaches people they are not. It opens a body exactly as a loop or a branch
+does, so nesting comes from machinery the canvas already had.
+
+```js
+await render.stack({ id: "card", direction: "column", gap: 12, padding: "16" }, async () => {
+  render.text("Ready to publish?")
+  await render.stack({ id: "actions", direction: "row", gap: 8 }, async () => {
+    render.button({ id: "publish", text: "Publish" })
+  })
+})
+```
+
+The runtime keeps a current drawing target that a container swaps while its
+children draw, so nesting needs no knowledge anywhere else: every renderer
+appends to "here". The schema nests to match, so the compiled bundle and
+the preview produce the same tree rather than agreeing by convention.
+
+Two bugs found writing it, both mine, both instructive:
+
+- The drawing target was first called `parent`, which shadowed the window
+  property the frame posts its messages through — and cut the preview off
+  from the workbench entirely, silently.
+- The static first paint numbered text components among *all* components
+  while the runtime numbered text alone, so the two disagreed and rows
+  appeared twice, in the wrong order. They now count the same thing.
+
 ## Lists that repeat
 
 A component inside a loop is a list row, and it did not work: every

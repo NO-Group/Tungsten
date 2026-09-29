@@ -18,6 +18,7 @@ import { generateProgram } from './codeGenerator'
 import { schemaFromGraph } from './uiSchema'
 import { previewHtml, PREVIEW_CHANNEL, type PreviewMessage } from './previewRuntime'
 import { nodeAtLine } from './codeGenerator'
+import { parseProgram } from './codeParser'
 
 const registry = createRegistry(builtinBlocks)
 
@@ -260,5 +261,85 @@ describe('lists that repeat', () => {
     expect(after).toEqual(before)
     // The same element, updated, rather than a replacement.
     expect(dom.window.document.getElementById(before[0])).toBe(first)
+  })
+})
+
+describe('containers', () => {
+  /** A row holding two lines of text, inside a start handler. */
+  function nested(direction = 'row') {
+    const { graph, ids } = build(
+      [['event.start'], ['ui.stack'], ['ui.text'], ['ui.text']],
+      [
+        [0, 'exec', 1, 'exec'],
+        [1, 'children', 2, 'exec'],
+        [2, 'exec', 3, 'exec'],
+      ],
+    )
+    const withValues = setNodeValue(
+      setNodeValue(setNodeValue(graph, ids[1], 'direction', direction), ids[2], 'value', 'left'),
+      ids[3],
+      'value',
+      'right',
+    )
+    return { graph: setNodeValue(withValues, ids[1], 'id', 'bar'), ids }
+  }
+
+  it('draws its children inside itself, not beside them', async () => {
+    const { dom } = await run(nested().graph)
+    const bar = dom.window.document.getElementById('bar')!
+
+    expect(bar.tagName).toBe('DIV')
+    expect([...bar.querySelectorAll('p')].map((line) => line.textContent)).toEqual(['left', 'right'])
+    // And nothing escaped to the top level.
+    expect(dom.window.document.querySelectorAll('#app > p')).toHaveLength(0)
+  })
+
+  it('lays a row out as a row and a column as a column', async () => {
+    const row = await run(nested('row').graph)
+    expect(row.dom.window.document.getElementById('bar')!.style.flexDirection).toBe('row')
+
+    const column = await run(nested('column').graph)
+    expect(column.dom.window.document.getElementById('bar')!.style.flexDirection).toBe('column')
+  })
+
+  it('puts the same nesting in the schema the compiler reads', () => {
+    const { graph } = nested()
+    const { components } = schemaFromGraph(graph, registry)
+
+    // One top-level component, with the two lines inside it.
+    expect(components).toHaveLength(1)
+    expect(components[0].type).toBe('stack')
+    expect(components[0].children?.map((child) => child.properties.value)).toEqual(['left', 'right'])
+  })
+
+  it('renders that nesting as nested markup', async () => {
+    const { renderComponent } = await import('./uiSchema')
+    const { components } = schemaFromGraph(nested().graph, registry)
+    const html = renderComponent(components[0])
+    expect(html).toContain('flex-direction:row')
+    expect(html.indexOf('left')).toBeLessThan(html.indexOf('right'))
+    expect(html).toMatch(/<div[^>]*>.*<p[^>]*>left<\/p>.*<\/div>/s)
+  })
+
+  it('survives the round trip, nesting included', () => {
+    const { graph } = nested()
+    const first = generateProgram(graph, registry).code
+    expect(first).toContain('await render.stack({ id: "bar", direction: "row", gap: 10 }, async () => {')
+
+    const parsed = parseProgram(first, registry)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(generateProgram(parsed.graph, registry).code).toBe(first)
+  })
+
+  it('generates an empty container without opening a body', () => {
+    const { graph, ids } = build([['event.start'], ['ui.stack']], [[0, 'exec', 1, 'exec']])
+    const code = generateProgram(setNodeValue(graph, ids[1], 'id', 'empty'), registry).code
+    expect(code).toContain('async () => {})')
+
+    const parsed = parseProgram(code, registry)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(generateProgram(parsed.graph, registry).code).toBe(code)
   })
 })

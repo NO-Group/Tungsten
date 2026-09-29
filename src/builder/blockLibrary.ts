@@ -185,13 +185,14 @@ const STYLE_PORTS: Port[] = [
 const STYLE_KEYS = STYLE_PORTS.map((port) => port.id)
 
 /** Reads `key: value, key: value` back into raw expression text per key. */
-function readOptions(text: string): Record<string, string> {
+function readOptions(text: string, extra: string[] = []): Record<string, string> {
+  const wanted = [...STYLE_KEYS, ...extra]
   const found: Record<string, string> = {}
   for (const part of splitArguments(text)) {
     const at = part.indexOf(':')
     if (at < 0) continue
     const key = part.slice(0, at).trim()
-    if (STYLE_KEYS.includes(key)) found[key] = part.slice(at + 1).trim()
+    if (wanted.includes(key)) found[key] = part.slice(at + 1).trim()
   }
   return found
 }
@@ -229,6 +230,51 @@ const uiButton = defineBlock({
   generate: ({ input, node }) =>
     `render.button({ id: ${input('id')}, text: ${input('text')}${styleFragment(node)} })`,
   parse: parseOptions('render.button', { id: 'id', text: 'text', ...Object.fromEntries(STYLE_KEYS.map((key) => [key, key])) }),
+})
+
+/**
+ * A stack: the container everything else sits in.
+ *
+ * One block rather than separate Row and Column blocks, because they are
+ * the same box with one property different, and a palette that says
+ * otherwise teaches people that they are not.
+ *
+ * It opens a body, exactly as a loop or a branch does, so nesting comes
+ * from the machinery the canvas already has.
+ */
+const uiStack = defineBlock({
+  type: 'ui.stack',
+  label: 'Stack',
+  category: 'UI',
+  description: 'A row or a column. Blocks inside it are laid out within it.',
+  isAsync: true,
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'id', label: 'Element id', type: 'String', default: 'stack' },
+    { id: 'direction', label: 'Direction', type: 'String', default: 'column', property: true },
+    { id: 'gap', label: 'Gap', type: 'Number', default: 10, property: true },
+    ...STYLE_PORTS,
+  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  slots: [{ id: 'children', label: 'Inside', type: 'Exec' }],
+  generate: ({ input, node, body, symbol, indent }) => {
+    void symbol
+    const inside = body('children')
+    const direction = String(node.values.direction ?? 'column') === 'row' ? 'row' : 'column'
+    const gap = Number(node.values.gap ?? 10)
+    const options = `{ id: ${input('id')}, direction: ${quote(direction)}, gap: ${gap}${styleFragment(node)} }`
+    return inside
+      ? `await render.stack(${options}, async () => {\n${inside}\n${indent}})`
+      : `await render.stack(${options}, async () => {})`
+  },
+  parse: (statement) => {
+    const match = /^await render\.stack\(\{ (.*) \}, async \(\) => \{(\})?\)?$/.exec(statement)
+      ?? /^await render\.stack\(\{ (.*) \}, async \(\) => \{\}\)$/.exec(statement)
+    if (!match) return undefined
+    const options = readOptions(match[1], ['id', 'direction', 'gap'])
+    const empty = statement.endsWith('{})')
+    return { inputs: options, opensBody: empty ? undefined : 'children' }
+  },
 })
 
 const uiText = defineBlock({
@@ -663,7 +709,7 @@ const storageUpload = defineBlock({
 
 export const builtinBlocks: BlockDefinition[] = [
   onAppStart, onClick,
-  uiButton, uiText, uiInput, uiValue,
+  uiButton, uiText, uiInput, uiValue, uiStack,
   logicIf, logicForEach, logicCompare, logicMath, logicExists, logicLog,
   dataQuery, dataInsert, dataVariable, dataNumber,
   stateGet, stateSet,
