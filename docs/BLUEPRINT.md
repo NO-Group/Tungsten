@@ -23,6 +23,35 @@ Three ways in, because different hands reach for different ones:
   the sequence, and snapping must never silently replace a connection you
   made on purpose.
 
+## Properties are ports
+
+The inspector is CorelDRAW's right-hand docker: whatever is selected, and
+everything that can be changed about it. What makes it cheap is the
+decision underneath it — **a style property is a port**, marked
+`property: true`.
+
+That one line means styling inherits everything ports already have, rather
+than arriving as a second kind of state sitting beside the graph:
+
+- the inspector edits it through `setValue`, so **undo covers it**
+- the generator writes it, so it **lands in the file**
+- the parser reads it back, so it **round-trips byte for byte**
+- the file sync carries it, so **editing the code moves the control**
+- the canvas filters properties out of its pins, so **the block stays the
+  same size** and nothing can be wired to a colour
+
+Only what differs from the default is written, so an unstyled button still
+generates `render.button({ id: "submit", text: "Submit" })` and a styled one
+adds exactly the properties you set. Colours are Graphene token names rather
+than hex — `background: "accent"` resolves to `var(--app-accent)` in the
+rendered output — so a generated app re-themes with the design system
+instead of freezing today's palette into its source. Anything that is not a
+token name passes through, so a hex value still works.
+
+The inspector renders whatever ports a block declares. There is no list of
+known block types in it, which is why a plugin's properties appear there
+with no change to the file.
+
 ## The canvas as a camera
 
 The first item in the CorelDRAW-style hierarchy is the one everything else

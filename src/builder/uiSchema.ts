@@ -94,6 +94,15 @@ export function schemaFromGraph(graph: BlockGraph, registry: BlockRegistry): UiD
     if (type === 'text') properties.value = staticValue(node, definition, 'value', '')
     if (type === 'input') properties.placeholder = staticValue(node, definition, 'placeholder', '')
 
+    // Style properties travel with the component rather than being applied
+    // by whoever renders it: the preview, the web bundle and the mobile
+    // export then agree by construction instead of by convention.
+    for (const port of definition.inputs.filter((entry) => entry.property)) {
+      const value = node.values[port.id]
+      if (value === undefined || value === '' || value === port.default) continue
+      properties[port.id] = value
+    }
+
     const handler = clickHandlers.get(id)
 
     components.push({
@@ -119,20 +128,50 @@ export function escapeHtml(value: string): string {
 }
 
 /** The markup for one component, shared by the preview and the web target. */
+/**
+ * The inline style for a component, from its style properties.
+ *
+ * Colours name Graphene tokens (`accent`, `raised`, `danger`) and resolve
+ * to the custom properties the generated document declares, so a themed
+ * app stays themed. Anything that is not a token name is passed through --
+ * a hex value or a CSS colour still works, it simply stops tracking the
+ * design system.
+ */
+export function styleOf(component: ComponentSchema): string {
+  const { properties } = component
+  const colour = (value: string) => (TOKEN_NAMES.includes(value) ? `var(--app-${value})` : value)
+  const rules: string[] = []
+
+  if (typeof properties.radius === 'number') rules.push(`border-radius:${properties.radius}px`)
+  if (properties.padding) rules.push(`padding:${String(properties.padding)}`)
+  if (properties.background) rules.push(`background:${colour(String(properties.background))}`)
+  if (properties.color) rules.push(`color:${colour(String(properties.color))}`)
+  if (properties.width) rules.push(`width:${String(properties.width)}`)
+  if (properties.align) rules.push(`text-align:${String(properties.align)}`)
+
+  return rules.length ? ` style="${escapeHtml(rules.join(';'))}"` : ''
+}
+
+/** The token names `styleOf` resolves. Mirrors the variables in uiTokens. */
+export const TOKEN_NAMES = [
+  'surface', 'raised', 'border', 'text', 'muted', 'accent', 'accent-ink', 'danger',
+]
+
 export function renderComponent(component: ComponentSchema): string {
   const id = escapeHtml(component.id)
+  const style = styleOf(component)
   if (component.type === 'button') {
-    return `<button id="${id}" data-node="${escapeHtml(component.nodeId)}">${
+    return `<button id="${id}" data-node="${escapeHtml(component.nodeId)}"${style}>${
       escapeHtml(String(component.properties.text ?? 'Submit'))
     }</button>`
   }
   if (component.type === 'input') {
-    return `<input id="${id}" data-node="${escapeHtml(component.nodeId)}" placeholder="${
+    return `<input id="${id}" data-node="${escapeHtml(component.nodeId)}"${style} placeholder="${
       escapeHtml(String(component.properties.placeholder ?? ''))
     }" />`
   }
   if (component.type === 'text') {
-    return `<p id="${id}" data-node="${escapeHtml(component.nodeId)}">${
+    return `<p id="${id}" data-node="${escapeHtml(component.nodeId)}"${style}>${
       escapeHtml(String(component.properties.value ?? ''))
     }</p>`
   }

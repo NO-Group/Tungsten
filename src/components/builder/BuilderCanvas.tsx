@@ -536,7 +536,9 @@ export function BuilderCanvas(props: BuilderCanvasProps) {
             </header>
 
             <div className="builder-node-body">
-              {(definition?.inputs ?? []).map((port) => {
+              {/* Properties are edited in the inspector, so they get no pin
+                  here -- and the block stays the height it was. */}
+              {(definition?.inputs ?? []).filter((port) => !port.property).map((port) => {
                 const linked = incoming(graph, node.id, port.id)
                 const isExec = port.type === 'Exec'
                 const target = linking && linking.side === 'out'

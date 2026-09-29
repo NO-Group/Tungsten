@@ -11,7 +11,7 @@ import { describe, expect, it } from 'vitest'
 
 import { builtinBlocks } from './blockLibrary'
 import { createRegistry } from './blockSchema'
-import { addNode, createNode, resetIds } from './graph'
+import { addNode, connect, createNode, resetIds } from './graph'
 import { generateProgram } from './codeGenerator'
 import { checkIntegrity } from './integrity'
 import { instantiate, recipeById } from './recipes'
@@ -24,7 +24,9 @@ import {
   serialise,
 } from './clipboard'
 import { COLUMN_GAP, MARGIN, depths, isTidy, tidy, tidyPositions } from './layout'
-import { NODE_WIDTH } from './canvasLayout'
+import { NODE_WIDTH, portsOf, propertiesOf } from './canvasLayout'
+import { parseProgram } from './codeParser'
+import { renderComponent, schemaFromGraph } from './uiSchema'
 
 const registry = createRegistry(builtinBlocks)
 const empty = { nodes: [], connections: [] }
@@ -269,5 +271,102 @@ describe('tidying', () => {
     const { graph } = instantiate(recipeById('signin-form')!, empty, registry)
     expect(generateProgram(tidy(graph, registry), registry).code)
       .toBe(generateProgram(graph, registry).code)
+  })
+})
+
+describe('style properties', () => {
+  /**
+   * An event with one styled block hanging off it.
+   *
+   * The event matters: a block with nothing above it is an orphan, and
+   * orphans are deliberately left out of the generated program.
+   */
+  const styled = (values: Record<string, string | number>, type = 'ui.button') => {
+    resetIds()
+    const event = createNode('event.start', { x: 0, y: 0 })
+    const node = createNode(type, { x: 300, y: 0 })
+    node.values = { ...node.values, ...values }
+    const graph = addNode(addNode(empty as never, event), node)
+    const linked = connect(graph, registry, { node: event.id, port: 'exec' }, { node: node.id, port: 'exec' })
+    expect(linked.rejected).toBeUndefined()
+    return linked.graph
+  }
+
+  it('leaves the generated code alone when nothing is styled', () => {
+    const graph = styled({})
+    expect(generateProgram(graph, registry).code).toContain('render.button({ id: "submit", text: "Submit" })')
+  })
+
+  it('writes only what differs from the default', () => {
+    const code = generateProgram(styled({ radius: 20, background: 'accent' }), registry).code
+    expect(code).toContain('radius: 20')
+    expect(code).toContain('background: "accent"')
+    // Untouched properties stay out of the file.
+    expect(code).not.toContain('padding')
+    expect(code).not.toContain('width')
+  })
+
+  it('does not write a property that was set back to its default', () => {
+    const code = generateProgram(styled({ radius: 6 }), registry).code
+    expect(code).not.toContain('radius')
+  })
+
+  it('round-trips styles through the parser, byte for byte', () => {
+    const cases: Array<Record<string, string | number>> = [
+      { radius: 20 },
+      { padding: '10 18', background: 'raised', color: 'accent' },
+      { radius: 0, width: '100%', align: 'center' },
+    ]
+    for (const values of cases) {
+      const graph = styled(values)
+      const first = generateProgram(graph, registry).code
+      const parsed = parseProgram(first, registry)
+      expect(parsed.ok).toBe(true)
+      if (!parsed.ok) continue
+      expect(generateProgram(parsed.graph, registry).code).toBe(first)
+    }
+  })
+
+  it('round-trips a styled Text block, which carries no options bag by default', () => {
+    const graph = styled({ value: 'Hi', radius: 12, background: 'raised' }, 'ui.text')
+
+    const first = generateProgram(graph, registry).code
+    expect(first).toContain('render.text("Hi", { radius: 12, background: "raised" })')
+    const parsed = parseProgram(first, registry)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(generateProgram(parsed.graph, registry).code).toBe(first)
+  })
+
+  it('keeps a style port off the canvas: it is a property, not a socket', () => {
+    const inputs = portsOf(registry, 'ui.button', 'in').map((port) => port.id)
+    expect(inputs).toEqual(['exec', 'text', 'id'])
+    expect(propertiesOf(registry, 'ui.button').map((port) => port.id)).toContain('radius')
+    // Which means the block is no taller than it was before styling existed.
+    expect(nodeHeight(registry, 'ui.button')).toBe(nodeHeight(registry, 'ui.button'))
+  })
+
+  it('renders the style, resolving colour names to theme variables', () => {
+    const graph = styled({ radius: 20, background: 'accent', color: 'accent-ink', padding: '8 16' })
+    const component = schemaFromGraph(graph, registry).components
+      .find((entry) => entry.type === 'button')!
+    const html = renderComponent(component)
+    expect(html).toContain('border-radius:20px')
+    expect(html).toContain('background:var(--app-accent)')
+    expect(html).toContain('color:var(--app-accent-ink)')
+    expect(html).toContain('padding:8 16')
+  })
+
+  it('passes a colour through when it is not a token name', () => {
+    const graph = styled({ background: '#ff0000' })
+    const component = schemaFromGraph(graph, registry).components
+      .find((entry) => entry.type === 'button')!
+    expect(renderComponent(component)).toContain('background:#ff0000')
+  })
+
+  it('adds no style attribute at all when nothing is styled', () => {
+    const component = schemaFromGraph(styled({}), registry).components
+      .find((entry) => entry.type === 'button')!
+    expect(renderComponent(component)).not.toContain('style=')
   })
 })

@@ -30,7 +30,14 @@ export const round = (value: number) => Math.max(0, Math.round(value / GRID) * G
 export function portsOf(registry: BlockRegistry, type: string, side: 'in' | 'out'): Port[] {
   const definition = registry.get(type)
   if (!definition) return []
-  return side === 'in' ? definition.inputs : [...definition.outputs, ...(definition.slots ?? [])]
+  const ports = side === 'in' ? definition.inputs : [...definition.outputs, ...(definition.slots ?? [])]
+  // Properties are not sockets: they get no pin, no row, and no height.
+  return ports.filter((port) => !port.property)
+}
+
+/** Every input a block has, properties included. What the inspector edits. */
+export function propertiesOf(registry: BlockRegistry, type: string): Port[] {
+  return (registry.get(type)?.inputs ?? []).filter((port) => port.property)
 }
 
 /** Where a pin sits, given where its block is. */

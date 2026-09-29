@@ -10,11 +10,12 @@
 import { useEffect, useMemo, useState } from 'react'
 import {
   AlertTriangle, BoxSelect, Code2, Copy, Eraser, FileDown, Hammer, Hand, Info, LayoutGrid, Link2,
-  Link2Off, MousePointer2, Play, Redo2, Undo2, X,
+  Link2Off, MousePointer2, Play, Redo2, SlidersHorizontal, Undo2, X,
 } from 'lucide-react'
 
 import Editor from '../ConfiguredEditor'
 import { BuilderCanvas } from './BuilderCanvas'
+import { InspectorPanel } from './InspectorPanel'
 import { BuilderPreview } from './BuilderPreview'
 import { DataSchemaPanel } from './DataSchemaPanel'
 import { diagnosticsByNode } from '../../builder/integrity'
@@ -53,6 +54,7 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
   const diagnostics = useMemo(() => diagnosticsByNode(report), [report])
 
   const [tool, setTool] = useState<ToolId>('pick')
+  const [inspectorOpen, setInspectorOpen] = useState(true)
   const [rightPane, setRightPane] = useState<'code' | 'preview'>('code')
   const [bottomPane, setBottomPane] = useState<'integrity' | 'data'>('integrity')
   const [target, setTarget] = useState<CompileTarget>('web')
@@ -227,6 +229,14 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
           <Redo2 size={13} />
         </button>
         <button
+          aria-label={inspectorOpen ? 'Hide the inspector' : 'Show the inspector'}
+          title="The properties of whatever is selected"
+          className={inspectorOpen ? 'active' : ''}
+          onClick={() => setInspectorOpen((open) => !open)}
+        >
+          <SlidersHorizontal size={13} />
+        </button>
+        <button
           aria-label="Tidy the canvas"
           title="Lay the graph out left to right, one column per step"
           onClick={builder.tidy}
@@ -314,6 +324,16 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
             onLink={builder.link}
             onUnlink={builder.unlink}
           />
+
+          {inspectorOpen && (
+            <InspectorPanel
+              graph={graph}
+              registry={registry}
+              selection={selection}
+              readOnly={Boolean(parseError)}
+              onValue={builder.setValue}
+            />
+          )}
 
           <section className="builder-bottom">
             <header className="builder-tabs">

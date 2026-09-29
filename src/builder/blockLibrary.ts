@@ -10,7 +10,7 @@
  * way, which is what keeps the built-ins honest about the SDK.
  */
 
-import { defineBlock, type BlockDefinition } from './blockSchema'
+import { defineBlock, type BlockDefinition, type BlockNode, type Port } from './blockSchema'
 
 /** A string the generator can safely drop into source. */
 function quote(value: string): string {
@@ -164,6 +164,56 @@ const onClick = defineBlock({
 
 // -------------------------------------------------------------------- UI
 
+/**
+ * The style properties every visual block carries.
+ *
+ * They are ports marked `property`, so the inspector edits them, the
+ * generator writes them, the parser reads them back and undo covers them --
+ * with no new state anywhere. Colours are Graphene token names rather than
+ * hex, so a generated app re-themes with the design system instead of
+ * freezing today's palette into the source.
+ */
+const STYLE_PORTS: Port[] = [
+  { id: 'radius', label: 'Corner radius', type: 'Number', default: 6, property: true },
+  { id: 'padding', label: 'Padding', type: 'String', default: '', property: true },
+  { id: 'background', label: 'Background', type: 'String', default: '', property: true },
+  { id: 'color', label: 'Text colour', type: 'String', default: '', property: true },
+  { id: 'width', label: 'Width', type: 'String', default: '', property: true },
+  { id: 'align', label: 'Align', type: 'String', default: '', property: true },
+]
+
+const STYLE_KEYS = STYLE_PORTS.map((port) => port.id)
+
+/** Reads `key: value, key: value` back into raw expression text per key. */
+function readOptions(text: string): Record<string, string> {
+  const found: Record<string, string> = {}
+  for (const part of splitArguments(text)) {
+    const at = part.indexOf(':')
+    if (at < 0) continue
+    const key = part.slice(0, at).trim()
+    if (STYLE_KEYS.includes(key)) found[key] = part.slice(at + 1).trim()
+  }
+  return found
+}
+
+/**
+ * The style fragment for a generated call.
+ *
+ * Only what differs from the default is written. A file full of
+ * `radius: 6, padding: "", background: ""` is noise, and the round trip
+ * stays stable because the comparison is against the default rather than
+ * against "was it ever set".
+ */
+function styleFragment(node: BlockNode): string {
+  const parts: string[] = []
+  for (const port of STYLE_PORTS) {
+    const value = node.values[port.id]
+    if (value === undefined || value === '' || value === port.default) continue
+    parts.push(`${port.id}: ${typeof value === 'number' ? value : quote(String(value))}`)
+  }
+  return parts.length ? `, ${parts.join(', ')}` : ''
+}
+
 const uiButton = defineBlock({
   type: 'ui.button',
   label: 'Button',
@@ -173,10 +223,12 @@ const uiButton = defineBlock({
     { id: 'exec', label: 'Run', type: 'Exec' },
     { id: 'text', label: 'Text', type: 'String', default: 'Submit', required: true },
     { id: 'id', label: 'Element id', type: 'String', default: 'submit' },
+    ...STYLE_PORTS,
   ],
   outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
-  generate: ({ input }) => `render.button({ id: ${input('id')}, text: ${input('text')} })`,
-  parse: parseOptions('render.button', { id: 'id', text: 'text' }),
+  generate: ({ input, node }) =>
+    `render.button({ id: ${input('id')}, text: ${input('text')}${styleFragment(node)} })`,
+  parse: parseOptions('render.button', { id: 'id', text: 'text', ...Object.fromEntries(STYLE_KEYS.map((key) => [key, key])) }),
 })
 
 const uiText = defineBlock({
@@ -187,10 +239,25 @@ const uiText = defineBlock({
   inputs: [
     { id: 'exec', label: 'Run', type: 'Exec' },
     { id: 'value', label: 'Value', type: 'Any', default: 'Hello', required: true },
+    ...STYLE_PORTS,
   ],
   outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
-  generate: ({ input }) => `render.text(${input('value')})`,
-  parse: parseCall('render.text', ['value']),
+  generate: ({ input, node }) => {
+    const style = styleFragment(node)
+    // Styles arrive as a second argument only when there are any, so an
+    // unstyled line of text still generates `render.text(value)`.
+    return style
+      ? `render.text(${input('value')}, {${style.slice(1)} })`
+      : `render.text(${input('value')})`
+  },
+  parse: (statement) => {
+    // The styled form is checked first. The plain reader takes the first
+    // argument and ignores the rest, so trying it first would parse a
+    // styled call successfully and quietly drop every style on it.
+    const match = /^render\.text\((.*), \{ (.*) \}\)$/.exec(statement)
+    if (match) return { inputs: { value: match[1], ...readOptions(match[2]) } }
+    return parseCall('render.text', ['value'])(statement)
+  },
 })
 
 const uiInput = defineBlock({
@@ -202,11 +269,12 @@ const uiInput = defineBlock({
     { id: 'exec', label: 'Run', type: 'Exec' },
     { id: 'id', label: 'Element id', type: 'String', default: 'email', required: true },
     { id: 'placeholder', label: 'Placeholder', type: 'String', default: '' },
+    ...STYLE_PORTS,
   ],
   outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
-  generate: ({ input, symbol }) =>
-    `const ${symbol} = render.input({ id: ${input('id')}, placeholder: ${input('placeholder')} })`,
-  parse: parseOptions('render.input', { id: 'id', placeholder: 'placeholder' }),
+  generate: ({ input, node, symbol }) =>
+    `const ${symbol} = render.input({ id: ${input('id')}, placeholder: ${input('placeholder')}${styleFragment(node)} })`,
+  parse: parseOptions('render.input', { id: 'id', placeholder: 'placeholder', ...Object.fromEntries(STYLE_KEYS.map((key) => [key, key])) }),
 })
 
 /**

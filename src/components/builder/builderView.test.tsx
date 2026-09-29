@@ -999,3 +999,90 @@ describe('navigating the canvas', () => {
     expect(container.querySelectorAll('.builder-node.selected')).toHaveLength(1)
   })
 })
+
+describe('the inspector', () => {
+  const inspector = () => container.querySelector('.inspector')!
+  const field = (label: string) => container.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!
+
+  it('says what to do when nothing is selected', () => {
+    expect(inspector().textContent).toContain('Select a block')
+  })
+
+  it('shows the selected block, its inputs and its style', () => {
+    click(palette('Button'))
+    expect(inspector().textContent).toContain('Button')
+    expect(inspector().textContent).toContain('ui.button')
+    expect(field('Text of ui.button')).not.toBeNull()
+    expect(field('Corner radius of ui.button')).not.toBeNull()
+  })
+
+  it('writes a style straight into the generated code', () => {
+    click(palette('On App Start'))
+    click(palette('Button'))
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Button'))
+
+    type(field('Corner radius of ui.button'), '24')
+    expect(code()).toContain('radius: 24')
+
+    type(field('Padding of ui.button'), '10 20')
+    expect(code()).toContain('padding: "10 20"')
+  })
+
+  it('picks a theme colour from a swatch, and takes it off again', () => {
+    click(palette('On App Start'))
+    click(palette('Button'))
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Button'))
+
+    const accent = container.querySelector<HTMLButtonElement>('.inspector-swatches [aria-label="accent"]')!
+    click(accent)
+    expect(code()).toContain('background: "accent"')
+
+    click(container.querySelector<HTMLButtonElement>('.inspector-swatches [aria-label="accent"]')!)
+    expect(code()).not.toContain('background')
+  })
+
+  it('shows a wired input as wired rather than as an editable field', () => {
+    click(palette('On App Start'))
+    click(palette('Log'))
+    click(palette('Text Value'))
+    click(pin('Output Value of Text Value'))
+    click(pin('Input Value of Log'))
+
+    // Select the Log block by clicking its header.
+    fireMouse(nodes()[1], 'mousedown', { x: 60, y: 60 })
+    fireMouse(window, 'mouseup', { x: 60, y: 60 })
+    expect(inspector().querySelector('.inspector-field.wired')?.textContent).toContain('from a wire')
+  })
+
+  it('edits a property across a whole selection at once', () => {
+    click(palette('Button'))
+    click(palette('Button'))
+    press('a', { ctrlKey: true })
+
+    expect(inspector().textContent).toContain('2 blocks')
+    expect(inspector().textContent).toContain('Shared style')
+
+    type(field('Corner radius of ui.button'), '18')
+    const radii = [...container.querySelectorAll('.builder-node')].length
+    expect(radii).toBe(2)
+    // Both blocks took the change: undoing once puts both back.
+    press('z', { ctrlKey: true })
+    expect(inspector().textContent).toContain('2 blocks')
+  })
+
+  it('hides and shows from the toolbar', () => {
+    click(container.querySelector('[aria-label="Hide the inspector"]')!)
+    expect(container.querySelector('.inspector')).toBeNull()
+    click(container.querySelector('[aria-label="Show the inspector"]')!)
+    expect(container.querySelector('.inspector')).not.toBeNull()
+  })
+
+  it('keeps style ports off the canvas', () => {
+    click(palette('Button'))
+    // No pin is drawn for a property, so the block stays compact.
+    expect(container.querySelector('[aria-label="Input Corner radius of Button"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Input Text of Button"]')).not.toBeNull()
+  })
+})

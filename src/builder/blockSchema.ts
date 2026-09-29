@@ -19,6 +19,16 @@
 export type PortType = 'Exec' | 'String' | 'Number' | 'Boolean' | 'List' | 'Object' | 'Any'
 
 export type Port = {
+  /**
+   * A property rather than a socket: it holds a value, but nothing can be
+   * wired to it.
+   *
+   * Styling is expressed this way so it inherits everything ports already
+   * have -- undo, the file sync, code generation, the parser -- instead of
+   * arriving as a second kind of state sitting beside the graph. The canvas
+   * leaves these out of the pins it draws; the inspector shows them.
+   */
+  property?: boolean
   id: string
   label: string
   type: PortType
