@@ -62,7 +62,45 @@ function report(error, offset) {
 const root = document.getElementById('app')
 
 /** Puts an element on the page, or updates the one already there. */
-function upsert(id, create) {
+/**
+ * One render pass.
+ *
+ * Elements are reused by id, which is what lets a handler run again
+ * without the page doubling. But a component drawn inside a loop asks for
+ * the same id once per item, and reusing it there would collapse a list of
+ * fifty rows into one. So an id is claimed per pass: the first use is the
+ * id itself, the second becomes "id~2", and so on.
+ *
+ * Anything not claimed during a pass belonged to a previous one and is
+ * removed, which is how a list that shrank stops showing rows that are no
+ * longer in it.
+ */
+let claimed = new Map()
+let touched = new Set()
+let anonymous = 0
+
+function beginPass() {
+  claimed = new Map()
+  touched = new Set()
+  // Components with no id of their own are numbered by the order they are
+  // drawn in. Counting the elements already on the page instead -- which
+  // is what this did -- made the numbers climb on every pass, so a
+  // re-render replaced the page rather than updating it.
+  anonymous = 0
+}
+
+function endPass() {
+  for (const element of [...root.children]) {
+    if (!touched.has(element.id)) element.remove()
+  }
+}
+
+function upsert(baseId, create) {
+  const count = (claimed.get(baseId) || 0) + 1
+  claimed.set(baseId, count)
+  const id = count === 1 ? baseId : baseId + '~' + count
+  touched.add(id)
+
   let element = document.getElementById(id)
   if (!element) {
     element = create()
@@ -72,6 +110,11 @@ function upsert(id, create) {
   return element
 }
 
+/** True when an element is one of the copies a repeat produced. */
+function isCopyOf(id, baseId) {
+  return id === baseId || id.indexOf(baseId + '~') === 0
+}
+
 const render = {
   button: ({ id, text }) => {
     const element = upsert(String(id), () => document.createElement('button'))
@@ -79,7 +122,8 @@ const render = {
     return element
   },
   text: (value) => {
-    const element = upsert('text-' + (root.querySelectorAll('p').length + 1), () => document.createElement('p'))
+    anonymous += 1
+    const element = upsert('text-' + anonymous, () => document.createElement('p'))
     element.textContent = format(value)
     return element
   },
@@ -104,7 +148,10 @@ const render = {
  * draws it is drawn again.
  */
 function rerender() {
-  for (const handler of starts) void guarded(handler)
+  // A pass, so ids are claimed from scratch and rows that are no longer
+  // produced are cleared away afterwards.
+  beginPass()
+  Promise.all(starts.map((handler) => guarded(handler))).then(endPass)
 }
 
 const app = {
@@ -137,13 +184,18 @@ const app = {
   },
   onStart: (handler) => { starts.push(handler) },
   onClick: (target, handler) => {
+    // Delegated from the root rather than bound to one element: a button
+    // inside a repeat exists once per row, and every one of them is that
+    // button. Binding by id would only ever reach the first.
     const bind = () => {
-      const element = document.getElementById(String(target))
-      if (!element) {
-        log('No element with id "' + target + '" to click. Add a Button block with that id.')
-        return
+      const name = String(target)
+      if (!document.getElementById(name)) {
+        log('No element with id "' + name + '" to click. Add a Button block with that id.')
       }
-      element.addEventListener('click', () => { void guarded(handler) })
+      root.addEventListener('click', (event) => {
+        const hit = event.target && event.target.closest ? event.target.closest('[id]') : null
+        if (hit && isCopyOf(hit.id, name)) void guarded(handler)
+      })
     }
     bindings.push(bind)
   },
@@ -233,7 +285,8 @@ export function previewHtml({ document: ui, code }: PreviewOptions): string {
         );
         program(app, render, db, http, auth, storage, { log, warn: log, error: log }, lineOf, setOffset);
         bindings.forEach((bind) => bind());
-        Promise.all(starts.map((handler) => guarded(handler))).then(() => post({ kind: 'ready' }));
+        beginPass();
+        Promise.all(starts.map((handler) => guarded(handler))).then(() => { endPass(); post({ kind: 'ready' }); });
       } catch (error) {
         report(error, 0);
       }

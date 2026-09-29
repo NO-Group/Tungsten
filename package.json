@@ -81,7 +81,7 @@
     "wait-on": "^9.1.0"
   },
   "build": {
-    "appId": "ai.arena.tungsten",
+    "appId": "com.n_o_group.tungsten",
     "productName": "Tungsten IDE",
     "asar": true,
     "npmRebuild": false,

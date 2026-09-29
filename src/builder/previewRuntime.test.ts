@@ -94,7 +94,7 @@ describe('the preview, executed', () => {
     const { dom, messages } = await run(wired)
     expect(messages.some((message) => message.kind === 'log' && message.text === 'clicked')).toBe(false)
 
-    dom.window.document.getElementById('save')?.dispatchEvent(new dom.window.MouseEvent('click'))
+    dom.window.document.getElementById('save')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
     await settle()
 
     expect(messages).toContainEqual(expect.objectContaining({ kind: 'log', text: 'clicked' }))
@@ -128,7 +128,7 @@ describe('the preview, executed', () => {
     const { dom, messages } = await run(wired)
     const input = dom.window.document.getElementById('email') as HTMLInputElement
     input.value = 'ada@example.com'
-    dom.window.document.getElementById('save')?.dispatchEvent(new dom.window.MouseEvent('click'))
+    dom.window.document.getElementById('save')?.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
     await settle()
 
     expect(messages).toContainEqual(expect.objectContaining({ kind: 'log', text: 'ada@example.com' }))
@@ -203,5 +203,62 @@ describe('the preview, executed', () => {
     expect(messages.some((message) => (
       message.kind === 'log' && message.text.includes('No element with id "nowhere"')
     ))).toBe(true)
+  })
+})
+
+describe('lists that repeat', () => {
+  /** Query the seeded users table and draw a line per row. */
+  function repeater() {
+    const { graph, ids } = build(
+      [['event.start'], ['data.query'], ['logic.forEach'], ['ui.text']],
+      [
+        [0, 'exec', 1, 'exec'],
+        [1, 'exec', 2, 'exec'],
+        [1, 'rows', 2, 'list'],
+        [2, 'body', 3, 'exec'],
+        [2, 'item', 3, 'value'],
+      ],
+    )
+    return { graph: setNodeValue(graph, ids[1], 'table', 'users'), ids }
+  }
+
+  it('draws one element per row, not one element overwritten per row', async () => {
+    const { dom } = await run(repeater().graph)
+    const lines = [...dom.window.document.querySelectorAll('#app p')]
+
+    // The seeded table has two rows, so there are two paragraphs -- before
+    // this, the second upsert reused the first id and a list of fifty rows
+    // rendered as one.
+    expect(lines).toHaveLength(2)
+    expect(lines[0].textContent).not.toBe(lines[1].textContent)
+    // Anonymous components are numbered by the order they are drawn in.
+    expect(lines.map((line) => line.id)).toEqual(['text-1', 'text-2'])
+  })
+
+  it('clears rows that a later pass no longer produces', async () => {
+    const { dom } = await run(repeater().graph)
+    expect(dom.window.document.querySelectorAll('#app p')).toHaveLength(2)
+
+    // Re-running with an empty result must leave nothing behind.
+    dom.window.eval(`
+      db.select = async () => [];
+      rerender();
+    `)
+    await settle()
+    expect(dom.window.document.querySelectorAll('#app p')).toHaveLength(0)
+  })
+
+  it('keeps ids stable across passes, so nothing flickers', async () => {
+    const { dom } = await run(repeater().graph)
+    const before = [...dom.window.document.querySelectorAll('#app p')].map((line) => line.id)
+    const first = dom.window.document.getElementById(before[0])
+
+    dom.window.eval('rerender()')
+    await settle()
+
+    const after = [...dom.window.document.querySelectorAll('#app p')].map((line) => line.id)
+    expect(after).toEqual(before)
+    // The same element, updated, rather than a replacement.
+    expect(dom.window.document.getElementById(before[0])).toBe(first)
   })
 })

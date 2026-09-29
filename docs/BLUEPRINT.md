@@ -23,6 +23,26 @@ Three ways in, because different hands reach for different ones:
   the sequence, and snapping must never silently replace a connection you
   made on purpose.
 
+## Lists that repeat
+
+A component inside a loop is a list row, and it did not work: every
+renderer reused elements by id, so fifty rows drew into one element and
+the page showed the last record only. It looked like a rendering quirk; it
+was the difference between a mock-up and an application.
+
+The preview now renders in **passes**. An id is claimed once per pass —
+the first use is the id, the second becomes `id~2` — so a button with an
+id of its own repeats correctly inside a loop. Anonymous components are
+numbered by the order they are drawn in, and that counter resets each
+pass, so ids are **stable across re-renders**: the same element is
+updated rather than replaced. Anything not claimed during a pass belonged
+to a previous one and is removed, which is how a list that shrank stops
+showing rows that are no longer in it.
+
+Click handlers are delegated from the root rather than bound to one
+element, because a button inside a repeat exists once per row and every
+one of them is that button.
+
 ## What the app remembers
 
 Page and app variables, declared in the file itself:

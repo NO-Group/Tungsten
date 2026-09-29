@@ -176,3 +176,18 @@ describe('the checker and variables', () => {
     expect(checkIntegrity(graph, registry, []).diagnostics.filter((e) => e.code === 'unknown-variable')).toEqual([])
   })
 })
+
+describe('the application identity', () => {
+  it('ships under the group’s reverse-DNS id, everywhere it is read', async () => {
+    const { readFileSync } = await import('node:fs')
+    const { resolve } = await import('node:path')
+    const manifest = JSON.parse(readFileSync(resolve(process.cwd(), 'package.json'), 'utf8'))
+
+    // electron-builder derives the macOS bundle id, the Windows AppUserModelId
+    // and the Linux desktop entry from this one field, so it is the only
+    // place the identity needs to be right -- and the one place worth pinning.
+    expect(manifest.build.appId).toBe('com.n_o_group.tungsten')
+    expect(manifest.build.productName).toBe('Tungsten IDE')
+    expect(manifest.build.mac.category).toBe('public.app-category.developer-tools')
+  })
+})
