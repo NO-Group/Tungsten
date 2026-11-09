@@ -1,0 +1,184 @@
+import { Hammer, Plus, Trash2 } from 'lucide-react'
+
+import {
+  TARGETS,
+  describeTargets,
+  formatTree,
+  isValidIdentifier,
+  outputRoot,
+  type Organization,
+  type Project,
+  type TargetKind,
+} from '../../project/targets'
+
+export type TargetsPanelProps = {
+  organization: Organization
+  projectIndex: number
+  project: Project
+  /** Blocked by an integrity error: nothing can be built right now. */
+  blocked?: boolean
+  onOpenProject: (index: number) => void
+  onAddProject: () => void
+  onRemoveProject: (index: number) => void
+  onRenameOrganization: (name: string) => void
+  onChangeProject: (index: number, change: Partial<Project>) => void
+  onToggleTarget: (kind: TargetKind) => void
+  onBuild: (kind: TargetKind) => void
+}
+
+/**
+ * Organization → Project → Targets, as a panel.
+ *
+ * The tree on the left is not decoration. The single most useful thing to
+ * know about this builder is that one canvas becomes six applications, and
+ * a sentence claiming that is less convincing than the shape of it.
+ *
+ * Every field here feeds a real file: the organization name becomes the
+ * first half of the application identifier, the identifier becomes the
+ * Android `applicationId` and the iOS `PRODUCT_BUNDLE_IDENTIFIER`, and the
+ * version becomes `versionName`, `MARKETING_VERSION` and the npm version
+ * of the desktop builds. Nothing here is metadata for its own sake.
+ */
+export function TargetsPanel({
+  organization,
+  projectIndex,
+  project,
+  blocked,
+  onOpenProject,
+  onAddProject,
+  onRemoveProject,
+  onRenameOrganization,
+  onChangeProject,
+  onToggleTarget,
+  onBuild,
+}: TargetsPanelProps) {
+  const identifierValid = isValidIdentifier(project.identifier)
+
+  return (
+    <div className="targets-panel">
+      <div className="targets-tree">
+        <pre aria-label="Project tree">{formatTree(organization)}</pre>
+      </div>
+
+      <div className="targets-detail">
+        <div className="targets-row">
+          <label>
+            <span>Organization</span>
+            <input
+              key={organization.name}
+              aria-label="Organization name"
+              defaultValue={organization.name}
+              onBlur={(event) => onRenameOrganization(event.target.value)}
+            />
+          </label>
+
+          <label>
+            <span>Project</span>
+            <select
+              aria-label="Active project"
+              value={projectIndex}
+              onChange={(event) => onOpenProject(Number(event.target.value))}
+            >
+              {organization.projects.map((entry, index) => (
+                <option key={entry.identifier + index} value={index}>{entry.name}</option>
+              ))}
+            </select>
+          </label>
+
+          <button aria-label="Add a project" title="Add a project" onClick={() => onAddProject()}>
+            <Plus size={13} />
+          </button>
+          <button
+            aria-label="Delete this project"
+            title={organization.projects.length > 1
+              ? 'Delete this project'
+              : 'The last project cannot be deleted'}
+            onClick={() => onRemoveProject(projectIndex)}
+            disabled={organization.projects.length <= 1}
+          >
+            <Trash2 size={13} />
+          </button>
+        </div>
+
+        <div className="targets-row">
+          <label>
+            <span>Name</span>
+            <input
+              key={`${projectIndex}-${project.name}`}
+              aria-label="Project name"
+              defaultValue={project.name}
+              onBlur={(event) => onChangeProject(projectIndex, { name: event.target.value })}
+            />
+          </label>
+
+          <label>
+            <span>Identifier</span>
+            <input
+              key={`${projectIndex}-${project.identifier}`}
+              aria-label="Application identifier"
+              className={identifierValid ? undefined : 'invalid'}
+              defaultValue={project.identifier}
+              onBlur={(event) => onChangeProject(projectIndex, { identifier: event.target.value.trim() })}
+            />
+          </label>
+
+          <label>
+            <span>Version</span>
+            <input
+              key={`${projectIndex}-${project.version}`}
+              aria-label="Version"
+              defaultValue={project.version}
+              onBlur={(event) => onChangeProject(projectIndex, { version: event.target.value.trim() })}
+            />
+          </label>
+        </div>
+
+        {!identifierValid && (
+          <p className="targets-warning" role="alert">
+            Android and iOS will refuse “{project.identifier}”. An application
+            identifier is reverse-DNS: lowercase letters and digits, at least
+            one dot, no hyphens — com.example.myapp.
+          </p>
+        )}
+
+        <ul className="targets-list">
+          {TARGETS.map((target) => {
+            const enabled = project.targets.includes(target.kind)
+            return (
+              <li key={target.kind} className={enabled ? 'enabled' : undefined}>
+                <label>
+                  <input
+                    type="checkbox"
+                    aria-label={target.label}
+                    checked={enabled}
+                    onChange={() => onToggleTarget(target.kind)}
+                  />
+                  <span className="targets-label">{target.label}</span>
+                </label>
+                <span className="targets-meta">{target.language} · {target.framework}</span>
+                <code>{outputRoot(project, target.kind)}</code>
+                <button
+                  aria-label={`Build the ${target.label}`}
+                  title={blocked
+                    ? 'Fix the integrity errors first'
+                    : `${target.artifact}. Needs ${target.toolchain}.`}
+                  onClick={() => onBuild(target.kind)}
+                  disabled={blocked || !enabled}
+                >
+                  <Hammer size={12} /> Build
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+
+        <p className="targets-summary">
+          {project.name} ships to {describeTargets(project)}. One canvas, one
+          program, one source tree each.
+        </p>
+      </div>
+    </div>
+  )
+}
+
+export default TargetsPanel

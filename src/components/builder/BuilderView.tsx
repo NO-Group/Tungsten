@@ -23,6 +23,8 @@ import { DataSchemaPanel } from './DataSchemaPanel'
 import { diagnosticsByNode } from '../../builder/integrity'
 import { lineOfNode, nodeAtLine } from '../../builder/codeGenerator'
 import type { CompileTarget } from '../../builder/compile'
+import { targetInfo, type Project } from '../../project/targets'
+import { TargetsPanel } from './TargetsPanel'
 import type { BuilderState } from '../../builder/useBuilder'
 import { BUILDER_SYNC_PATH } from '../../builder/fileSync'
 import { TOOLS, toolForKey, type ToolId } from '../../builder/tools'
@@ -46,11 +48,22 @@ export type BuilderViewProps = {
   onClose: () => void
 }
 
-const TARGETS: Array<{ id: CompileTarget; label: string }> = [
-  { id: 'web', label: 'Web bundle' },
-  { id: 'mobile', label: 'Mobile source' },
-  { id: 'node', label: 'Local runner' },
-]
+/**
+ * What the toolbar's quick-build menu offers.
+ *
+ * The project's own targets come first -- those are what this app ships
+ * to -- followed by the two that are not platforms: the web bundle, which
+ * every project can produce, and the local runner for looking at a build
+ * without deploying it. The full list, with identifiers and per-target
+ * build buttons, is in the Targets tab.
+ */
+function quickTargets(project: Project): Array<{ id: CompileTarget; label: string }> {
+  return [
+    ...project.targets.map((kind) => ({ id: kind as CompileTarget, label: targetInfo(kind).label })),
+    ...(project.targets.includes('web') ? [] : [{ id: 'web' as CompileTarget, label: 'Web Target' }]),
+    { id: 'node' as CompileTarget, label: 'Local runner' },
+  ]
+}
 
 export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFile, onBuild, onClose }: BuilderViewProps) {
   const { graph, registry, report, program, code, parseError } = builder
@@ -60,8 +73,9 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
   const [tool, setTool] = useState<ToolId>('pick')
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [rightPane, setRightPane] = useState<'code' | 'preview'>('code')
-  const [bottomPane, setBottomPane] = useState<'integrity' | 'data' | 'state'>('integrity')
+  const [bottomPane, setBottomPane] = useState<'integrity' | 'data' | 'state' | 'targets'>('integrity')
   const [target, setTarget] = useState<CompileTarget>('web')
+  const targets = quickTargets(builder.project)
 
   /**
    * The keys that make a canvas quick.
@@ -301,7 +315,7 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
           value={target}
           onChange={(event) => setTarget(event.target.value as CompileTarget)}
         >
-          {TARGETS.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+          {targets.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
         </select>
         <button onClick={() => onBuild(target)} disabled={blocked}>
           <Hammer size={13} /> Build
@@ -408,6 +422,10 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
                 Data
                 <span className="builder-problem-counts">{builder.schema.tables.length} tables</span>
               </button>
+              <button className={bottomPane === 'targets' ? 'active' : ''} onClick={() => setBottomPane('targets')}>
+                Targets
+                <span className="builder-problem-counts">{builder.project.targets.length}</span>
+              </button>
             </header>
 
             {bottomPane === 'integrity' ? (
@@ -444,6 +462,20 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
                 onType={builder.setVariableType}
                 onInitial={builder.setVariableInitial}
                 onRemove={builder.removeVariable}
+              />
+            ) : bottomPane === 'targets' ? (
+              <TargetsPanel
+                organization={builder.organization}
+                projectIndex={builder.projectIndex}
+                project={builder.project}
+                blocked={blocked}
+                onOpenProject={builder.openProject}
+                onAddProject={() => builder.addProject('New Project')}
+                onRemoveProject={builder.removeProject}
+                onRenameOrganization={builder.setOrganizationName}
+                onChangeProject={builder.setProject}
+                onToggleTarget={builder.toggleTarget}
+                onBuild={onBuild}
               />
             ) : (
               <DataSchemaPanel

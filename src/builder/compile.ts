@@ -22,6 +22,16 @@ import { uiThemeDart } from './uiTokens'
 import { renderDocumentBody, schemaFromGraph, type ComponentSchema, type UiDocument } from './uiSchema'
 import { DEFAULT_SCREENS, homeScreen, screenOf, type Screen } from './screens'
 import type { AppVariable } from './appState'
+import {
+  defaultOrganization,
+  slug,
+  targetInfo,
+  type Project,
+  type TargetKind,
+} from '../project/targets'
+import { androidFiles } from './targets/android'
+import { iosFiles } from './targets/ios'
+import { desktopFiles, isDesktopKind } from './targets/desktop'
 
 export const IR_VERSION = 1
 
@@ -153,7 +163,32 @@ export function buildIr(
   }
 }
 
-export type CompileTarget = 'web' | 'mobile' | 'node'
+/**
+ * A target is a platform from the project tree, plus one that is not a
+ * platform at all: `node`, the local runner, which exists so a build can
+ * be looked at without deploying it anywhere.
+ */
+export type CompileTarget = TargetKind | 'node'
+
+/**
+ * The project a build is for, when the caller has not said.
+ *
+ * The same one `useBuilder` starts a fresh workspace with, so a build from
+ * a test and a build from the workbench land in the same place.
+ */
+export const DEFAULT_PROJECT: Project = defaultOrganization().projects[0]
+
+/**
+ * Where a target's source tree is written.
+ *
+ * Every target gets its own directory under the project, so building all
+ * six writes six complete, independent source trees and none of them can
+ * overwrite another's `README.md`.
+ */
+export function targetRoot(project: Project, target: CompileTarget): string {
+  const directory = target === 'node' ? 'runner' : targetInfo(target).directory
+  return `targets/${slug(project.name) || 'app'}/${directory}`
+}
 
 export type CompiledFile = { path: string; contents: string }
 
@@ -176,6 +211,15 @@ export type CompileInput = {
   state?: readonly AppVariable[]
   screens?: readonly Screen[]
   target: CompileTarget
+  /**
+   * Who this is being built for and what it is called.
+   *
+   * Optional so every existing caller and test keeps working, but not
+   * cosmetic: the application id, the version and the package name all
+   * come from here, and on Android and iOS they are the difference
+   * between a build and an error.
+   */
+  project?: Project
 }
 
 /** Dart for one IR statement, for the mobile target. */
@@ -255,28 +299,40 @@ function dartWidget(component: ComponentSchema): string {
   return `        Text(${JSON.stringify(String(component.properties.value ?? ''))}),`
 }
 
-function webFiles(ir: Ir, ui: UiDocument, code: string, schema: DataSchema): CompiledFile[] {
+/**
+ * The interface, as data.
+ *
+ * A single-screen app writes a flat component list so the common case
+ * stays readable; a multi-screen app writes the screens and which one is
+ * home. Shared by the web target and the three desktop targets, which
+ * render with it.
+ */
+function uiSchemaJson(ir: Ir): string {
+  return `${JSON.stringify(
+    ir.screens.length > 1
+      ? { home: ir.home, screens: ir.screens.map((screen) => ({ name: screen.name, components: screen.components })) }
+      : { components: ir.components },
+    null,
+    2,
+  )}\n`
+}
+
+function webFiles(root: string, ir: Ir, ui: UiDocument, code: string, schema: DataSchema): CompiledFile[] {
   const files: CompiledFile[] = [
     {
-      path: 'build/web/index.html',
+      path: `${root}/index.html`,
       contents: previewHtml({ document: ui, code, screen: ir.home }),
     },
     {
-      path: 'build/web/app.ts',
+      path: `${root}/app.ts`,
       contents: code,
     },
     {
-      path: 'build/web/ui.schema.json',
-      contents: `${JSON.stringify(
-        ir.screens.length > 1
-          ? { home: ir.home, screens: ir.screens.map((screen) => ({ name: screen.name, components: screen.components })) }
-          : { components: ir.components },
-        null,
-        2,
-      )}\n`,
+      path: `${root}/ui.schema.json`,
+      contents: uiSchemaJson(ir),
     },
     {
-      path: 'build/web/README.md',
+      path: `${root}/README.md`,
       contents: `# Built by the Tungsten builder
 
 - \`index.html\` runs on its own: open it, or serve the folder with any static server.
@@ -290,8 +346,8 @@ ${ir.events.length} event handler${ir.events.length === 1 ? '' : 's'}, ${ir.comp
 
   if (schema.tables.length) {
     files.push(
-      { path: 'build/web/migrations/0001_init.sql', contents: createMigration(schema) },
-      { path: 'build/web/data/fetchers.ts', contents: createFetchers(schema) },
+      { path: `${root}/migrations/0001_init.sql`, contents: createMigration(schema) },
+      { path: `${root}/data/fetchers.ts`, contents: createFetchers(schema) },
     )
   }
 
@@ -303,7 +359,7 @@ function dartName(nodeId: string): string {
   return `_handle_${nodeId.replace(/[^A-Za-z0-9_]/g, '_')}`
 }
 
-function mobileFiles(ir: Ir): CompiledFile[] {
+function mobileFiles(root: string, ir: Ir, project: Project): CompiledFile[] {
   const names = new Map<string, string>()
   const handlers = ir.events.map((event) => {
     const body = event.body.flatMap((statement) => dartStatement(statement, '    ', names))
@@ -334,7 +390,7 @@ function mobileFiles(ir: Ir): CompiledFile[] {
   })
 
   return [{
-    path: 'build/mobile/lib/main.dart',
+    path: `${root}/lib/main.dart`,
     contents: `// Generated by the Tungsten builder. Flutter source, not a wrapper:
 // the widgets below are the interface, and the handlers are the blocks.
 
@@ -444,7 +500,7 @@ ${handlers.join('\n\n')}
 }
 `,
   }, {
-    path: 'build/mobile/lib/runtime.dart',
+    path: `${root}/lib/runtime.dart`,
     contents: `// The three services the generated handlers call. Point them at your
 // backend; nothing above this line needs to change when you do.
 
@@ -468,15 +524,53 @@ final api = Api();
 final auth = Auth();
 final storage = Storage();
 `,
+  }, {
+    // Without this the folder is Dart source rather than a Flutter project,
+    // and `flutter run` has nothing to read.
+    path: `${root}/pubspec.yaml`,
+    contents: `name: ${(slug(project.name) || 'app').replace(/-/g, '_')}
+description: ${project.name}, built by the Tungsten builder.
+publish_to: none
+version: ${project.version}+1
+
+environment:
+  sdk: ">=3.4.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+`,
+  }, {
+    path: `${root}/README.md`,
+    contents: `# ${project.name} — Cross-Platform Mobile Target
+
+Generated by the Tungsten builder. One Flutter source tree that builds for
+both phones.
+
+\`\`\`bash
+flutter create . --project-name ${(slug(project.name) || 'app').replace(/-/g, '_')}  # once, to add the ios/ and android/ shells
+flutter run
+\`\`\`
+
+- \`lib/main.dart\` is the interface and the handlers your blocks became.
+- \`lib/runtime.dart\` holds the backend stubs. Replace the bodies, keep the
+  signatures.
+
+If you want native source instead of one shared tree, build the Android and
+iOS targets: same graph, Kotlin and Swift out the other end.
+`,
   }]
 }
 
-function nodeFiles(ir: Ir, code: string, schema: DataSchema): CompiledFile[] {
+function nodeFiles(root: string, ir: Ir, code: string, schema: DataSchema): CompiledFile[] {
   const files: CompiledFile[] = [
     {
-      path: 'build/node/server.mjs',
+      path: `${root}/server.mjs`,
       contents: `// A local runner: serves the built web target on http://localhost:4173.
-// No dependencies, so \`node build/node/server.mjs\` is the whole setup.
+// No dependencies, so \`node server.mjs\` in this folder is the whole setup.
 
 import { createServer } from 'node:http'
 import { readFile } from 'node:fs/promises'
@@ -500,7 +594,7 @@ createServer(async (request, response) => {
 `,
     },
     {
-      path: 'build/node/package.json',
+      path: `${root}/package.json`,
       contents: `${JSON.stringify({
         name: 'tungsten-build',
         private: true,
@@ -508,11 +602,11 @@ createServer(async (request, response) => {
         scripts: { start: 'node server.mjs' },
       }, null, 2)}\n`,
     },
-    { path: 'build/node/app.ts', contents: code },
+    { path: `${root}/app.ts`, contents: code },
   ]
 
   if (schema.tables.length) {
-    files.push({ path: 'build/node/migrations/0001_init.sql', contents: createMigration(schema) })
+    files.push({ path: `${root}/migrations/0001_init.sql`, contents: createMigration(schema) })
   }
 
   return files
@@ -531,6 +625,7 @@ export function compile({
   state = [],
   screens = DEFAULT_SCREENS,
   target,
+  project = DEFAULT_PROJECT,
 }: CompileInput): CompileResult {
   const report = checkIntegrity(graph, registry, state, screens)
   const errors = report.diagnostics.filter((entry) => entry.severity === 'error')
@@ -552,20 +647,56 @@ export function compile({
   const ui: UiDocument = { components: ir.screens.find((screen) => screen.name === ir.home)?.components ?? ir.components }
   const { code } = generateProgram(graph, registry, state, screens)
 
-  const files = target === 'mobile'
-    ? mobileFiles(ir)
-    : target === 'node'
-      ? nodeFiles(ir, code, schema)
-      : webFiles(ir, ui, code, schema)
+  const root = targetRoot(project, target)
+  const files = filesFor({ target, root, ir, ui, code, schema, project })
 
   return {
     ok: true,
     target,
     files,
-    summary: `${files.length} file${files.length === 1 ? '' : 's'} for ${target}${
-      screens.length > 1 ? ` (${screens.length} screens)` : ''
-    }: ${files.map((file) => file.path.split('/').pop()).join(', ')}`,
+    summary: `${files.length} file${files.length === 1 ? '' : 's'} for ${
+      target === 'node' ? 'the local runner' : targetInfo(target).label
+    }${screens.length > 1 ? ` (${screens.length} screens)` : ''}: ${
+      files.map((file) => file.path.split('/').pop()).join(', ')
+    }`,
   }
+}
+
+type EmitInput = {
+  target: CompileTarget
+  root: string
+  ir: Ir
+  ui: UiDocument
+  code: string
+  schema: DataSchema
+  project: Project
+}
+
+/**
+ * The one place that knows which emitter belongs to which target.
+ *
+ * Desktop targets render with the web output rather than a renderer of
+ * their own, so they are built from the web files; the phones get real
+ * native source. Everything is prefixed with the target's own root here,
+ * so no emitter has to remember where it is being written.
+ */
+function filesFor({ target, root, ir, ui, code, schema, project }: EmitInput): CompiledFile[] {
+  const at = (files: CompiledFile[]) => files.map((file) => ({ ...file, path: `${root}/${file.path}` }))
+
+  if (target === 'android') return at(androidFiles(ir, project))
+  if (target === 'ios') return at(iosFiles(ir, project))
+  if (isDesktopKind(target)) {
+    return at(desktopFiles({
+      html: previewHtml({ document: ui, code, screen: ir.home }),
+      code,
+      schema: uiSchemaJson(ir),
+      project,
+      kind: target,
+    }))
+  }
+  if (target === 'mobile') return mobileFiles(root, ir, project)
+  if (target === 'node') return nodeFiles(root, ir, code, schema)
+  return webFiles(root, ir, ui, code, schema)
 }
 
 /** The static markup of the current interface, for a quick look. */

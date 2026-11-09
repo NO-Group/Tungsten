@@ -1,0 +1,171 @@
+/**
+ * The Windows, macOS and Linux Desktop Targets.
+ *
+ * One emitter, three targets. The three differ in exactly two ways -- the
+ * installer format and which machine can produce it -- and pretending
+ * otherwise by writing three nearly identical generators would guarantee
+ * that a fix lands in one of them and not the others.
+ *
+ * Unlike the phone targets, this one renders with the web output. That is
+ * a deliberate difference rather than a shortcut: a desktop app is a
+ * window, the generated interface is already a document, and Tungsten
+ * itself ships exactly this way. Writing a second native renderer for
+ * three platforms that all have the same one would be work with no user
+ * on the other end of it.
+ */
+
+import { appIdFor, targetInfo, slug, type Project, type TargetKind } from '../../project/targets'
+import type { CompiledFile } from '../compile'
+
+export type DesktopKind = Extract<TargetKind, 'windows' | 'macos' | 'linux'>
+
+/** Widened to `string` so a target read back from disk can be tested too. */
+export function isDesktopKind(kind: string): kind is DesktopKind {
+  return kind === 'windows' || kind === 'macos' || kind === 'linux'
+}
+
+/** What electron-builder is asked to produce, per platform. */
+const BUILDERS: Record<DesktopKind, { key: string; config: Record<string, unknown>; command: string; host: string }> = {
+  windows: {
+    key: 'win',
+    config: { target: [{ target: 'nsis', arch: ['x64'] }, { target: 'portable', arch: ['x64'] }] },
+    command: 'npm run dist -- --win',
+    host: 'Windows, or any machine with Wine installed',
+  },
+  macos: {
+    key: 'mac',
+    config: {
+      target: [{ target: 'dmg', arch: ['universal'] }, { target: 'zip', arch: ['universal'] }],
+      category: 'public.app-category.productivity',
+    },
+    command: 'npm run dist -- --mac',
+    host: 'macOS — Apple will not let anything else sign or notarise a build',
+  },
+  linux: {
+    key: 'linux',
+    config: { target: ['AppImage', 'deb'], category: 'Utility' },
+    command: 'npm run dist -- --linux',
+    host: 'Linux, or any machine with Docker',
+  },
+}
+
+export type DesktopInput = {
+  /** The rendered interface, as produced for the web target. */
+  html: string
+  /** The program the blocks generated. */
+  code: string
+  /** The interface as data. */
+  schema: string
+  project: Project
+  kind: DesktopKind
+}
+
+export function desktopFiles({ html, code, schema, project, kind }: DesktopInput): CompiledFile[] {
+  const builder = BUILDERS[kind]
+  const info = targetInfo(kind)
+  const name = slug(project.name) || 'app'
+  const appId = appIdFor(project, kind)
+
+  const packageJson = {
+    name,
+    productName: project.name,
+    version: project.version,
+    description: `${project.name}, built by the Tungsten builder.`,
+    main: 'main.cjs',
+    private: true,
+    scripts: {
+      start: 'electron .',
+      dist: 'electron-builder',
+    },
+    devDependencies: {
+      electron: '^34.0.0',
+      'electron-builder': '^25.1.8',
+    },
+    build: {
+      appId: kind === 'linux' ? `com.tungsten.${name}` : appId,
+      productName: project.name,
+      files: ['main.cjs', 'app/**'],
+      directories: { output: 'out' },
+      [builder.key]: builder.config,
+    },
+  }
+
+  return [
+    { path: 'app/index.html', contents: html },
+    { path: 'app/app.ts', contents: code },
+    { path: 'app/ui.schema.json', contents: schema },
+    {
+      path: 'main.cjs',
+      contents: `// The window. Everything else is in app/.
+//
+// Node integration is off and context isolation is on, which means the
+// generated interface runs with no more privilege than a web page. If your
+// app later needs the filesystem, add a preload script with a narrow API
+// rather than turning this back on.
+
+const { app, BrowserWindow, shell } = require('electron')
+const path = require('node:path')
+
+function createWindow() {
+  const window = new BrowserWindow({
+    width: 1100,
+    height: 760,
+    backgroundColor: '#111311',
+    autoHideMenuBar: true,
+    webPreferences: {
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  })
+
+  window.loadFile(path.join(__dirname, 'app', 'index.html'))
+
+  // A link to somewhere else is a link to a browser, not a second window
+  // of this app pretending to be one.
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    void shell.openExternal(url)
+    return { action: 'deny' }
+  })
+}
+
+app.whenReady().then(() => {
+  createWindow()
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('window-all-closed', () => {
+  // macOS keeps the process alive when the last window closes; everywhere
+  // else, closing the window means quitting.
+  if (process.platform !== 'darwin') app.quit()
+})
+`,
+    },
+    { path: 'package.json', contents: `${JSON.stringify(packageJson, null, 2)}\n` },
+    {
+      path: 'README.md',
+      contents: `# ${project.name} — ${info.label}
+
+Generated by the Tungsten builder.
+
+\`\`\`bash
+npm install
+npm start              # run it
+${builder.command}   # ${info.artifact}, into out/
+\`\`\`
+
+Build host: ${builder.host}.
+
+- \`app/\` is the interface and the program, the same files the web target
+  produces — the desktop targets render with the web renderer on purpose.
+  A window is a window.
+- \`main.cjs\` is the Electron shell: one window, no node integration, links
+  opened in the real browser.
+
+Application id \`${appId}\`, version ${project.version}, from the project in
+the Targets panel.
+`,
+    },
+  ]
+}

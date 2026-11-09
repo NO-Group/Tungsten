@@ -376,14 +376,17 @@ describe('the builder, from the workbench', () => {
       .toContain('app.onStart(async () => {')
   })
 
-  it('builds a web bundle into the workspace', () => {
+  it('builds a web bundle into the workspace', async () => {
     openBuilder()
     click(paletteItem('On App Start'))
     click([...container.querySelectorAll('.builder-toolbar button')]
       .find((button) => button.textContent?.includes('Build'))!)
+    // The editor is imported lazily, and closing the builder is the first
+    // thing in this test that mounts it.
+    await act(async () => undefined)
     expect(container.querySelector('[data-testid="editor"]')?.getAttribute('data-path'))
-      .toContain('build/web/index.html')
-    expect(text()).toContain('Built 4 files for web')
+      .toContain('targets/my-app/web/index.html')
+    expect(text()).toContain('Built 4 files for Web Target')
   })
 
   it('refuses to build a graph the checker rejects', () => {

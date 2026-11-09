@@ -405,6 +405,59 @@ instead of guessing. An integrity checker refuses to compile a graph with a
 type mismatch, a cycle or an unreachable read, and every diagnostic names the
 fix. See **[docs/BLUEPRINT.md](docs/BLUEPRINT.md)**.
 
+## One canvas, six applications
+
+A project is not a platform. The graph on the canvas is a program, and the
+platforms it can be carried to are a list you choose:
+
+```
+[ Organization ]
+        └── [ Project ]
+                ├── Android App Target          Kotlin, Jetpack Compose
+                ├── iOS App Target              Swift, SwiftUI
+                ├── Cross-Platform Mobile Target  Dart, Flutter
+                ├── Windows Desktop Target      Electron → NSIS, portable .exe
+                ├── macOS Desktop Target        Electron → universal .dmg, .zip
+                └── Linux Desktop Target        Electron → AppImage, .deb
+```
+
+The **Targets** tab at the bottom of the builder is where this lives. Tick a
+platform to add it, press Build on its row to write its source tree, or run
+**Builder: Build Every Target in the Project** from the command palette to
+write all of them at once. Each target gets its own directory —
+`targets/<project>/android`, `targets/<project>/ios`, and so on — so no two
+builds can overwrite each other.
+
+The organization exists for one practical reason: every mobile and desktop
+platform identifies an application by a reverse-DNS string, and the only
+honest source for the first half of that string is who you are. An
+organization called Acme and a project called Timer give `com.acme.timer`,
+which reaches the Android `applicationId`, the iOS
+`PRODUCT_BUNDLE_IDENTIFIER` and the desktop `appId` without being typed
+three times. Type your own identifier and a later rename will not overwrite
+it. A Linux package name is the slug, `timer`, because `com.acme.timer` as a
+.deb name is wrong.
+
+### What is actually generated
+
+Everything is lowered once into an IR — events, statements, components,
+screens, tables — and each target is a function over that IR. The phone
+targets produce **native source, not a web view**: Compose composables and
+SwiftUI views, with your handlers as `suspend fun` and `async func`. The
+three desktop targets share one emitter and render with the web output,
+which is a deliberate difference rather than a shortcut — a window is a
+window, and Tungsten itself ships exactly this way.
+
+Backend calls (`select`, `insert`, `request`, `signUp`, `upload`) are
+generated against a small `Runtime` file of stubs in each language. The
+builder knows the shape of the call your blocks make but not which backend
+you intend to use, and guessing would produce an app that pretends to work.
+Replace the bodies, keep the signatures, and the generated handlers keep
+compiling.
+
+Each tree comes with a README saying exactly which commands turn it into an
+artifact and which machine can run them.
+
 ## Extending Tungsten
 
 Four extension points, all read from the workspace you have open:

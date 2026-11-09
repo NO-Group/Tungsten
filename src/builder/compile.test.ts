@@ -238,9 +238,9 @@ describe('compilation', () => {
     const result = compile({ graph, registry, target: 'web' })
     expect(result.ok).toBe(true)
     const paths = result.ok ? result.files.map((file) => file.path) : []
-    expect(paths).toContain('build/web/index.html')
-    expect(paths).toContain('build/web/app.ts')
-    expect(paths).toContain('build/web/ui.schema.json')
+    expect(paths).toContain('targets/my-app/web/index.html')
+    expect(paths).toContain('targets/my-app/web/app.ts')
+    expect(paths).toContain('targets/my-app/web/ui.schema.json')
     const html = result.ok ? result.files.find((file) => file.path.endsWith('index.html'))!.contents : ''
     expect(html).toContain('<button id="save"')
   })
@@ -254,8 +254,8 @@ describe('compilation', () => {
       target: 'web',
     })
     const paths = result.ok ? result.files.map((file) => file.path) : []
-    expect(paths).toContain('build/web/migrations/0001_init.sql')
-    expect(paths).toContain('build/web/data/fetchers.ts')
+    expect(paths).toContain('targets/my-app/web/migrations/0001_init.sql')
+    expect(paths).toContain('targets/my-app/web/data/fetchers.ts')
   })
 
   it('exports mobile source from the same graph', () => {

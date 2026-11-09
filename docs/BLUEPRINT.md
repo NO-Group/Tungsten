@@ -414,6 +414,67 @@ still works, the user decides when to take it — so the same slot reads
 reloads once it has. The same slot reads *Offline* when the network goes
 away. One place to look, three kinds of news.
 
+## A project is not a platform
+
+The compiler always had an IR with several targets behind it. What it did
+not have was anyone to build *for*: `compile({target: 'web'})` wrote into
+`build/web/` and that was the whole model. Fine for one platform. Useless
+the moment someone wants the same program on a phone, because a phone does
+not want a folder — it wants an application id, a version, a package name,
+a manifest, and a toolchain that agrees with all four.
+
+So there is now a hierarchy above the canvas:
+
+    [ Organization ]
+            └── [ Project ]
+                    ├── Android App Target
+                    ├── iOS App Target
+                    ├── Cross-Platform Mobile Target
+                    ├── Windows Desktop Target
+                    ├── macOS Desktop Target
+                    └── Linux Desktop Target
+
+The organization is not an org chart. It exists because every one of those
+platforms identifies an application by a reverse-DNS string whose first
+half is *who you are*, and the alternative to deriving it is asking the
+user to type `com.acme.timer` into three places and keep them in step. Acme
+plus Timer gives `com.acme.timer`, which lands in `applicationId`,
+`PRODUCT_BUNDLE_IDENTIFIER` and the electron-builder `appId` at once.
+Rename the organization and derived identifiers follow; identifiers that
+were typed by hand do not, because a hand-typed identifier is a decision
+and silently overwriting it would be discovered in a store listing.
+
+Three things here are worth defending.
+
+**The phones get native source.** Kotlin and Compose, Swift and SwiftUI,
+with the blocks' handlers as `suspend fun` and `async func` and the
+interface as real composables and views. Shipping a web view in a phone
+shell would have been a tenth of the work and would have made the whole
+exercise a lie: the point of compiling to a target is that the result
+belongs on the platform.
+
+**The three desktop targets share one emitter and render with the web
+output.** This looks like the opposite decision and is the same one. A
+desktop app is a window; the generated interface is already a document;
+Tungsten itself ships this way. The three differ in exactly two respects —
+the installer format and which machine can produce it — so they are one
+function with a table of differences, not three generators that drift
+apart. Writing a second native renderer for three platforms that all have
+the same one would be work with no user at the end of it.
+
+**The backend calls are stubs, loudly.** Every target emits a `Runtime`
+file whose `select`, `insert`, `request`, `signUp` and `upload` print what
+they were asked to do and return nothing. The builder knows the *shape* of
+the call a block makes; it does not know which backend is meant, and an app
+that pretends to work is worse than one that admits it is not wired up yet.
+The signatures are the contract: replace the bodies and the generated
+handlers keep compiling.
+
+One more consequence, which is the real test of whether the IR was worth
+having: adding six targets required no change to the canvas, the parser,
+the generator, the integrity checker or the preview. A target is a function
+over the IR. The number of things that know what a block is did not go up.
+
 ## The three deliberate deviations
 
 **Tauri and Rust → Electron.** Tungsten already had a working Electron shell

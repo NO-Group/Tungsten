@@ -104,6 +104,7 @@ import { DICTIONARY_DIRECTORY, EXAMPLE_COMMAND_FILE, loadWorkspaceCommands } fro
 import { createSocketBackend, ipcBackend, probeShellServer } from './terminal/ptyClient'
 import type { ShellInfo } from './terminal/ptyProtocol'
 import type { CompileTarget } from './builder/compile'
+import { describeTargets } from './project/targets'
 import { TerminalPanel } from './components/panel/TerminalPanel'
 import {
   type EditorGroupLayout,
@@ -804,6 +805,35 @@ export default function App({ onReady }: AppProps = {}) {
     notify(`Built ${result.summary}`)
   }, [builder, notify, openFile, writeGeneratedFiles])
 
+  /**
+   * Builds every target the project declares, in one go.
+   *
+   * Six source trees from one canvas is the claim the Targets panel makes;
+   * this is the command that makes it a single action rather than six.
+   * A refusal from the integrity checker stops the whole thing, because a
+   * partial build across six platforms is worse than none.
+   */
+  const buildEveryTarget = useCallback(() => {
+    const targets = builder.project.targets
+    if (!targets.length) {
+      notify('This project has no targets. Add one in the Targets tab.')
+      return
+    }
+    const written: Array<{ path: string; contents: string }> = []
+    for (const kind of targets) {
+      const result = builder.build(kind)
+      if (!result.ok) {
+        notify(result.reason)
+        return
+      }
+      written.push(...result.files)
+    }
+    writeGeneratedFiles(written)
+    setBuilderOpen(false)
+    openFile(written[0].path)
+    notify(`Built ${targets.length} targets for ${builder.project.name}: ${written.length} files`)
+  }, [builder, notify, openFile, writeGeneratedFiles])
+
   /** Drops a worked example into `plugins/`, so the SDK has a starting point. */
   const createExamplePlugin = useCallback(() => {
     const path = `${PLUGIN_DIRECTORY}/notify${PLUGIN_SUFFIX}`
@@ -1157,8 +1187,14 @@ export default function App({ onReady }: AppProps = {}) {
       { id: 'workbench.action.toggleGroupOrientation', label: 'View: Toggle Editor Group Layout', detail: layout.orientation === 'horizontal' ? 'Switch to stacked' : 'Switch to side-by-side', icon: SplitSquareHorizontal, when: 'multipleGroups', action: () => setLayout((current) => ({ ...current, orientation: current.orientation === 'horizontal' ? 'vertical' : 'horizontal' })) },
       { id: 'builder.open', label: 'Builder: Open Visual Builder', detail: `${builder.graph.nodes.length} blocks on the canvas`, icon: Puzzle, action: () => { setBuilderOpen(true); showView('builder') } },
       { id: 'builder.close', label: 'Builder: Back to the Editor', detail: 'Leave the canvas, keep the graph', icon: Code2, when: 'builderOpen', action: () => setBuilderOpen(false) },
-      { id: 'builder.buildWeb', label: 'Builder: Build the Web Bundle', detail: 'index.html, the program, and the UI schema', icon: Hammer, action: () => buildBuilderTarget('web') },
-      { id: 'builder.buildMobile', label: 'Builder: Export Mobile Source', detail: 'Flutter widgets and handlers from the same graph', icon: Hammer, action: () => buildBuilderTarget('mobile') },
+      { id: 'builder.buildWeb', label: 'Builder: Build the Web Target', detail: 'index.html, the program, and the UI schema', icon: Hammer, action: () => buildBuilderTarget('web') },
+      { id: 'builder.buildAndroid', label: 'Builder: Build the Android App Target', detail: 'A Gradle project: Kotlin and Jetpack Compose', icon: Hammer, action: () => buildBuilderTarget('android') },
+      { id: 'builder.buildIos', label: 'Builder: Build the iOS App Target', detail: 'SwiftUI sources and an XcodeGen spec', icon: Hammer, action: () => buildBuilderTarget('ios') },
+      { id: 'builder.buildMobile', label: 'Builder: Build the Cross-Platform Mobile Target', detail: 'One Flutter tree for both phones', icon: Hammer, action: () => buildBuilderTarget('mobile') },
+      { id: 'builder.buildWindows', label: 'Builder: Build the Windows Desktop Target', detail: 'An Electron shell and an NSIS installer config', icon: Hammer, action: () => buildBuilderTarget('windows') },
+      { id: 'builder.buildMacos', label: 'Builder: Build the macOS Desktop Target', detail: 'An Electron shell and a universal .dmg config', icon: Hammer, action: () => buildBuilderTarget('macos') },
+      { id: 'builder.buildLinux', label: 'Builder: Build the Linux Desktop Target', detail: 'An Electron shell, AppImage and .deb', icon: Hammer, action: () => buildBuilderTarget('linux') },
+      { id: 'builder.buildAll', label: 'Builder: Build Every Target in the Project', detail: builder.project.targets.length ? `${builder.project.name}: ${describeTargets(builder.project)}` : 'This project has no targets yet', icon: Hammer, action: () => buildEveryTarget() },
       { id: 'builder.buildRunner', label: 'Builder: Build the Local Runner', detail: 'A dependency-free server for the built bundle', icon: Rocket, action: () => buildBuilderTarget('node') },
       { id: 'ai.ask', label: 'Assistant: Ask About the Selection', detail: ai.open ? 'The assistant panel is open' : 'Opens the assistant panel', icon: Sparkles, when: 'editorIsOpen', action: () => { ai.setOpen(true) } },
       { id: 'ai.advisor', label: 'Assistant: Advisor Mode', detail: 'Answers only — never edits a buffer', icon: Sparkles, action: () => { ai.setMode('advisor'); ai.setOpen(true) } },

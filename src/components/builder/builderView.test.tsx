@@ -35,6 +35,8 @@ const { useBuilder } = await import('../../builder/useBuilder')
 let container: HTMLDivElement
 let root: Root
 const notify = vi.fn()
+/** Targets the view asked to build, in order. */
+const built: string[] = []
 
 const plugins = loadPluginBlocks([{ path: 'plugins/notify.block.json', content: EXAMPLE_PLUGIN }])
 
@@ -55,7 +57,7 @@ function Harness() {
         editorOptions={{}}
         theme="tungsten"
         onExport={() => undefined}
-        onBuild={() => undefined}
+        onBuild={(target) => built.push(target)}
         onClose={() => undefined}
       />
     </>
@@ -411,8 +413,19 @@ describe('the preview, the database and the build', () => {
     const build = [...container.querySelectorAll('.builder-toolbar button')]
       .find((button) => button.textContent?.includes('Build')) as HTMLButtonElement
     expect(build.disabled).toBe(false)
+    // The project's own targets, then the two that are not platforms: the
+    // web bundle every project can produce, and the local runner.
     expect([...container.querySelectorAll('[aria-label="Compile target"] option')].map((option) => option.textContent))
-      .toEqual(['Web bundle', 'Mobile source', 'Local runner'])
+      .toEqual([
+        'Android App Target',
+        'iOS App Target',
+        'Cross-Platform Mobile Target',
+        'Windows Desktop Target',
+        'macOS Desktop Target',
+        'Linux Desktop Target',
+        'Web Target',
+        'Local runner',
+      ])
   })
 
   it('tells the user how to fix each problem, not just what is wrong', () => {
@@ -1375,5 +1388,122 @@ describe('screens', () => {
     expect(code()).not.toContain('app.screens(')
     expect(tabs()).toHaveLength(1)
     expect(nodes()).toHaveLength(1)
+  })
+})
+
+
+describe('targets', () => {
+  beforeEach(() => {
+    localStorage.clear()
+    built.length = 0
+    render()
+    openTargets()
+  })
+
+  afterEach(() => { act(() => root.unmount()); container.remove() })
+
+  const openTargets = () => click([...container.querySelectorAll('.builder-tabs button')]
+    .find((button) => button.textContent?.startsWith('Targets')))
+  const tree = () => container.querySelector('[aria-label="Project tree"]')!.textContent ?? ''
+  const field = (label: string) => container.querySelector<HTMLInputElement>(`[aria-label="${label}"]`)!
+  const commit = (element: HTMLInputElement, value: string) => {
+    act(() => {
+      element.value = value
+      element.dispatchEvent(new FocusEvent('focusout', { bubbles: true }))
+    })
+  }
+
+  it('draws the hierarchy the project actually has', () => {
+    expect(tree()).toContain('[ My Organization ]')
+    expect(tree()).toContain('[ My App ]')
+    expect(tree()).toContain('Android App Target')
+    expect(tree()).toContain('Linux Desktop Target')
+  })
+
+  it('starts with the six platform targets, web opt-in', () => {
+    expect(tree()).not.toContain('Web Target')
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Android App Target"]')!.checked).toBe(true)
+    expect(container.querySelector<HTMLInputElement>('[aria-label="Web Target"]')!.checked).toBe(false)
+  })
+
+  it('derives the application identifier from both names', () => {
+    expect(field('Application identifier').value).toBe('com.myorganization.myapp')
+  })
+
+  it('follows a rename of the organization', () => {
+    commit(field('Organization name'), 'Acme')
+    expect(field('Application identifier').value).toBe('com.acme.myapp')
+    expect(tree()).toContain('[ Acme ]')
+  })
+
+  it('follows a rename of the project, and moves where it is written', () => {
+    commit(field('Project name'), 'Timer')
+    expect(field('Application identifier').value).toBe('com.myorganization.timer')
+    expect(container.textContent).toContain('targets/timer/android')
+  })
+
+  it('keeps an identifier the user typed', () => {
+    commit(field('Application identifier'), 'dev.acme.chronograph')
+    commit(field('Project name'), 'Timer')
+    expect(field('Application identifier').value).toBe('dev.acme.chronograph')
+  })
+
+  it('says so when the identifier is one no store would accept', () => {
+    commit(field('Application identifier'), 'My App')
+    expect(container.textContent).toContain('reverse-DNS')
+    expect(field('Application identifier').className).toContain('invalid')
+  })
+
+  it('adds and removes targets', () => {
+    click(container.querySelector('[aria-label="Web Target"]'))
+    expect(tree()).toContain('Web Target')
+    click(container.querySelector('[aria-label="iOS App Target"]'))
+    expect(tree()).not.toContain('iOS App Target')
+  })
+
+  it('builds one target from its own row', () => {
+    click(container.querySelector('[aria-label="Build the macOS Desktop Target"]'))
+    expect(built).toEqual(['macos'])
+  })
+
+  it('cannot build a target the project does not have', () => {
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Build the Web Target"]')!.disabled).toBe(true)
+  })
+
+  it('adds a second project without losing the first', () => {
+    click(container.querySelector('[aria-label="Add a project"]'))
+    expect(tree()).toContain('[ My App ]')
+    expect(tree()).toContain('[ New Project ]')
+    expect(field('Project name').value).toBe('New Project')
+  })
+
+  it('never lets the last project be deleted', () => {
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Delete this project"]')!.disabled).toBe(true)
+    click(container.querySelector('[aria-label="Add a project"]'))
+    expect(container.querySelector<HTMLButtonElement>('[aria-label="Delete this project"]')!.disabled).toBe(false)
+    click(container.querySelector('[aria-label="Delete this project"]'))
+    expect(tree()).not.toContain('[ New Project ]')
+  })
+
+  it('offers the project targets in the toolbar menu', () => {
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Compile target"]')!
+    const labels = [...select.options].map((option) => option.textContent)
+    expect(labels).toContain('Android App Target')
+    expect(labels).toContain('Local runner')
+  })
+
+  it('counts the targets on its own tab', () => {
+    const tab = [...container.querySelectorAll('.builder-tabs button')]
+      .find((button) => button.textContent?.startsWith('Targets'))
+    expect(tab?.textContent).toContain('6')
+  })
+
+  it('survives a reload', () => {
+    commit(field('Organization name'), 'Acme')
+    act(() => root.unmount())
+    container.remove()
+    render()
+    openTargets()
+    expect(tree()).toContain('[ Acme ]')
   })
 })

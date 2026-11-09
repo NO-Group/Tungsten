@@ -33,6 +33,18 @@ import type { PluginManifest } from './pluginBlocks'
 import { withExternalProblems, type ExternalProblem } from './externalDiagnostics'
 import type { IntegrityReport } from './integrity'
 import { compile, type CompileResult, type CompileTarget } from './compile'
+import {
+  addProject,
+  defaultOrganization,
+  readOrganization,
+  removeProject,
+  renameOrganization,
+  toggleTarget,
+  updateProject,
+  type Organization,
+  type Project,
+  type TargetKind,
+} from '../project/targets'
 import { EMPTY_SCHEMA, type Column, type DataSchema, type Table } from './dataSchema'
 import { previewHtml } from './previewRuntime'
 import { schemaFromGraph, type UiDocument } from './uiSchema'
@@ -79,6 +91,8 @@ type Stored = {
   schema: DataSchema
   state: AppVariable[]
   screens: Screen[]
+  /** Who is shipping this, and to which platforms. */
+  organization: Organization
 }
 
 export type BuilderState = {
@@ -216,6 +230,22 @@ export type BuilderState = {
    */
   setExternalProblems: (problems: ExternalProblem[]) => void
   externalProblems: ExternalProblem[]
+  /**
+   * Organization → Project → Targets.
+   *
+   * The canvas is one project; the project is the thing that has an
+   * identifier, a version and a list of platforms to be carried to.
+   */
+  organization: Organization
+  /** The project the canvas is currently building for. */
+  project: Project
+  projectIndex: number
+  openProject: (index: number) => void
+  setOrganizationName: (name: string) => void
+  addProject: (name: string) => void
+  removeProject: (index: number) => void
+  setProject: (index: number, change: Partial<Project>) => void
+  toggleTarget: (kind: TargetKind) => void
   /** Compiles for a target, or refuses with a reason. */
   build: (target: CompileTarget) => CompileResult
   /** A line the preview logged. */
@@ -231,6 +261,7 @@ function load(): Stored {
     schema: EMPTY_SCHEMA,
     state: EMPTY_STATE,
     screens: [...DEFAULT_SCREENS],
+    organization: defaultOrganization(),
   }
   try {
     const stored = localStorage.getItem(BUILDER_STORAGE_KEY)
@@ -248,7 +279,9 @@ function load(): Stored {
     const screens = Array.isArray(parsed.screens) && parsed.screens.length
       ? parsed.screens
       : [...DEFAULT_SCREENS]
-    return { graph, schema, state, screens }
+    // A canvas saved before targets existed gets the default organization,
+    // which is one project with the six platforms on it.
+    return { graph, schema, state, screens, organization: readOrganization(parsed.organization) }
   } catch {
     return empty
   }
@@ -264,6 +297,8 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [state, setState] = useState<AppVariable[]>(initial.state)
   const [screens, setScreens] = useState<Screen[]>(initial.screens)
   const [activeScreen, setActiveScreen] = useState(() => homeScreen(initial.screens))
+  const [organization, setOrganization] = useState<Organization>(initial.organization)
+  const [projectIndex, setProjectIndex] = useState(0)
   const [code, setCode] = useState(
     () => generateProgram(initial.graph, registry, initial.state, initial.screens).code,
   )
@@ -338,8 +373,8 @@ export function useBuilder(host: BuilderHost): BuilderState {
    * bytes would differ and not merely when an object identity changed.
    */
   const persisted = useMemo(
-    () => JSON.stringify({ graph, schema, state, screens }),
-    [graph, schema, screens, state],
+    () => JSON.stringify({ graph, schema, state, screens, organization }),
+    [graph, organization, schema, screens, state],
   )
 
   useEffect(() => {
@@ -887,10 +922,64 @@ export function useBuilder(host: BuilderHost): BuilderState {
 
   // ------------------------------------------- compiling, and the preview
 
-  const build = useCallback(
-    (target: CompileTarget) => compile({ graph, registry, schema, state, screens, target }),
-    [graph, registry, schema, screens, state],
+  /**
+   * The project a build is for.
+   *
+   * Clamped rather than indexed blindly: deleting the last project while
+   * it is open would otherwise hand `compile` an undefined identifier and
+   * produce an Android manifest with the word "undefined" in it.
+   */
+  const project = useMemo(
+    () => organization.projects[Math.min(projectIndex, organization.projects.length - 1)]
+      ?? defaultOrganization().projects[0],
+    [organization, projectIndex],
   )
+
+  const build = useCallback(
+    (target: CompileTarget) => compile({ graph, registry, schema, state, screens, target, project }),
+    [graph, project, registry, schema, screens, state],
+  )
+
+  const openProject = useCallback((index: number) => {
+    setProjectIndex((current) => (index >= 0 ? index : current))
+  }, [])
+
+  const setOrganizationName = useCallback((name: string) => {
+    setOrganization((current) => renameOrganization(current, name))
+  }, [])
+
+  const addProjectNamed = useCallback((name: string) => {
+    setOrganization((current) => {
+      const next = addProject(current, name)
+      setProjectIndex(next.projects.length - 1)
+      return next
+    })
+  }, [])
+
+  const removeProjectAt = useCallback((index: number) => {
+    setOrganization((current) => {
+      // The last project is never removed: a canvas with nowhere to go is
+      // a canvas that cannot be built, and there is no UI for getting out
+      // of that state.
+      if (current.projects.length <= 1) return current
+      const next = removeProject(current, index)
+      setProjectIndex((at) => Math.max(0, Math.min(at, next.projects.length - 1)))
+      return next
+    })
+  }, [])
+
+  const setProjectAt = useCallback((index: number, change: Partial<Project>) => {
+    setOrganization((current) => updateProject(current, index, change))
+  }, [])
+
+  const toggleProjectTarget = useCallback((kind: TargetKind) => {
+    setOrganization((current) => {
+      const at = Math.min(projectIndex, current.projects.length - 1)
+      const existing = current.projects[at]
+      if (!existing) return current
+      return updateProject(current, at, { targets: toggleTarget(existing, kind).targets })
+    })
+  }, [projectIndex])
 
   const appendLog = useCallback((text: string) => {
     setLogs((current) => [...current, text].slice(-MAX_PREVIEW_LOGS))
@@ -983,6 +1072,15 @@ export function useBuilder(host: BuilderHost): BuilderState {
     removeScreen,
     moveScreen,
     moveSelectionToScreen,
+    organization,
+    project,
+    projectIndex,
+    openProject,
+    setOrganizationName,
+    addProject: addProjectNamed,
+    removeProject: removeProjectAt,
+    setProject: setProjectAt,
+    toggleTarget: toggleProjectTarget,
     build,
     appendLog,
     clearLogs,
