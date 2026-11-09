@@ -38,7 +38,8 @@ export type Port = {
   required?: boolean
 }
 
-export type BlockCategory = 'Events' | 'UI' | 'Logic' | 'Data' | 'Network' | 'Auth' | 'Storage'
+export type BlockCategory =
+  | 'Events' | 'UI' | 'Navigation' | 'Logic' | 'Data' | 'Network' | 'Auth' | 'Storage'
 
 /** What a code generator is handed when it is asked for its text. */
 export type GenerateContext = {
@@ -128,6 +129,14 @@ export function defineBlock(definition: BlockDefinition): BlockDefinition {
 export type BlockNode = {
   id: string
   type: string
+  /**
+   * The screen this block lives on, by name.
+   *
+   * Absent means the first screen, which is what every block in a
+   * single-screen project is -- so a canvas saved before screens existed
+   * opens with all of its blocks on the home screen rather than nowhere.
+   */
+  screen?: string
   position: { x: number; y: number }
   /** Literal values for unconnected data inputs, by port id. */
   values: Record<string, string | number | boolean>
@@ -166,7 +175,9 @@ export type BlockRegistry = {
   byCategory: () => Array<{ category: BlockCategory; blocks: BlockDefinition[] }>
 }
 
-const CATEGORY_ORDER: BlockCategory[] = ['Events', 'UI', 'Logic', 'Data', 'Network', 'Auth', 'Storage']
+const CATEGORY_ORDER: BlockCategory[] = [
+  'Events', 'UI', 'Navigation', 'Logic', 'Data', 'Network', 'Auth', 'Storage',
+]
 
 /**
  * Builds a registry from definitions.

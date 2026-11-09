@@ -526,6 +526,50 @@ const stateSet = defineBlock({
   },
 })
 
+// ------------------------------------------------------------ Navigation
+
+const navGo = defineBlock({
+  type: 'nav.go',
+  label: 'Go To Screen',
+  category: 'Navigation',
+  description: 'Leaves this screen and opens another one.',
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'screen', label: 'Screen', type: 'String', default: '', required: true, property: true },
+  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  // A property rather than a socket, like a variable name: the screen is
+  // chosen from the ones that exist, and the checker can tell you when the
+  // one you chose no longer does.
+  generate: ({ node }) => `app.goTo(${quote(String(node.values.screen ?? ''))})`,
+  parse: (statement) => {
+    const match = /^app\.goTo\("([a-z0-9-]*)"\)$/.exec(statement)
+    return match ? { inputs: { screen: `"${match[1]}"` } } : undefined
+  },
+})
+
+const navBack = defineBlock({
+  type: 'nav.back',
+  label: 'Go Back',
+  category: 'Navigation',
+  description: 'Returns to the screen the user came from.',
+  inputs: [{ id: 'exec', label: 'Run', type: 'Exec' }],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  generate: () => 'app.back()',
+  parse: (statement) => (statement === 'app.back()' ? { inputs: {} } : undefined),
+})
+
+const navCurrent = defineBlock({
+  type: 'nav.current',
+  label: 'Current Screen',
+  category: 'Navigation',
+  description: 'The name of the screen being shown.',
+  inputs: [],
+  outputs: [{ id: 'name', label: 'Name', type: 'String' }],
+  generate: () => 'app.currentScreen()',
+  parse: (statement) => (statement === 'app.currentScreen()' ? { inputs: {} } : undefined),
+})
+
 const dataQuery = defineBlock({
   type: 'data.query',
   label: 'Query Table',
@@ -710,6 +754,7 @@ const storageUpload = defineBlock({
 export const builtinBlocks: BlockDefinition[] = [
   onAppStart, onClick,
   uiButton, uiText, uiInput, uiValue, uiStack,
+  navGo, navBack, navCurrent,
   logicIf, logicForEach, logicCompare, logicMath, logicExists, logicLog,
   dataQuery, dataInsert, dataVariable, dataNumber,
   stateGet, stateSet,

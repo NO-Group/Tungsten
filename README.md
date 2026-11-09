@@ -305,6 +305,14 @@ marquee to select many blocks and move, copy or delete them together;
 Ctrl+C and Ctrl+V carry a selection between windows and workspaces; one
 button tidies the whole graph into columns.
 
+An app is more than one screen, so the strip above the canvas is a screen
+bar: add one, rename it in place, choose which screen the app starts on, and
+send the selection to another. Each screen has its own canvas and its own
+handlers, the Go To Screen / Go Back / Current Screen blocks move between
+them, and the preview navigates for real. A one-screen project writes exactly
+the file it always did; the screen declaration appears only once a second
+screen does.
+
 The program is not trapped in the builder: it is `src/generated/blocks.ts`, a
 real file in the workspace. Open it in any editor tab and what you type moves
 the blocks; move the blocks and the tab updates under you. The toolbar says

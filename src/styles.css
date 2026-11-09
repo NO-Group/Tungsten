@@ -1146,6 +1146,89 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .builder-pane.blocks { flex: 1.15; border-right: 1px solid var(--border); }
 .builder-pane.code { flex: 1; }
 
+/* The screens, above the canvas: one is being drawn, the rest are a click
+   away. The active one is an input, because renaming a screen is something
+   people do constantly and early. */
+.builder-screens {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 4px 6px;
+  overflow-x: auto;
+  background: var(--chrome);
+  border-bottom: 1px solid var(--border);
+}
+.builder-screens .builder-screen {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: none;
+  color: var(--muted);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.builder-screens .builder-screen:hover { background: var(--raised); color: var(--text); }
+.builder-screens .builder-screen.active {
+  background: var(--bg);
+  border-color: var(--border);
+  color: var(--strong);
+  cursor: default;
+}
+.builder-screens .builder-screen em {
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--faint);
+}
+.builder-screens .builder-screen input {
+  width: auto;
+  min-width: 3ch;
+  padding: 0;
+  border: none;
+  border-bottom: 1px dashed transparent;
+  background: none;
+  color: var(--strong);
+  font: inherit;
+  font-size: 11px;
+}
+.builder-screens .builder-screen input:focus {
+  outline: none;
+  border-bottom-color: var(--accent);
+}
+.builder-screen-home,
+.builder-screen-close,
+.builder-screen-add {
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: var(--faint);
+  cursor: pointer;
+}
+.builder-screen-home:hover:not(:disabled),
+.builder-screen-add:hover:not(:disabled) { background: var(--raised); color: var(--accent); }
+.builder-screen-close:hover:not(:disabled) { background: var(--raised); color: var(--danger); }
+.builder-screen-home:disabled,
+.builder-screen-close:disabled,
+.builder-screen-add:disabled { opacity: .35; cursor: default; }
+.builder-screen-move {
+  margin-left: auto;
+  padding: 2px 4px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--raised);
+  color: var(--muted);
+  font-size: 10.5px;
+}
+
 .builder-canvas {
   position: relative; flex: 1; min-height: 0; overflow: auto;
   background-color: var(--bg);

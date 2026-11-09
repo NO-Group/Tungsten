@@ -16,6 +16,7 @@ import { checkIntegrity, type IntegrityReport } from './integrity'
 import { runIntegrity, type IntegrityRequest, type IntegrityResponse } from './integrityWorker'
 import type { BlockGraph, BlockRegistry } from './blockSchema'
 import type { PluginManifest } from './pluginBlocks'
+import type { Screen } from './screens'
 
 export type IntegrityCheck = {
   report: IntegrityReport
@@ -36,14 +37,15 @@ export function useIntegrityCheck(
   docVersion: number,
   manifests: PluginManifest[] = [],
   state: readonly { name: string }[] = [],
+  screens: readonly Screen[] = [],
 ): IntegrityCheck {
   const supported = workerAvailable()
 
   // The inline result is computed whenever there is no worker. The memo is
   // not conditional -- hooks cannot be -- but the work behind it is.
   const inline = useMemo(
-    () => (supported ? undefined : checkIntegrity(graph, registry, state)),
-    [graph, registry, state, supported],
+    () => (supported ? undefined : checkIntegrity(graph, registry, state, screens)),
+    [graph, registry, screens, state, supported],
   )
 
   const [fromWorker, setFromWorker] = useState<IntegrityResponse | undefined>(undefined)
@@ -65,9 +67,11 @@ export function useIntegrityCheck(
 
   useEffect(() => {
     if (!supported || !worker.current) return
-    const request: IntegrityRequest = { docVersion, graph, manifests, state: [...state] }
+    const request: IntegrityRequest = {
+      docVersion, graph, manifests, state: [...state], screens: [...screens],
+    }
     worker.current.postMessage(request)
-  }, [docVersion, graph, manifests, state, supported])
+  }, [docVersion, graph, manifests, screens, state, supported])
 
   return useMemo(() => {
     if (inline) return { report: inline, checking: false, engine: 'inline' as const }
@@ -77,7 +81,9 @@ export function useIntegrityCheck(
     // Nothing for this version yet: show the last answer if there is one,
     // and otherwise fall back to running it here. A canvas without a report
     // would have to render as "no problems", which is a lie.
-    const fallback = fromWorker?.report ?? runIntegrity({ docVersion, graph, manifests, state: [...state] }).report
+    const fallback = fromWorker?.report ?? runIntegrity({
+      docVersion, graph, manifests, state: [...state], screens: [...screens],
+    }).report
     return { report: fallback, checking: true, engine: 'worker' as const }
-  }, [docVersion, fromWorker, graph, inline, manifests, state])
+  }, [docVersion, fromWorker, graph, inline, manifests, screens, state])
 }

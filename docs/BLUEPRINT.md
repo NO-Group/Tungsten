@@ -129,6 +129,63 @@ The inspector renders whatever ports a block declares. There is no list of
 known block types in it, which is why a plugin's properties appear there
 with no change to the file.
 
+## Screens, and the cost of not having them
+
+An app is several screens and a way between them. Tungsten models that as
+part of the program rather than beside it: a block carries the screen it
+sits on, the screen list is a line in the generated file, and navigation is
+three ordinary blocks — **Go To Screen**, **Go Back**, **Current Screen**.
+
+The load-bearing decision is what happens when you do not use the feature.
+A project with one screen called `home` generates **exactly the file it
+generated before screens existed** — no declaration line, no handler
+prefix, and no `screen` field on any saved block. The dialect only appears
+once a second screen does:
+
+```ts
+const state = app.state({ page: { draft: "" } })
+
+const screens = app.screens(["home", "settings"])
+
+app.screen("home").onStart(async () => {
+  render.text("Home page")
+  render.button({ id: "go", text: "Settings" })
+})
+
+app.screen("home").onClick("go", async () => {
+  app.goTo("settings")
+})
+
+app.screen("settings").onStart(async () => {
+  render.text("Settings page")
+})
+```
+
+That round-trips byte for byte, like everything else the generator writes.
+
+What follows from putting screens in the model rather than in the UI:
+
+- **The canvas shows one screen.** Blocks on the others are not dimmed or
+  filtered in the view — they are not in the graph the canvas is handed.
+- **A wire cannot cross screens.** `canConnect` refuses it, because the
+  generated statement would reference a name bound in a handler that is not
+  running. The checker reports one that arrives by paste or by hand-editing
+  as `cross-screen`, and it blocks compilation.
+- **Navigation is checked.** `nav.go` names a screen, the checker knows the
+  list, and `unknown-screen` is an error rather than a runtime surprise.
+  Renaming a screen rewrites the blocks that live on it *and* the blocks
+  that point at it, so a rename cannot break navigation behind your back.
+- **The inspector offers the list.** A screen name and a variable name are
+  chosen, not typed — the class of mistake disappears instead of being
+  reported.
+- **Page scope finally means something.** The preview resets page variables
+  on leaving a screen and keeps app variables, which is the distinction the
+  two scopes always claimed and now demonstrably have.
+- **Every target follows.** The preview opens on the screen being drawn and
+  navigates for real; the web bundle ships `ui.schema.json` with a
+  components list per screen; the Flutter export gets `_screen`, `_goTo`,
+  a back trail and a `_widgetsFor` switch.
+
 ## The canvas as a camera
 
 The first item in the CorelDRAW-style hierarchy is the one everything else

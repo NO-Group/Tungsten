@@ -23,6 +23,7 @@ import {
   type PortType,
 } from './blockSchema'
 import { execChainNodes, inScope, incoming, liveNodes, nodeById, scopesOf } from './graph'
+import { hasScreen, screenOf, type Screen } from './screens'
 
 export type DiagnosticSeverity = 'error' | 'warning'
 
@@ -50,6 +51,8 @@ export type IntegrityRule =
   | 'out-of-scope'
   | 'unused-result'
   | 'unknown-variable'
+  | 'unknown-screen'
+  | 'cross-screen'
 
 export type IntegrityReport = {
   diagnostics: BuilderDiagnostic[]
@@ -141,11 +144,57 @@ export function checkIntegrity(
   graph: BlockGraph,
   registry: BlockRegistry,
   state: readonly { name: string }[] = [],
+  screens: readonly Screen[] = [],
 ): IntegrityReport {
   /** Variables the file declares. A block may only name one of these. */
   const declared = new Set(state.map((variable) => variable.name))
   const diagnostics: BuilderDiagnostic[] = []
   const cyclic = new Set<string>()
+
+  // --------------------------------------------------- screens
+  // Only when the caller knows what the screens are. A check that invents
+  // its own idea of the screen list would report every navigation in a
+  // project it was not told about.
+  if (screens.length) {
+    for (const node of graph.nodes) {
+      if (node.type !== 'nav.go') continue
+      const name = String(node.values.screen ?? '').replace(/^"|"$/g, '')
+      if (name && hasScreen(screens, name)) continue
+      diagnostics.push({
+        severity: 'error',
+        nodeId: node.id,
+        portId: 'screen',
+        code: 'unknown-screen',
+        message: name
+          ? `There is no screen called “${name}”.`
+          : 'This block does not say which screen to open.',
+        fix: name
+          ? `Add a screen called “${name}”, or pick one that exists.`
+          : 'Choose a screen in the inspector.',
+      })
+    }
+
+    // A handler on one screen reaching a block on another would generate a
+    // statement inside a handler it does not belong to. The canvas refuses
+    // to draw such a link; this catches one that arrived some other way --
+    // a pasted graph, or a file edited by hand.
+    for (const connection of graph.connections) {
+      const source = nodeById(graph, connection.from.node)
+      const target = nodeById(graph, connection.to.node)
+      if (!source || !target) continue
+      const from = screenOf(source, screens)
+      const to = screenOf(target, screens)
+      if (from === to) continue
+      diagnostics.push({
+        severity: 'error',
+        nodeId: target.id,
+        connectionId: connection.id,
+        code: 'cross-screen',
+        message: `This link joins the “${from}” screen to the “${to}” screen.`,
+        fix: 'Delete the link. To carry a value between screens, put it in an app variable; to move between them, use a Go To Screen block.',
+      })
+    }
+  }
 
   // ------------------------------------------------- unknown variables
   // A block naming a variable the file does not declare would generate

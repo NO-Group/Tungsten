@@ -78,6 +78,12 @@ function type(element: HTMLTextAreaElement | HTMLInputElement, value: string) {
   act(() => { element.dispatchEvent(new Event('input', { bubbles: true })) })
 }
 
+/** Picks an option in a <select>, the way a user would. */
+function choose(element: HTMLSelectElement, value: string) {
+  Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(element, value)
+  act(() => { element.dispatchEvent(new Event('change', { bubbles: true })) })
+}
+
 function click(element: Element | null | undefined) {
   act(() => { (element as HTMLElement).click() })
 }
@@ -180,7 +186,7 @@ describe('the builder surface', () => {
     // editing a number here. Recipes sit in their own section above them.
     expect(container.querySelectorAll('.block-palette-item:not(.recipe)').length)
       .toBe(builtinBlocks.length + plugins.blocks.length)
-    expect(container.querySelectorAll('.block-palette-groups section').length).toBe(8)
+    expect(container.querySelectorAll('.block-palette-groups section').length).toBe(9)
     expect(container.querySelector('.block-palette-footer')?.textContent).toContain('1 from plugins')
   })
 
@@ -1163,8 +1169,10 @@ describe('app and page variables', () => {
     click(pin('Output Then of On App Start'))
     click(pin('Input Run of Set Variable'))
 
-    // The inspector names the variable, because it is a property.
-    type(container.querySelector<HTMLInputElement>('[aria-label="Variable of state.set"]')!, 'value')
+    // The inspector names the variable, because it is a property -- and it
+    // is chosen from the variables that exist rather than typed, so naming
+    // one that does not exist is not a thing the inspector can do.
+    choose(container.querySelector<HTMLSelectElement>('[aria-label="Variable of state.set"]')!, 'value')
     type(container.querySelector<HTMLInputElement>('[aria-label="Value of state.set"]')!, 'hello')
     expect(code()).toContain('state.set("value", "hello")')
     expect(container.querySelector('.builder-state')?.textContent).toContain('Ready to compile')
@@ -1183,5 +1191,189 @@ describe('app and page variables', () => {
     click([...container.querySelectorAll('.state-head button')][0])
     expect(container.querySelector('.state-row')?.className).toContain('unused')
     expect(container.querySelector('.state-note')?.textContent).toContain('nothing reads or writes them')
+  })
+})
+
+/**
+ * Screens.
+ *
+ * The strip above the canvas is the only place the user meets them, so
+ * these are about the surface: what is on the canvas, what the file says,
+ * and whether the two agree after every one of these gestures.
+ */
+describe('screens', () => {
+  const tabs = () => [...container.querySelectorAll('.builder-screen')] as HTMLElement[]
+  const addScreen = () => click(container.querySelector('[aria-label="Add a screen"]'))
+  const nameField = () => container.querySelector<HTMLInputElement>('[aria-label="Rename screen"]')!
+
+  it('starts as one screen, and says nothing about it in the file', () => {
+    expect(tabs()).toHaveLength(1)
+    expect(nameField().value).toBe('home')
+    click(palette('On App Start'))
+    expect(code()).toContain('app.onStart(async () => {')
+    expect(code()).not.toContain('app.screens')
+  })
+
+  it('adds a screen, and the canvas shows only what is on it', () => {
+    click(palette('On App Start'))
+    expect(nodes()).toHaveLength(1)
+
+    addScreen()
+    expect(tabs()).toHaveLength(2)
+    expect(nameField().value).toBe('screen')
+    // The new screen is empty; the block stayed on the one it was drawn on.
+    expect(nodes()).toHaveLength(0)
+
+    click(container.querySelector('[aria-label="Open the home screen"]'))
+    expect(nodes()).toHaveLength(1)
+  })
+
+  it('writes the screens into the file once there is more than one', () => {
+    click(palette('On App Start'))
+    addScreen()
+    expect(code()).toContain('const screens = app.screens(["home", "screen"])')
+    expect(code()).toContain('app.screen("home").onStart(async () => {')
+  })
+
+  it('puts new blocks on the screen being drawn', () => {
+    addScreen()
+    click(palette('On App Start'))
+    expect(nodes()).toHaveLength(1)
+    expect(code()).toContain('app.screen("screen").onStart(async () => {')
+  })
+
+  it('renames a screen, and everything that named it follows', () => {
+    click(palette('On App Start'))
+    addScreen()
+    click(palette('On App Start'))
+
+    const field = nameField()
+    type(field, 'settings')
+    act(() => { field.dispatchEvent(new FocusEvent('focusout', { bubbles: true })) })
+
+    expect(code()).toContain('app.screens(["home", "settings"])')
+    expect(code()).toContain('app.screen("settings").onStart')
+    expect(code()).not.toContain('"screen"')
+  })
+
+  it('refuses a name that is already taken, and says why', () => {
+    addScreen()
+    const field = nameField()
+    type(field, 'home')
+    act(() => { field.dispatchEvent(new FocusEvent('focusout', { bubbles: true })) })
+    expect(notify).toHaveBeenCalledWith(expect.stringContaining('already taken'))
+  })
+
+  it('deletes a screen and the blocks on it, and will not delete the last', () => {
+    click(palette('On App Start'))
+    addScreen()
+    click(palette('On App Start'))
+    expect(code()).toContain('app.screen("screen").onStart')
+
+    click(container.querySelector('[aria-label="Delete the screen screen"]'))
+    expect(tabs()).toHaveLength(1)
+    expect(code()).not.toContain('app.screens')
+    // Back to the single-screen dialect, with the first screen's work intact.
+    expect(code()).toContain('app.onStart(async () => {')
+    expect(nodes()).toHaveLength(1)
+
+    expect(container.querySelector('[aria-label="Delete the home screen"]')).toHaveProperty('disabled', true)
+  })
+
+  it('chooses which screen the app starts on', () => {
+    addScreen()
+    click(container.querySelector('[aria-label="Start the app on screen"]'))
+    expect(code()).toContain('app.screens(["screen", "home"])')
+    // The tab that moved is the active one, so its name is in the field.
+    expect(nameField().value).toBe('screen')
+    expect(tabs()[1].textContent).toContain('home')
+  })
+
+  it('moves the selection to another screen', () => {
+    click(palette('On App Start'))
+    addScreen()
+    click(container.querySelector('[aria-label="Open the home screen"]'))
+    // Switching screens drops the selection, so pick the block up again.
+    fireMouse(nodes()[0], 'mousedown', { x: 60, y: 20 })
+    fireMouse(window, 'mouseup', { x: 60, y: 20 })
+
+    const mover = container.querySelector<HTMLSelectElement>('[aria-label="Move the selection to a screen"]')!
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!.call(mover, 'screen')
+    act(() => { mover.dispatchEvent(new Event('change', { bubbles: true })) })
+
+    expect(code()).toContain('app.screen("screen").onStart')
+    expect(nodes()).toHaveLength(1)
+  })
+
+  it('offers the screens that exist, rather than a box to type one into', () => {
+    addScreen()
+    click(palette('On App Start'))
+    click(palette('Go To Screen'))
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Go To Screen'))
+
+    const chooser = container.querySelector<HTMLSelectElement>('[aria-label="Screen of nav.go"]')!
+    expect([...chooser.options].map((option) => option.value)).toEqual(['', 'home', 'screen'])
+
+    choose(chooser, 'home')
+    expect(code()).toContain('app.goTo("home")')
+  })
+
+  it('follows a rename, so navigation does not break behind your back', () => {
+    addScreen()
+    click(palette('On App Start'))
+    click(palette('Go To Screen'))
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Go To Screen'))
+    choose(container.querySelector<HTMLSelectElement>('[aria-label="Screen of nav.go"]')!, 'home')
+    expect(container.querySelector('.builder-state')?.textContent).toContain('Ready to compile')
+
+    // Rename the screen it points at, out from under it.
+    click(container.querySelector('[aria-label="Open the home screen"]'))
+    const field = nameField()
+    type(field, 'start')
+    act(() => { field.dispatchEvent(new FocusEvent('focusout', { bubbles: true })) })
+
+    expect(code()).toContain('app.goTo("start")')
+    expect(container.querySelector('.builder-state')?.textContent).toContain('Ready to compile')
+  })
+
+  it('will not compile a jump to a screen that was deleted', () => {
+    addScreen()
+    click(palette('On App Start'))
+    click(palette('Go To Screen'))
+    click(pin('Output Then of On App Start'))
+    click(pin('Input Run of Go To Screen'))
+    choose(container.querySelector<HTMLSelectElement>('[aria-label="Screen of nav.go"]')!, 'home')
+
+    // Delete the screen it points at. The block pointing at it is on the
+    // other screen, so it survives -- naming something that is gone.
+    click(container.querySelector('[aria-label="Open the home screen"]'))
+    click(container.querySelector('[aria-label="Delete the home screen"]'))
+
+    expect(container.textContent).toContain('no screen called')
+    expect(container.querySelector('.builder-state')?.textContent).toContain('error')
+  })
+
+  it('refuses to wire a block to one on another screen', () => {
+    click(palette('On App Start'))
+    addScreen()
+    click(palette('Log'))
+
+    // Select the pin on this screen, then go back and try the other one.
+    click(pin('Input Run of Log'))
+    click(container.querySelector('[aria-label="Open the home screen"]'))
+    click(pin('Output Then of On App Start'))
+    expect(code()).not.toContain('console.log')
+  })
+
+  it('keeps the screens through an undo', () => {
+    click(palette('On App Start'))
+    addScreen()
+    expect(code()).toContain('app.screens(')
+    press('z', { ctrlKey: true })
+    expect(code()).not.toContain('app.screens(')
+    expect(tabs()).toHaveLength(1)
+    expect(nodes()).toHaveLength(1)
   })
 })

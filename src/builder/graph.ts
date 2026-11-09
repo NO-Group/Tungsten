@@ -37,8 +37,15 @@ export function addNode(graph: BlockGraph, node: BlockNode): BlockGraph {
   return { ...graph, nodes: [...graph.nodes, node] }
 }
 
-export function createNode(type: string, position: { x: number; y: number }): BlockNode {
-  return { id: nextId(type.split('.').pop() || 'node'), type, position, values: {} }
+export function createNode(
+  type: string,
+  position: { x: number; y: number },
+  screen?: string,
+): BlockNode {
+  const node: BlockNode = { id: nextId(type.split('.').pop() || 'node'), type, position, values: {} }
+  // Only stamped when there is a screen to stamp: a single-screen project
+  // keeps writing the shape it always wrote, and diffs stay quiet.
+  return screen ? { ...node, screen } : node
 }
 
 /** Removing a node takes its wiring with it; a dangling edge is not a state. */
@@ -49,6 +56,46 @@ export function removeNode(graph: BlockGraph, id: string): BlockGraph {
       (connection) => connection.from.node !== id && connection.to.node !== id,
     ),
   }
+}
+
+/** Moves blocks to another screen, taking only the wiring that stays legal. */
+export function setNodeScreens(graph: BlockGraph, ids: readonly string[], screen: string): BlockGraph {
+  const moved = new Set(ids)
+  const nodes = graph.nodes.map((node) => (moved.has(node.id) ? { ...node, screen } : node))
+  const screenOfNode = new Map(nodes.map((node) => [node.id, node.screen]))
+  return {
+    nodes,
+    connections: graph.connections.filter((connection) => (
+      screenOfNode.get(connection.from.node) === screenOfNode.get(connection.to.node)
+    )),
+  }
+}
+
+/**
+ * Keeps the screen field in step with whether the project has screens at all.
+ *
+ * The invariant is that a node carries a screen name exactly when the file
+ * declares screens. Holding it here means everything else -- the canvas
+ * filter, the cross-screen check, the clipboard -- can compare the field
+ * directly instead of resolving a fallback at every call site.
+ */
+export function normaliseScreens(graph: BlockGraph, home: string, explicit: boolean): BlockGraph {
+  let changed = false
+  const nodes = graph.nodes.map((node) => {
+    if (explicit) {
+      if (node.screen) return node
+      changed = true
+      return { ...node, screen: home }
+    }
+    if (node.screen === undefined) return node
+    changed = true
+    // Rebuilt without the field rather than set to undefined: the saved
+    // JSON and the clipboard payload must not grow a "screen": null.
+    const rest = { ...node }
+    delete rest.screen
+    return rest
+  })
+  return changed ? { ...graph, nodes } : graph
 }
 
 export function moveNode(graph: BlockGraph, id: string, position: { x: number; y: number }): BlockGraph {
@@ -101,6 +148,17 @@ export function canConnect(
   const sourceDefinition = registry.get(source.type)
   const targetDefinition = registry.get(target.type)
   if (!sourceDefinition || !targetDefinition) return { ok: false, reason: 'Unknown block.' }
+
+  // Screens are separate programs that share variables, not one program
+  // drawn in two places. A wire between them would generate a reference to
+  // a name declared in a handler that is not running.
+  if (source.screen !== target.screen) {
+    return {
+      ok: false,
+      reason: `Those blocks are on different screens (${source.screen ?? 'the first one'} and ${
+        target.screen ?? 'the first one'}). Use a Go To Screen block, or a variable, to carry something across.`,
+    }
+  }
 
   const output = sourceDefinition.outputs.find((port) => port.id === from.port)
     ?? sourceDefinition.slots?.find((port) => port.id === from.port)

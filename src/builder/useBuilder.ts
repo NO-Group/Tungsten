@@ -43,9 +43,16 @@ import {
   createNode,
   disconnect as disconnectIn,
   moveNode,
+  normaliseScreens,
   removeNode,
+  setNodeScreens,
   setNodeValue,
 } from './graph'
+import {
+  DEFAULT_SCREENS, addScreen as addScreenTo, hasScreen, homeScreen, isDefaultScreens,
+  moveScreen as moveScreenIn, removeScreen as removeScreenFrom, renameScreen as renameScreenIn,
+  screenOf, type Screen,
+} from './screens'
 
 export const BUILDER_STORAGE_KEY = 'tungsten.builder.v1'
 
@@ -67,13 +74,23 @@ export type BuilderHost = {
   pluginManifests?: PluginManifest[]
 }
 
-type Stored = { graph: BlockGraph; schema: DataSchema; state: AppVariable[] }
+type Stored = {
+  graph: BlockGraph
+  schema: DataSchema
+  state: AppVariable[]
+  screens: Screen[]
+}
 
 export type BuilderState = {
   graph: BlockGraph
   registry: ReturnType<typeof createRegistry>
   program: GeneratedProgram
   report: IntegrityReport
+  /**
+   * The graph as the canvas sees it: the blocks on the screen being drawn,
+   * and the links between them.
+   */
+  visibleGraph: BlockGraph
   /** The interface, as data: what the preview and every target render. */
   ui: UiDocument
   /** The database the query blocks are drawn against. */
@@ -160,6 +177,23 @@ export type BuilderState = {
   syncEnabled: boolean
   setSyncEnabled: (enabled: boolean) => void
   clear: () => void
+  /**
+   * The screens the app has, in order. The first is where it starts.
+   *
+   * A project that never adds one has exactly one screen called “home”,
+   * and nothing about it reaches the generated file.
+   */
+  screens: Screen[]
+  /** The screen being drawn: the canvas, inspector and preview all follow it. */
+  activeScreen: string
+  openScreen: (name: string) => void
+  addScreen: (name?: string) => void
+  renameScreen: (index: number, name: string) => void
+  removeScreen: (index: number) => void
+  /** Reorders the screens, which also chooses the one the app starts on. */
+  moveScreen: (index: number, to: number) => void
+  /** Sends everything selected to another screen, dropping links left behind. */
+  moveSelectionToScreen: (name: string) => void
   /** The variables the app keeps, and the actions that change them. */
   state: AppVariable[]
   addVariable: (scope?: StateScope) => void
@@ -192,7 +226,12 @@ export type BuilderState = {
 }
 
 function load(): Stored {
-  const empty: Stored = { graph: { nodes: [], connections: [] }, schema: EMPTY_SCHEMA, state: EMPTY_STATE }
+  const empty: Stored = {
+    graph: { nodes: [], connections: [] },
+    schema: EMPTY_SCHEMA,
+    state: EMPTY_STATE,
+    screens: [...DEFAULT_SCREENS],
+  }
   try {
     const stored = localStorage.getItem(BUILDER_STORAGE_KEY)
     if (!stored) return empty
@@ -204,7 +243,12 @@ function load(): Stored {
       : empty.graph)
     const schema = parsed.schema?.tables ? parsed.schema : EMPTY_SCHEMA
     const state = Array.isArray(parsed.state) ? parsed.state : EMPTY_STATE
-    return { graph, schema, state }
+    // A canvas saved before screens existed has none; it opens as the one
+    // screen every block is already on.
+    const screens = Array.isArray(parsed.screens) && parsed.screens.length
+      ? parsed.screens
+      : [...DEFAULT_SCREENS]
+    return { graph, schema, state, screens }
   } catch {
     return empty
   }
@@ -218,7 +262,11 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [graph, setGraph] = useState<BlockGraph>(initial.graph)
   const [schema, setSchema] = useState<DataSchema>(initial.schema)
   const [state, setState] = useState<AppVariable[]>(initial.state)
-  const [code, setCode] = useState(() => generateProgram(initial.graph, registry, initial.state).code)
+  const [screens, setScreens] = useState<Screen[]>(initial.screens)
+  const [activeScreen, setActiveScreen] = useState(() => homeScreen(initial.screens))
+  const [code, setCode] = useState(
+    () => generateProgram(initial.graph, registry, initial.state, initial.screens).code,
+  )
   const [parseError, setParseError] = useState<ParseFailure | undefined>(undefined)
   const [selection, setSelection] = useState<string[]>([])
   /** The last thing copied here, so paste works without clipboard permission. */
@@ -226,7 +274,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const selected = selection.length ? selection[selection.length - 1] : undefined
   const [revealed, setRevealed] = useState<string | undefined>(undefined)
   /** One undo stack over the whole document, not over the graph alone. */
-  type Snapshot = { graph: BlockGraph; state: AppVariable[] }
+  type Snapshot = { graph: BlockGraph; state: AppVariable[]; screens: Screen[] }
   const [history, setHistory] = useState<History<Snapshot>>(EMPTY_HISTORY)
   const [docVersion, setDocVersion] = useState(0)
   const [syncEnabled, setSyncEnabled] = useState(() => {
@@ -239,8 +287,21 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [logs, setLogs] = useState<string[]>([])
   const [failure, setFailure] = useState<Traceback | undefined>(undefined)
 
-  const program = useMemo(() => generateProgram(graph, registry, state), [graph, registry, state])
-  const ui = useMemo(() => schemaFromGraph(graph, registry), [graph, registry])
+  const program = useMemo(
+    () => generateProgram(graph, registry, state, screens),
+    [graph, registry, screens, state],
+  )
+  /**
+   * The interface of the screen being drawn.
+   *
+   * Not of the whole app: the preview runs one screen at a time, and the
+   * static first paint has to be the same one or the two would disagree
+   * about what is on the page before the first render settles it.
+   */
+  const ui = useMemo(
+    () => schemaFromGraph(graph, registry, { screen: activeScreen, screens }),
+    [activeScreen, graph, registry, screens],
+  )
 
   /**
    * The checker runs on every mutation, in a worker where there is one and
@@ -251,7 +312,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
    */
   const [externalProblems, setExternalProblems] = useState<ExternalProblem[]>([])
   const manifests = useMemo(() => host.pluginManifests ?? [], [host.pluginManifests])
-  const check = useIntegrityCheck(graph, registry, docVersion, manifests, state)
+  const check = useIntegrityCheck(graph, registry, docVersion, manifests, state, screens)
   const report = useMemo(
     () => withExternalProblems(check.report, program, externalProblems),
     [check.report, externalProblems, program],
@@ -262,8 +323,8 @@ export function useBuilder(host: BuilderHost): BuilderState {
    * the pane: a preview of half-typed code would be noise.
    */
   const previewDocument = useMemo(
-    () => previewHtml({ document: ui, code: program.code }),
-    [program.code, ui],
+    () => previewHtml({ document: ui, code: program.code, screen: activeScreen }),
+    [activeScreen, program.code, ui],
   )
 
   const { notify } = host
@@ -276,7 +337,10 @@ export function useBuilder(host: BuilderHost): BuilderState {
    * effect then depends on one string, so it writes exactly when the saved
    * bytes would differ and not merely when an object identity changed.
    */
-  const persisted = useMemo(() => JSON.stringify({ graph, schema, state }), [graph, schema, state])
+  const persisted = useMemo(
+    () => JSON.stringify({ graph, schema, state, screens }),
+    [graph, schema, screens, state],
+  )
 
   useEffect(() => {
     try {
@@ -297,44 +361,67 @@ export function useBuilder(host: BuilderHost): BuilderState {
    */
   const apply = useCallback((next: BlockGraph, coalesce?: string) => {
     if (timer.current) clearTimeout(timer.current)
-    setHistory((current) => record(current, { graph, state }, { coalesce }))
+    setHistory((current) => record(current, { graph, state, screens }, { coalesce }))
     setDocVersion((current) => current + 1)
     setSelection((current) => pruneSelection(current, next))
     setGraph(next)
-    setCode(generateProgram(next, registry, state).code)
+    setCode(generateProgram(next, registry, state, screens).code)
     setParseError(undefined)
-  }, [graph, registry, state])
+  }, [graph, registry, screens, state])
+
+  /**
+   * The screen a new block belongs to.
+   *
+   * Nothing is stamped while the project has only the default screen, so a
+   * single-screen canvas keeps saving and copying exactly the shape it did
+   * before screens existed.
+   */
+  const multiScreen = !isDefaultScreens(screens)
+  const onActiveScreen = useCallback(
+    (next: BlockGraph, ids: readonly string[]) => (
+      multiScreen ? setNodeScreens(next, ids, activeScreen) : next
+    ),
+    [activeScreen, multiScreen],
+  )
 
   /** Restores a whole document -- graph and variables -- from the stacks. */
   const restore = useCallback((step: { history: History<Snapshot>; snapshot: Snapshot } | undefined) => {
     if (!step) return
     if (timer.current) clearTimeout(timer.current)
+    const restored = step.snapshot.screens ?? DEFAULT_SCREENS
     setHistory(step.history)
     setDocVersion((current) => current + 1)
     setGraph(step.snapshot.graph)
     setState(step.snapshot.state)
-    setCode(generateProgram(step.snapshot.graph, registry, step.snapshot.state).code)
+    setScreens(restored)
+    // Undoing the deletion of a screen should put you back on it; undoing
+    // anything else must not move you somewhere you were not.
+    setActiveScreen((current) => (hasScreen(restored, current) ? current : homeScreen(restored)))
+    setCode(generateProgram(step.snapshot.graph, registry, step.snapshot.state, restored).code)
     setParseError(undefined)
     setSelection((current) => pruneSelection(current, step.snapshot.graph))
   }, [registry])
 
   const undoAction = useCallback(
-    () => restore(undo(history, { graph, state })),
-    [graph, history, restore, state],
+    () => restore(undo(history, { graph, state, screens })),
+    [graph, history, restore, screens, state],
   )
   const redoAction = useCallback(
-    () => restore(redo(history, { graph, state })),
-    [graph, history, restore, state],
+    () => restore(redo(history, { graph, state, screens })),
+    [graph, history, restore, screens, state],
   )
 
   const addBlock = useCallback((type: string, position?: { x: number; y: number }) => {
     if (!registry.get(type)) return
-    // New blocks land below the lowest one rather than on top of it.
-    const lowest = graph.nodes.reduce((value, node) => Math.max(value, node.position.y), -110)
-    const node = createNode(type, position ?? { x: 40, y: lowest + 110 })
+    // New blocks land below the lowest one rather than on top of it --
+    // the lowest on *this* screen, since the others are not on the canvas.
+    const lowest = graph.nodes
+      .filter((node) => !multiScreen || screenOf(node, screens) === activeScreen)
+      .reduce((value, node) => Math.max(value, node.position.y), -110)
+    const node = createNode(type, position ?? { x: 40, y: lowest + 110 }, multiScreen ? activeScreen : undefined)
     apply(addNode(graph, node))
     setSelection([node.id])
-  }, [apply, graph, registry])
+  }, [activeScreen, apply, graph, multiScreen, registry, screens])
 
   /**
    * The quick add: a block created and connected in the same gesture.
@@ -350,7 +437,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   ) => {
     const definition = registry.get(type)
     if (!definition) return
-    const node = createNode(type, position)
+    const node = createNode(type, position, multiScreen ? activeScreen : undefined)
     const withNode = addNode(graph, node)
 
     // Take the first port on the new block the drag could legally reach, so
@@ -375,7 +462,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     apply(next)
     setSelection([node.id])
     if (!linked) notify(`${definition.label} has no port that fits that connection`)
-  }, [apply, graph, notify, registry])
+  }, [activeScreen, apply, graph, multiScreen, notify, registry])
 
   /**
    * Selecting.
@@ -388,14 +475,33 @@ export function useBuilder(host: BuilderHost): BuilderState {
     setSelection((current) => (id ? selectionAfterClick(current, id, options) : []))
   }, [])
 
+  /** The blocks on the screen being drawn: what the canvas shows. */
+  const visibleNodes = useMemo(
+    () => (multiScreen ? graph.nodes.filter((node) => screenOf(node, screens) === activeScreen) : graph.nodes),
+    [activeScreen, graph.nodes, multiScreen, screens],
+  )
+
+  const visibleGraph = useMemo(() => {
+    if (!multiScreen) return graph
+    const ids = new Set(visibleNodes.map((node) => node.id))
+    return {
+      nodes: visibleNodes,
+      connections: graph.connections.filter(
+        (connection) => ids.has(connection.from.node) && ids.has(connection.to.node),
+      ),
+    }
+  }, [graph, multiScreen, visibleNodes])
+
   const selectInRect = useCallback((rect: Rect, options: { additive?: boolean } = {}) => {
-    const caught = nodesInRect(graph, registry, rect)
+    // Against the visible blocks only: a marquee cannot catch something on
+    // a screen that is not on the canvas.
+    const caught = nodesInRect({ nodes: visibleNodes, connections: graph.connections }, registry, rect)
     setSelection((current) => (options.additive ? mergeSelection(current, caught) : caught))
-  }, [graph, registry])
+  }, [graph.connections, registry, visibleNodes])
 
   const selectAll = useCallback(() => {
-    setSelection(graph.nodes.map((node) => node.id))
-  }, [graph.nodes])
+    setSelection(visibleNodes.map((node) => node.id))
+  }, [visibleNodes])
 
   const removeSelection = useCallback(() => {
     if (!selection.length) return
@@ -435,10 +541,11 @@ export function useBuilder(host: BuilderHost): BuilderState {
         : 'Nothing to paste')
       return
     }
-    apply(result.graph)
+    // Pasted blocks join the screen being drawn, wherever they were cut from.
+    apply(onActiveScreen(result.graph, result.added))
     setSelection(result.added)
     if (result.skipped.length) notify(`Pasted, without ${result.skipped.join(', ')}: not installed here`)
-  }, [apply, graph, internalClipboard, notify, registry])
+  }, [apply, graph, internalClipboard, notify, onActiveScreen, registry])
 
   const tidy = useCallback(() => {
     apply(tidyGraph(graph, registry))
@@ -448,7 +555,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const duplicateBlock = useCallback((id: string) => {
     const node = graph.nodes.find((candidate) => candidate.id === id)
     if (!node) return
-    const copy = createNode(node.type, { x: node.position.x + 32, y: node.position.y + 32 })
+    const copy = createNode(node.type, { x: node.position.x + 32, y: node.position.y + 32 }, node.screen)
     copy.values = { ...node.values }
     apply(addNode(graph, copy))
     setSelection([copy.id])
@@ -459,14 +566,14 @@ export function useBuilder(host: BuilderHost): BuilderState {
     const recipe = recipeById(id)
     if (!recipe) return
     const result = instantiate(recipe, graph, registry)
-    apply(result.graph)
+    apply(onActiveScreen(result.graph, result.added))
     setSelection([result.added[0]])
     notify(
       result.rejected.length
         ? `${recipe.name} added, but ${result.rejected.length} link was refused`
         : `Added ${recipe.outcome}`,
     )
-  }, [apply, graph, notify, registry])
+  }, [apply, graph, notify, onActiveScreen, registry])
 
   const moveBlock = useCallback((id: string, position: { x: number; y: number }) => {
     // Dragging a block that is part of a selection drags the whole
@@ -524,6 +631,10 @@ export function useBuilder(host: BuilderHost): BuilderState {
       setParseError(undefined)
       setDocVersion((current) => current + 1)
       setState(parsed.state)
+      setScreens(parsed.screens)
+      setActiveScreen((current) => (
+        hasScreen(parsed.screens, current) ? current : homeScreen(parsed.screens)
+      ))
       setGraph(parsed.graph)
     }, PARSE_DEBOUNCE)
   }, [registry])
@@ -545,11 +656,15 @@ export function useBuilder(host: BuilderHost): BuilderState {
       return
     }
     setParseError(undefined)
-    setHistory((current) => record(current, { graph, state }, { coalesce: 'file' }))
+    setHistory((current) => record(current, { graph, state, screens }, { coalesce: 'file' }))
     setDocVersion((current) => current + 1)
     setState(parsed.state)
+    setScreens(parsed.screens)
+    setActiveScreen((current) => (
+      hasScreen(parsed.screens, current) ? current : homeScreen(parsed.screens)
+    ))
     setGraph(parsed.graph)
-  }, [graph, registry, state])
+  }, [graph, registry, screens, state])
 
   const chooseSync = useCallback((enabled: boolean) => {
     setSyncEnabled(enabled)
@@ -577,12 +692,108 @@ export function useBuilder(host: BuilderHost): BuilderState {
    * code pane updated to match.
    */
   const applyState = useCallback((next: AppVariable[], coalesce?: string) => {
-    setHistory((current) => record(current, { graph, state }, { coalesce }))
+    setHistory((current) => record(current, { graph, state, screens }, { coalesce }))
     setDocVersion((current) => current + 1)
     setState(next)
-    setCode(generateProgram(graph, registry, next).code)
+    setCode(generateProgram(graph, registry, next, screens).code)
     setParseError(undefined)
-  }, [graph, registry, state])
+  }, [graph, registry, screens, state])
+
+  // --------------------------------------------------------- the screens
+
+  /**
+   * Changing the screens rewrites the file, so it takes the same path a
+   * canvas edit does: one undo step, one document version, the code pane
+   * brought up to date, and the graph re-stamped so every block still says
+   * which screen it is on.
+   */
+  const applyScreens = useCallback((next: Screen[], nextGraph: BlockGraph = graph) => {
+    const stamped = normaliseScreens(nextGraph, homeScreen(next), !isDefaultScreens(next))
+    setHistory((current) => record(current, { graph, state, screens }))
+    setDocVersion((current) => current + 1)
+    setScreens(next)
+    setGraph(stamped)
+    setSelection((current) => pruneSelection(current, stamped))
+    setCode(generateProgram(stamped, registry, state, next).code)
+    setParseError(undefined)
+  }, [graph, registry, screens, state])
+
+  const openScreen = useCallback((name: string) => {
+    setActiveScreen((current) => (hasScreen(screens, name) ? name : current))
+    setSelection([])
+  }, [screens])
+
+  const addScreen = useCallback((name?: string) => {
+    const next = addScreenTo(screens, typeof name === 'string' && name.trim() ? name : 'screen')
+    applyScreens(next)
+    setActiveScreen(next[next.length - 1].name)
+    setSelection([])
+    notify(`Added the “${next[next.length - 1].name}” screen`)
+  }, [applyScreens, notify, screens])
+
+  const renameScreen = useCallback((index: number, name: string) => {
+    const result = renameScreenIn(screens, index, name)
+    if (!result) {
+      notify('A screen name starts with a lowercase letter and is not already taken')
+      return
+    }
+    const { from, to } = result
+    if (from === to) return
+    // Every reference follows the name: the blocks that live on it, and
+    // the navigation blocks that point at it. A rename that left either
+    // behind would break the app quietly.
+    const moved: BlockGraph = {
+      ...graph,
+      nodes: graph.nodes.map((node) => {
+        const onIt = screenOf(node, screens) === from
+        const pointsAtIt = node.type === 'nav.go'
+          && String(node.values.screen ?? '').replace(/^"|"$/g, '') === from
+        if (!onIt && !pointsAtIt) return node
+        return {
+          ...node,
+          ...(onIt ? { screen: to } : {}),
+          ...(pointsAtIt ? { values: { ...node.values, screen: to } } : {}),
+        }
+      }),
+    }
+    applyScreens(result.screens, moved)
+    setActiveScreen((current) => (current === from ? to : current))
+  }, [applyScreens, graph, notify, screens])
+
+  const removeScreen = useCallback((index: number) => {
+    const going = screens[index]
+    if (!going || screens.length <= 1) {
+      notify('An app has at least one screen')
+      return
+    }
+    const next = removeScreenFrom(screens, index)
+    // The blocks on it go with it. Leaving them in the file on a screen
+    // that no longer exists would be a graph nobody can reach or see.
+    const remaining: BlockGraph = {
+      nodes: graph.nodes.filter((node) => screenOf(node, screens) !== going.name),
+      connections: graph.connections,
+    }
+    const ids = new Set(remaining.nodes.map((node) => node.id))
+    applyScreens(next, {
+      nodes: remaining.nodes,
+      connections: remaining.connections.filter(
+        (connection) => ids.has(connection.from.node) && ids.has(connection.to.node),
+      ),
+    })
+    setActiveScreen((current) => (current === going.name ? homeScreen(next) : current))
+    notify(`Deleted the “${going.name}” screen`)
+  }, [applyScreens, graph, notify, screens])
+
+  const moveScreen = useCallback((index: number, to: number) => {
+    applyScreens(moveScreenIn(screens, index, to))
+  }, [applyScreens, screens])
+
+  const moveSelectionToScreen = useCallback((name: string) => {
+    if (!selection.length || !hasScreen(screens, name) || !multiScreen) return
+    apply(setNodeScreens(graph, selection, name))
+    setActiveScreen(name)
+    notify(`Moved ${selection.length} block${selection.length === 1 ? '' : 's'} to “${name}”`)
+  }, [apply, graph, multiScreen, notify, screens, selection])
 
   const addVariable = useCallback((scope: StateScope = 'page') => {
     const name = uniqueName('value', state)
@@ -677,8 +888,8 @@ export function useBuilder(host: BuilderHost): BuilderState {
   // ------------------------------------------- compiling, and the preview
 
   const build = useCallback(
-    (target: CompileTarget) => compile({ graph, registry, schema, target }),
-    [graph, registry, schema],
+    (target: CompileTarget) => compile({ graph, registry, schema, state, screens, target }),
+    [graph, registry, schema, screens, state],
   )
 
   const appendLog = useCallback((text: string) => {
@@ -711,6 +922,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     externalProblems,
     setExternalProblems,
     ui,
+    visibleGraph,
     schema,
     previewDocument,
     logs,
@@ -763,6 +975,14 @@ export function useBuilder(host: BuilderHost): BuilderState {
     addColumn,
     updateColumn,
     removeColumn,
+    screens,
+    activeScreen,
+    openScreen,
+    addScreen,
+    renameScreen,
+    removeScreen,
+    moveScreen,
+    moveSelectionToScreen,
     build,
     appendLog,
     clearLogs,

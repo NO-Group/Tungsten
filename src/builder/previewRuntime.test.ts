@@ -14,6 +14,7 @@ import { beforeEach, describe, expect, it } from 'vitest'
 import { builtinBlocks } from './blockLibrary'
 import { createRegistry, type BlockGraph } from './blockSchema'
 import { addNode, connect, createNode, resetIds, setNodeValue } from './graph'
+import type { Screen } from './screens'
 import { generateProgram } from './codeGenerator'
 import { schemaFromGraph } from './uiSchema'
 import { previewHtml, PREVIEW_CHANNEL, type PreviewMessage } from './previewRuntime'
@@ -41,10 +42,34 @@ function build(
   return { graph, ids }
 }
 
+/** Builds a graph whose blocks carry the screen they belong to. */
+function buildOn(
+  nodes: Array<[type: string, screen: string]>,
+  links: Array<[from: number, fromPort: string, to: number, toPort: string]> = [],
+) {
+  let graph: BlockGraph = { nodes: [], connections: [] }
+  const ids: string[] = []
+  for (const [type, screen] of nodes) {
+    const node = createNode(type, { x: 0, y: ids.length * 100 }, screen)
+    ids.push(node.id)
+    graph = addNode(graph, node)
+  }
+  for (const [from, fromPort, to, toPort] of links) {
+    const result = connect(graph, registry, { node: ids[from], port: fromPort }, { node: ids[to], port: toPort })
+    if (result.rejected) throw new Error(result.rejected)
+    graph = result.graph
+  }
+  return { graph, ids }
+}
+
 /** Loads a graph's preview into a real DOM and collects what it says. */
-async function run(graph: BlockGraph) {
-  const code = generateProgram(graph, registry).code
-  const html = previewHtml({ document: schemaFromGraph(graph, registry), code })
+async function run(graph: BlockGraph, screens?: Screen[], screen?: string) {
+  const code = generateProgram(graph, registry, [], screens).code
+  const html = previewHtml({
+    document: schemaFromGraph(graph, registry, { screen, screens }),
+    code,
+    screen,
+  })
 
   const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true })
   const messages: PreviewMessage[] = []
@@ -341,5 +366,175 @@ describe('containers', () => {
     expect(parsed.ok).toBe(true)
     if (!parsed.ok) return
     expect(generateProgram(parsed.graph, registry).code).toBe(code)
+  })
+})
+
+describe('screens, in the running preview', () => {
+  const SCREENS: Screen[] = [{ name: 'home' }, { name: 'settings' }]
+
+  /**
+   * What is on the page.
+   *
+   * The app root, not the body: the body also holds the script element,
+   * whose text is the whole program -- so asserting against it would pass
+   * on source code that never rendered.
+   */
+  const shown = (dom: JSDOM) => dom.window.document.getElementById('app')?.textContent ?? ''
+
+  /**
+   * Two screens: the first has a line of text and a button, the second has
+   * a different line. The button navigates.
+   */
+  function twoScreens() {
+    const { graph, ids } = buildOn(
+      [
+        ['event.start', 'home'], ['ui.text', 'home'], ['ui.button', 'home'],
+        ['event.click', 'home'], ['nav.go', 'home'],
+        ['event.start', 'settings'], ['ui.text', 'settings'],
+      ],
+      [
+        [0, 'exec', 1, 'exec'], [1, 'exec', 2, 'exec'],
+        [3, 'exec', 4, 'exec'],
+        [5, 'exec', 6, 'exec'],
+      ],
+    )
+    let next = setNodeValue(graph, ids[1], 'value', 'Home page')
+    next = setNodeValue(next, ids[2], 'id', 'go')
+    next = setNodeValue(next, ids[2], 'text', 'Settings')
+    next = setNodeValue(next, ids[3], 'target', 'go')
+    next = setNodeValue(next, ids[4], 'screen', 'settings')
+    next = setNodeValue(next, ids[6], 'value', 'Settings page')
+    return { graph: next, ids }
+  }
+
+  it('paints only the screen it opens on', async () => {
+    const { dom } = await run(twoScreens().graph, SCREENS, 'home')
+    expect(shown(dom)).toContain('Home page')
+    expect(shown(dom)).not.toContain('Settings page')
+    expect(dom.window.document.getElementById('go')).not.toBeNull()
+  })
+
+  it('opens on whichever screen it was asked for', async () => {
+    const { dom } = await run(twoScreens().graph, SCREENS, 'settings')
+    expect(shown(dom)).toContain('Settings page')
+    expect(dom.window.document.getElementById('go')).toBeNull()
+  })
+
+  it('navigates when the button is clicked, and clears the screen it left', async () => {
+    const { dom } = await run(twoScreens().graph, SCREENS, 'home')
+    const button = dom.window.document.getElementById('go')!
+    button.dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+    await settle()
+
+    expect(shown(dom)).toContain('Settings page')
+    expect(shown(dom)).not.toContain('Home page')
+    // The button belonged to the screen that was left, so it is gone.
+    expect(dom.window.document.getElementById('go')).toBeNull()
+  })
+
+  it('goes back to where it came from', async () => {
+    const { graph, ids } = twoScreens()
+    // A button on the second screen that goes back.
+    const extra = buildOn(
+      [['ui.button', 'settings'], ['event.click', 'settings'], ['nav.back', 'settings']],
+      [[1, 'exec', 2, 'exec']],
+    )
+    let merged: BlockGraph = {
+      nodes: [...graph.nodes, ...extra.graph.nodes],
+      connections: [...graph.connections, ...extra.graph.connections],
+    }
+    // Draw it from the second screen's start handler.
+    merged = {
+      ...merged,
+      connections: [
+        ...merged.connections,
+        { id: 'extra-link', from: { node: ids[6], port: 'exec' }, to: { node: extra.ids[0], port: 'exec' } },
+      ],
+    }
+    merged = setNodeValue(merged, extra.ids[0], 'id', 'back')
+    merged = setNodeValue(merged, extra.ids[0], 'text', 'Back')
+    merged = setNodeValue(merged, extra.ids[1], 'target', 'back')
+
+    const { dom } = await run(merged, SCREENS, 'home')
+    dom.window.document.getElementById('go')!
+      .dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+    await settle()
+    expect(dom.window.document.getElementById('back')).not.toBeNull()
+
+    dom.window.document.getElementById('back')!
+      .dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+    await settle()
+    expect(shown(dom)).toContain('Home page')
+    expect(dom.window.document.getElementById('go')).not.toBeNull()
+  })
+
+  it('says so, rather than failing silently, when a screen does not exist', async () => {
+    const { graph, ids } = twoScreens()
+    const broken = setNodeValue(graph, ids[4], 'screen', 'nowhere')
+    const { dom, messages } = await run(broken, SCREENS, 'home')
+    dom.window.document.getElementById('go')!
+      .dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+    await settle()
+
+    expect(messages.some((message) => message.kind === 'log' && message.text.includes('No screen called'))).toBe(true)
+    expect(shown(dom)).toContain('Home page')
+  })
+
+  it('forgets page variables on the way out, and keeps app ones', async () => {
+    const state = [
+      { name: 'draft', type: 'String' as const, scope: 'page' as const, initial: '"nothing yet"' },
+      { name: 'total', type: 'Number' as const, scope: 'app' as const, initial: '7' },
+    ]
+    const { graph, ids } = buildOn(
+      [
+        ['event.start', 'home'], ['ui.button', 'home'], ['event.click', 'home'],
+        ['state.set', 'home'], ['nav.go', 'home'],
+        ['event.start', 'settings'], ['ui.button', 'settings'], ['event.click', 'settings'],
+        ['nav.back', 'settings'],
+        ['event.start', 'home'], ['logic.log', 'home'], ['state.get', 'home'],
+      ],
+      [
+        [0, 'exec', 1, 'exec'],
+        [2, 'exec', 3, 'exec'], [3, 'exec', 4, 'exec'],
+        [5, 'exec', 6, 'exec'], [7, 'exec', 8, 'exec'],
+        [9, 'exec', 10, 'exec'], [11, 'value', 10, 'value'],
+      ],
+    )
+    let next = setNodeValue(graph, ids[1], 'id', 'go')
+    next = setNodeValue(next, ids[2], 'target', 'go')
+    next = setNodeValue(next, ids[3], 'name', 'draft')
+    next = setNodeValue(next, ids[3], 'value', 'typed something')
+    next = setNodeValue(next, ids[4], 'screen', 'settings')
+    next = setNodeValue(next, ids[6], 'id', 'back')
+    next = setNodeValue(next, ids[7], 'target', 'back')
+    next = setNodeValue(next, ids[11], 'name', 'draft')
+
+    const code = generateProgram(next, registry, state, SCREENS).code
+    const html = previewHtml({
+      document: schemaFromGraph(next, registry, { screen: 'home', screens: SCREENS }),
+      code,
+      screen: 'home',
+    })
+    const dom = new JSDOM(html, { runScripts: 'dangerously', pretendToBeVisual: true })
+    const messages: PreviewMessage[] = []
+    dom.window.addEventListener('message', (event: MessageEvent) => {
+      const data = event.data as PreviewMessage & { channel?: string }
+      if (data?.channel === PREVIEW_CHANNEL) messages.push(data)
+    })
+    await settle()
+
+    dom.window.document.getElementById('go')!
+      .dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+    await settle()
+    dom.window.document.getElementById('back')!
+      .dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+    await settle()
+
+    const logs = messages.filter((message) => message.kind === 'log').map((message) => message.text)
+    // Set on the way out -- so it is in the log -- and back to its initial
+    // value on the way in again: page scope belongs to one visit to one
+    // screen. The last line is the one the second visit wrote.
+    expect(logs).toContain('typed something')
+    expect(logs[logs.length - 1]).toBe('nothing yet')
   })
 })

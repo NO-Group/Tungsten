@@ -67,7 +67,9 @@ describe('block schema', () => {
 
   it('groups the library into the categories the sidebar shows', () => {
     const categories = registry.byCategory().map((group) => group.category)
-    expect(categories).toEqual(['Events', 'UI', 'Logic', 'Data', 'Network', 'Auth', 'Storage'])
+    expect(categories).toEqual([
+      'Events', 'UI', 'Navigation', 'Logic', 'Data', 'Network', 'Auth', 'Storage',
+    ])
     expect(registry.all().length).toBe(builtinBlocks.length)
   })
 

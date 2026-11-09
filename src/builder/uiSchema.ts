@@ -13,6 +13,7 @@
 
 import type { BlockDefinition, BlockGraph, BlockNode, BlockRegistry } from './blockSchema'
 import { outgoing } from './graph'
+import { DEFAULT_SCREENS, screenOf, type Screen } from './screens'
 
 export type ComponentType = 'button' | 'text' | 'input' | 'stack' | 'unknown'
 
@@ -82,8 +83,27 @@ function chainFrom(graph: BlockGraph, nodeId: string, port: string): string[] {
   return seen
 }
 
-export function schemaFromGraph(graph: BlockGraph, registry: BlockRegistry): UiDocument {
-  const ordered = [...graph.nodes].sort((a, b) => (
+export type SchemaOptions = {
+  /** Only the components on this screen. Omitted means every one of them. */
+  screen?: string
+  /** The screen list, so a block with no screen of its own resolves to the first. */
+  screens?: readonly Screen[]
+}
+
+export function schemaFromGraph(
+  graph: BlockGraph,
+  registry: BlockRegistry,
+  options: SchemaOptions = {},
+): UiDocument {
+  const { screen, screens = DEFAULT_SCREENS } = options
+  // Filtering here rather than in the renderers is what keeps the first
+  // paint and the running program in step: both are built from the same
+  // one screen, so the anonymous text on each is numbered the same way.
+  const visible = screen === undefined
+    ? graph.nodes
+    : graph.nodes.filter((node) => screenOf(node, screens) === screen)
+
+  const ordered = [...visible].sort((a, b) => (
     a.position.y - b.position.y || a.position.x - b.position.x || a.id.localeCompare(b.id)
   ))
 

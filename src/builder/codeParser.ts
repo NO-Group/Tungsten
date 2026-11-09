@@ -22,6 +22,9 @@
 import type { BlockGraph, BlockNode, BlockRegistry, Connection } from './blockSchema'
 import { nextId } from './graph'
 import { parseState, type AppVariable } from './appState'
+import {
+  DEFAULT_SCREENS, homeScreen, isDefaultScreens, parseScreens, type Screen,
+} from './screens'
 
 export type ParseFailure = {
   ok: false
@@ -32,7 +35,7 @@ export type ParseFailure = {
 }
 
 export type ParseResult =
-  | { ok: true; graph: BlockGraph; state: AppVariable[] }
+  | { ok: true; graph: BlockGraph; state: AppVariable[]; screens: Screen[] }
   | ParseFailure
 
 /** Vertical rhythm of the rebuilt layout, in canvas units. */
@@ -70,23 +73,39 @@ type Frame = {
 export function parseProgram(code: string, registry: BlockRegistry): ParseResult {
   /** The variables declared at the top, if the file declares any. */
   let state: AppVariable[] = []
+  /** The screens, likewise. A file with no declaration has the one. */
+  let screens: Screen[] = [...DEFAULT_SCREENS]
+  /** The screen whose handler is being read. */
+  let screen = homeScreen(screens)
   const nodes: BlockNode[] = []
   const connections: Connection[] = []
   /** Variable name to the node that assigned it, for restoring data links. */
   const symbols = new Map<string, string>()
   const stack: Frame[] = []
-  let row = 0
 
   const definitions = registry.all()
 
+  /**
+   * Each screen is laid out from the top of its own canvas.
+   *
+   * One running counter would push the second screen's blocks a page down
+   * from nothing, because the rows above them are on a canvas the user is
+   * not looking at.
+   */
+  const rows = new Map<string, number>()
+
   const add = (type: string, depth: number): BlockNode => {
+    const row = rows.get(screen) ?? 0
     const node: BlockNode = {
       id: nextId(type.split('.')[1] ?? 'node'),
       type,
+      // The field is written only when the file declares screens, so a
+      // single-screen file parses to exactly the graph it used to.
+      ...(isDefaultScreens(screens) ? {} : { screen }),
       position: { x: depth * COLUMN, y: row * ROW },
       values: {},
     }
-    row += 1
+    rows.set(screen, row + 1)
     nodes.push(node)
     return node
   }
@@ -184,6 +203,18 @@ export function parseProgram(code: string, registry: BlockRegistry): ParseResult
     const declared = parseState(raw)
     if (declared) { state = declared; continue }
 
+    // The screens, read before any handler so the handlers below can name
+    // them. A file that declares none keeps the single default.
+    const declaredScreens = parseScreens(raw)
+    if (declaredScreens) {
+      if (nodes.length) {
+        return { ok: false, line: lineNumber, reason: 'The screens must be declared before the handlers.' }
+      }
+      screens = declaredScreens
+      screen = homeScreen(screens)
+      continue
+    }
+
     const frame = stack[stack.length - 1]
 
     // ------------------------------------------------- closing a body
@@ -207,12 +238,23 @@ export function parseProgram(code: string, registry: BlockRegistry): ParseResult
     }
 
     // ----------------------------------------------------- an event
-    const start = /^app\.onStart\(async \(\) => \{$/.exec(raw)
-    const click = /^app\.onClick\((.*), async \(\) => \{$/.exec(raw)
-    if (start || click) {
+    // `app.onStart(` on its own belongs to the first screen; the longer
+    // `app.screen("settings").onStart(` names the one it belongs to.
+    const scoped = /^app\.screen\("([a-z][a-z0-9-]*)"\)\.(onStart|onClick)\((.*)$/.exec(raw)
+    const plain = scoped ? undefined : /^app\.(onStart|onClick)\((.*)$/.exec(raw)
+    const kind = scoped?.[2] ?? plain?.[1]
+    const rest = scoped?.[3] ?? plain?.[2]
+
+    if (kind && rest !== undefined) {
+      const start = kind === 'onStart' && rest === 'async () => {'
+      const click = kind === 'onClick' ? /^(.*), async \(\) => \{$/.exec(rest) : null
+      if (!start && !click) {
+        return { ok: false, line: lineNumber, reason: 'An event handler that is not shaped like one.' }
+      }
       if (frame) {
         return { ok: false, line: lineNumber, reason: 'An event handler cannot sit inside another block.' }
       }
+      screen = scoped ? scoped[1] : homeScreen(screens)
       const node = add(click ? 'event.click' : 'event.start', 0)
       if (click) applyInput(node, 'target', click[1])
       stack.push({ nodeId: node.id, port: 'exec', depth: 1 })
@@ -267,5 +309,5 @@ export function parseProgram(code: string, registry: BlockRegistry): ParseResult
     return { ok: false, line: lines.length, reason: 'The file ends with a block still open.' }
   }
 
-  return { ok: true, graph: { nodes, connections }, state }
+  return { ok: true, graph: { nodes, connections }, state, screens }
 }

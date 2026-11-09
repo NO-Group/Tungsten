@@ -15,6 +15,7 @@ import {
 
 import Editor from '../ConfiguredEditor'
 import { BuilderCanvas } from './BuilderCanvas'
+import { ScreenBar } from './ScreenBar'
 import { InspectorPanel } from './InspectorPanel'
 import { StatePanel } from './StatePanel'
 import { BuilderPreview } from './BuilderPreview'
@@ -25,6 +26,7 @@ import type { CompileTarget } from '../../builder/compile'
 import type { BuilderState } from '../../builder/useBuilder'
 import { BUILDER_SYNC_PATH } from '../../builder/fileSync'
 import { TOOLS, toolForKey, type ToolId } from '../../builder/tools'
+import { screenOf } from '../../builder/screens'
 
 export type BuilderViewProps = {
   builder: BuilderState
@@ -52,6 +54,7 @@ const TARGETS: Array<{ id: CompileTarget; label: string }> = [
 
 export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFile, onBuild, onClose }: BuilderViewProps) {
   const { graph, registry, report, program, code, parseError } = builder
+  const { screens, activeScreen, visibleGraph } = builder
   const diagnostics = useMemo(() => diagnosticsByNode(report), [report])
 
   const [tool, setTool] = useState<ToolId>('pick')
@@ -176,6 +179,30 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
     selectAll, selectedNode, selection.length, undo,
   ])
 
+  /** How many blocks are on each screen, for the strip above the canvas. */
+  const screenCounts = useMemo(() => {
+    const counts: Record<string, number> = {}
+    for (const screen of screens) counts[screen.name] = 0
+    for (const node of graph.nodes) {
+      const name = screenOf(node, screens)
+      counts[name] = (counts[name] ?? 0) + 1
+    }
+    return counts
+  }, [graph.nodes, screens])
+
+  /**
+   * The values the inspector offers instead of a text field.
+   *
+   * Naming a variable or a screen by typing it is how a graph comes to
+   * refer to something that does not exist; the checker then reports it,
+   * which is a worse way to find out than not being able to say it.
+   */
+  const inspectorChoices = useMemo(() => {
+    const variables = builder.state.map((variable) => variable.name)
+    const names = screens.map((screen) => screen.name)
+    return { 'state.get.name': variables, 'state.set.name': variables, 'nav.go.screen': names }
+  }, [builder.state, screens])
+
   /** Variables some block actually reads or writes, for the dimming. */
   const usedVariables = useMemo(() => new Set(
     graph.nodes
@@ -193,7 +220,9 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
       <header className="builder-toolbar">
         <span className="builder-title"><Code2 size={13} /> Builder</span>
         <span className="builder-count">
-          {selection.length > 1 ? `${selection.length} of ` : ''}{graph.nodes.length} blocks · {builder.ui.components.length} components · {builder.schema.tables.length} tables
+          {selection.length > 1 ? `${selection.length} of ` : ''}{visibleGraph.nodes.length} blocks ·{' '}
+          {builder.ui.components.length} components
+          {screens.length > 1 ? ` · ${screens.length} screens` : ''} · {builder.schema.tables.length} tables
         </span>
 
         <span className={`builder-state ${blocked ? 'blocked' : 'ready'}`}>
@@ -296,6 +325,20 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
 
       <div className="builder-panes">
         <div className="builder-pane blocks">
+          <ScreenBar
+            screens={screens}
+            active={activeScreen}
+            counts={screenCounts}
+            selected={selection.length}
+            readOnly={Boolean(parseError)}
+            onOpen={builder.openScreen}
+            onAdd={() => builder.addScreen()}
+            onRename={builder.renameScreen}
+            onRemove={builder.removeScreen}
+            onMove={builder.moveScreen}
+            onMoveSelection={builder.moveSelectionToScreen}
+          />
+
           <div className="builder-tools" role="toolbar" aria-label="Canvas tools">
           {TOOLS.map((entry) => (
             <button
@@ -315,7 +358,7 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
 
         <BuilderCanvas
           tool={tool}
-            graph={graph}
+            graph={visibleGraph}
             registry={registry}
             report={report}
             diagnostics={diagnostics}
@@ -336,10 +379,11 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
 
           {inspectorOpen && (
             <InspectorPanel
-              graph={graph}
+              graph={visibleGraph}
               registry={registry}
               selection={selection}
               readOnly={Boolean(parseError)}
+              choices={inspectorChoices}
               onValue={builder.setValue}
             />
           )}

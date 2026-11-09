@@ -20,6 +20,8 @@ import { createFetchers, createMigration, type DataSchema } from './dataSchema'
 import { previewHtml } from './previewRuntime'
 import { uiThemeDart } from './uiTokens'
 import { renderDocumentBody, schemaFromGraph, type ComponentSchema, type UiDocument } from './uiSchema'
+import { DEFAULT_SCREENS, homeScreen, screenOf, type Screen } from './screens'
+import type { AppVariable } from './appState'
 
 export const IR_VERSION = 1
 
@@ -47,10 +49,22 @@ export type IrEvent = {
   body: IrStatement[]
 }
 
+/** One screen, with only what belongs to it. */
+export type IrScreen = {
+  name: string
+  components: ComponentSchema[]
+  events: IrEvent[]
+}
+
 export type Ir = {
   version: number
+  /** Every handler in the app, in file order. */
   events: IrEvent[]
+  /** Every component in the app. A target that has screens reads those. */
   components: ComponentSchema[]
+  screens: IrScreen[]
+  /** Where the app starts. */
+  home: string
   tables: DataSchema['tables']
 }
 
@@ -59,6 +73,7 @@ export function buildIr(
   graph: BlockGraph,
   registry: BlockRegistry,
   schema: DataSchema = { tables: [] },
+  screens: readonly Screen[] = DEFAULT_SCREENS,
 ): Ir {
   const ui = schemaFromGraph(graph, registry)
 
@@ -116,7 +131,26 @@ export function buildIr(
       body: chain(node.id, 'exec', new Set()),
     }))
 
-  return { version: IR_VERSION, events, components: ui.components, tables: schema.tables }
+  // Each screen gets its own slice of the same two lists. Targets that
+  // know about screens read these; the flat lists above stay for the ones
+  // that do not, and for an app that only ever has the one.
+  const byScreen: IrScreen[] = screens.map((screen) => ({
+    name: screen.name,
+    components: schemaFromGraph(graph, registry, { screen: screen.name, screens }).components,
+    events: events.filter((event) => {
+      const node = nodeById(graph, event.node)
+      return node ? screenOf(node, screens) === screen.name : false
+    }),
+  }))
+
+  return {
+    version: IR_VERSION,
+    events,
+    components: ui.components,
+    screens: byScreen,
+    home: homeScreen(screens),
+    tables: schema.tables,
+  }
 }
 
 export type CompileTarget = 'web' | 'mobile' | 'node'
@@ -131,6 +165,16 @@ export type CompileInput = {
   graph: BlockGraph
   registry: BlockRegistry
   schema?: DataSchema
+  /**
+   * The variables the app keeps.
+   *
+   * Not optional in spirit: a build without them emits a program whose
+   * first line is missing, and every read of a variable in it is a
+   * reference error. It stays optional only so a caller with no state can
+   * leave it out.
+   */
+  state?: readonly AppVariable[]
+  screens?: readonly Screen[]
   target: CompileTarget
 }
 
@@ -162,6 +206,10 @@ function dartStatement(statement: IrStatement, indent: string, names: Map<string
   switch (statement.type) {
     case 'logic.log':
       return [`${indent}debugPrint('\${${value('value')}}');`]
+    case 'nav.go':
+      return [`${indent}_goTo(${value('screen')});`]
+    case 'nav.back':
+      return [`${indent}_back();`]
     case 'ui.text':
       return [`${indent}setState(() => output.add(Text('\${${value('value')}}')));`]
     case 'ui.button':
@@ -211,7 +259,7 @@ function webFiles(ir: Ir, ui: UiDocument, code: string, schema: DataSchema): Com
   const files: CompiledFile[] = [
     {
       path: 'build/web/index.html',
-      contents: previewHtml({ document: ui, code }),
+      contents: previewHtml({ document: ui, code, screen: ir.home }),
     },
     {
       path: 'build/web/app.ts',
@@ -219,7 +267,13 @@ function webFiles(ir: Ir, ui: UiDocument, code: string, schema: DataSchema): Com
     },
     {
       path: 'build/web/ui.schema.json',
-      contents: `${JSON.stringify({ components: ir.components }, null, 2)}\n`,
+      contents: `${JSON.stringify(
+        ir.screens.length > 1
+          ? { home: ir.home, screens: ir.screens.map((screen) => ({ name: screen.name, components: screen.components })) }
+          : { components: ir.components },
+        null,
+        2,
+      )}\n`,
     },
     {
       path: 'build/web/README.md',
@@ -229,7 +283,7 @@ function webFiles(ir: Ir, ui: UiDocument, code: string, schema: DataSchema): Com
 - \`app.ts\` is the program the blocks generated. It is ordinary TypeScript; nothing here depends on the builder.
 - \`ui.schema.json\` is the interface, as data. Any renderer that reads it renders this app.
 
-${ir.events.length} event handler${ir.events.length === 1 ? '' : 's'}, ${ir.components.length} component${ir.components.length === 1 ? '' : 's'}, ${ir.tables.length} table${ir.tables.length === 1 ? '' : 's'}.
+${ir.events.length} event handler${ir.events.length === 1 ? '' : 's'}, ${ir.components.length} component${ir.components.length === 1 ? '' : 's'}, ${ir.screens.length} screen${ir.screens.length === 1 ? '' : 's'}, ${ir.tables.length} table${ir.tables.length === 1 ? '' : 's'}.
 `,
     },
   ]
@@ -244,21 +298,40 @@ ${ir.events.length} event handler${ir.events.length === 1 ? '' : 's'}, ${ir.comp
   return files
 }
 
+/** A Dart identifier for a node id, used for handler names. */
+function dartName(nodeId: string): string {
+  return `_handle_${nodeId.replace(/[^A-Za-z0-9_]/g, '_')}`
+}
+
 function mobileFiles(ir: Ir): CompiledFile[] {
   const names = new Map<string, string>()
   const handlers = ir.events.map((event) => {
-    const id = `_handle_${event.node.replace(/[^A-Za-z0-9_]/g, '_')}`
     const body = event.body.flatMap((statement) => dartStatement(statement, '    ', names))
-    return `  Future<void> ${id}() async {\n${body.join('\n') || '    // Nothing connected yet.'}\n  }`
+    return `  Future<void> ${dartName(event.node)}() async {\n${body.join('\n') || '    // Nothing connected yet.'}\n  }`
   })
 
   const controllers = ir.components
     .filter((component) => component.type === 'input')
     .map((component) => `  final _${component.id.replace(/[^A-Za-z0-9_]/g, '_')} = TextEditingController();`)
 
-  const starts = ir.events
-    .filter((event) => event.type === 'event.start')
-    .map((event) => `    _handle_${event.node.replace(/[^A-Za-z0-9_]/g, '_')}();`)
+  /** The widgets of one screen, and the start handlers it runs on entry. */
+  const widgetsFor = ir.screens.map((screen) => [
+    `      case ${JSON.stringify(screen.name)}:`,
+    '        return [',
+    ...screen.components.map((component) => `    ${dartWidget(component)}`),
+    '        ];',
+  ].join('\n'))
+
+  const startsFor = ir.screens.map((screen) => {
+    const calls = screen.events
+      .filter((event) => event.type === 'event.start')
+      .map((event) => `        ${dartName(event.node)}();`)
+    return [
+      `      case ${JSON.stringify(screen.name)}:`,
+      ...(calls.length ? calls : ['        // No start event on this screen.']),
+      '        break;',
+    ].join('\n')
+  })
 
   return [{
     path: 'build/mobile/lib/main.dart',
@@ -304,10 +377,51 @@ class _BuilderScreenState extends State<BuilderScreen> {
 ${controllers.join('\n')}
   final List<Widget> output = [];
 
+  /// Which screen is showing, and the ones behind it. Navigation is state,
+  /// not a route stack: the whole app is one widget, so going back is
+  /// popping a string rather than unwinding a Navigator.
+  String _screen = ${JSON.stringify(ir.home)};
+  final List<String> _trail = [];
+
+  void _goTo(String screen) {
+    if (screen == _screen) return;
+    _trail.add(_screen);
+    _enter(screen);
+  }
+
+  void _back() {
+    if (_trail.isEmpty) return;
+    _enter(_trail.removeLast());
+  }
+
+  void _enter(String screen) {
+    setState(() {
+      _screen = screen;
+      output.clear();
+    });
+    _runStarts(screen);
+  }
+
+  void _runStarts(String screen) {
+    switch (screen) {
+${startsFor.join('\n')}
+      default:
+        break;
+    }
+  }
+
+  List<Widget> _widgetsFor(String screen) {
+    switch (screen) {
+${widgetsFor.join('\n')}
+      default:
+        return const [];
+    }
+  }
+
   @override
   void initState() {
     super.initState();
-${starts.join('\n') || '    // No start event.'}
+    _runStarts(_screen);
   }
 
 ${handlers.join('\n\n')}
@@ -320,7 +434,7 @@ ${handlers.join('\n\n')}
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-${ir.components.map(dartWidget).join('\n')}
+                ..._widgetsFor(_screen),
                 ...output,
               ],
             ),
@@ -410,8 +524,15 @@ createServer(async (request, response) => {
  * The integrity report gates this, not the caller: every path into
  * compilation gets the same refusal, with the same wording.
  */
-export function compile({ graph, registry, schema = { tables: [] }, target }: CompileInput): CompileResult {
-  const report = checkIntegrity(graph, registry)
+export function compile({
+  graph,
+  registry,
+  schema = { tables: [] },
+  state = [],
+  screens = DEFAULT_SCREENS,
+  target,
+}: CompileInput): CompileResult {
+  const report = checkIntegrity(graph, registry, state, screens)
   const errors = report.diagnostics.filter((entry) => entry.severity === 'error')
   if (errors.length) {
     return {
@@ -424,9 +545,12 @@ export function compile({ graph, registry, schema = { tables: [] }, target }: Co
     return { ok: false, target, reason: 'There is nothing on the canvas to compile.' }
   }
 
-  const ir = buildIr(graph, registry, schema)
-  const ui: UiDocument = { components: ir.components }
-  const { code } = generateProgram(graph, registry)
+  const ir = buildIr(graph, registry, schema, screens)
+  // The first paint is the home screen's, because that is the screen the
+  // program opens on. Handing it every component would paint the whole app
+  // at once and then let the first render delete most of it.
+  const ui: UiDocument = { components: ir.screens.find((screen) => screen.name === ir.home)?.components ?? ir.components }
+  const { code } = generateProgram(graph, registry, state, screens)
 
   const files = target === 'mobile'
     ? mobileFiles(ir)
@@ -438,11 +562,17 @@ export function compile({ graph, registry, schema = { tables: [] }, target }: Co
     ok: true,
     target,
     files,
-    summary: `${files.length} file${files.length === 1 ? '' : 's'} for ${target}: ${files.map((file) => file.path.split('/').pop()).join(', ')}`,
+    summary: `${files.length} file${files.length === 1 ? '' : 's'} for ${target}${
+      screens.length > 1 ? ` (${screens.length} screens)` : ''
+    }: ${files.map((file) => file.path.split('/').pop()).join(', ')}`,
   }
 }
 
 /** The static markup of the current interface, for a quick look. */
-export function previewMarkup(graph: BlockGraph, registry: BlockRegistry): string {
-  return renderDocumentBody(schemaFromGraph(graph, registry))
+export function previewMarkup(
+  graph: BlockGraph,
+  registry: BlockRegistry,
+  options: { screen?: string; screens?: readonly Screen[] } = {},
+): string {
+  return renderDocumentBody(schemaFromGraph(graph, registry, options))
 }

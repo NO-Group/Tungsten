@@ -23,11 +23,30 @@ export type InspectorPanelProps = {
   registry: BlockRegistry
   selection: string[]
   readOnly?: boolean
+  /**
+   * The values certain properties may take, by `type.port`.
+   *
+   * A variable name and a screen name are not free text: there is a list of
+   * them, the list is known, and typing one by hand is how a graph ends up
+   * naming something that does not exist. Where a list is supplied the
+   * field becomes a choice -- and the block library still knows nothing
+   * about it, because the list is handed in rather than looked up here.
+   */
+  choices?: Record<string, readonly string[]>
   onValue: (nodeId: string, portId: string, value: string | number | boolean) => void
 }
 
 /** Colour properties get swatches; the rest get a field. */
 const COLOUR_PORTS = ['background', 'color']
+
+/**
+ * The properties that are about appearance.
+ *
+ * Everything else a block declares as a property -- which variable it
+ * writes, which screen it opens -- is a setting, and putting it under a
+ * heading that says “Style” was a small lie the inspector told.
+ */
+const STYLE_PORTS = ['radius', 'padding', 'background', 'color', 'width', 'align', 'direction', 'gap']
 
 function ColourField({ value, onPick }: { value: string; onPick: (next: string) => void }) {
   return (
@@ -47,15 +66,38 @@ function ColourField({ value, onPick }: { value: string; onPick: (next: string) 
 }
 
 function PropertyField({
-  node, port, readOnly, onValue,
+  node, port, readOnly, choices, onValue,
 }: {
   node: BlockNode
   port: Port
   readOnly?: boolean
+  choices?: readonly string[]
   onValue: InspectorPanelProps['onValue']
 }) {
   const raw = node.values[port.id]
   const value = raw === undefined ? port.default ?? '' : raw
+
+  if (choices) {
+    const current = String(value)
+    return (
+      <label className="inspector-field">
+        <span>{port.label}</span>
+        <select
+          value={current}
+          disabled={readOnly}
+          aria-label={`${port.label} of ${node.type}`}
+          onChange={(event) => onValue(node.id, port.id, event.target.value)}
+        >
+          <option value="">Choose…</option>
+          {/* A value that is no longer on the list is still shown, or
+              selecting the block would quietly change what it names. */}
+          {(choices.includes(current) || !current ? choices : [...choices, current]).map((choice) => (
+            <option key={choice} value={choice}>{choice}</option>
+          ))}
+        </select>
+      </label>
+    )
+  }
 
   if (COLOUR_PORTS.includes(port.id)) {
     return (
@@ -85,7 +127,9 @@ function PropertyField({
   )
 }
 
-export function InspectorPanel({ graph, registry, selection, readOnly, onValue }: InspectorPanelProps) {
+export function InspectorPanel({
+  graph, registry, selection, readOnly, choices = {}, onValue,
+}: InspectorPanelProps) {
   const nodes = graph.nodes.filter((node) => selection.includes(node.id))
 
   if (!nodes.length) {
@@ -119,6 +163,7 @@ export function InspectorPanel({ graph, registry, selection, readOnly, onValue }
                   node={nodes[0]}
                   port={port}
                   readOnly={readOnly}
+                  choices={choices[`${nodes[0].type}.${port.id}`]}
                   onValue={(_, portId, value) => nodes.forEach((node) => onValue(node.id, portId, value))}
                 />
               ))}
@@ -131,6 +176,8 @@ export function InspectorPanel({ graph, registry, selection, readOnly, onValue }
   const node = nodes[0]
   const definition = registry.get(node.type)
   const properties = propertiesOf(registry, node.type)
+  const styles = properties.filter((port) => STYLE_PORTS.includes(port.id))
+  const settings = properties.filter((port) => !STYLE_PORTS.includes(port.id))
   // A wired input is shown, but not edited here: the wire is the value, and
   // a field that silently does nothing is worse than no field.
   const inputs = (definition?.inputs ?? []).filter((port) => !port.property && port.type !== 'Exec')
@@ -158,17 +205,47 @@ export function InspectorPanel({ graph, registry, selection, readOnly, onValue }
                 </div>
               )
               : (
-                <PropertyField key={port.id} node={node} port={port} readOnly={readOnly} onValue={onValue} />
+                <PropertyField
+                  key={port.id}
+                  node={node}
+                  port={port}
+                  readOnly={readOnly}
+                  choices={choices[`${node.type}.${port.id}`]}
+                  onValue={onValue}
+                />
               )
           })}
         </section>
       )}
 
-      {Boolean(properties.length) && (
+      {Boolean(settings.length) && (
+        <section>
+          <h4>Settings</h4>
+          {settings.map((port) => (
+            <PropertyField
+              key={port.id}
+              node={node}
+              port={port}
+              readOnly={readOnly}
+              choices={choices[`${node.type}.${port.id}`]}
+              onValue={onValue}
+            />
+          ))}
+        </section>
+      )}
+
+      {Boolean(styles.length) && (
         <section>
           <h4><Palette size={11} /> Style</h4>
-          {properties.map((port) => (
-            <PropertyField key={port.id} node={node} port={port} readOnly={readOnly} onValue={onValue} />
+          {styles.map((port) => (
+            <PropertyField
+              key={port.id}
+              node={node}
+              port={port}
+              readOnly={readOnly}
+              choices={choices[`${node.type}.${port.id}`]}
+              onValue={onValue}
+            />
           ))}
         </section>
       )}

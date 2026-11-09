@@ -209,9 +209,10 @@ const render = {
  */
 function rerender() {
   // A pass, so ids are claimed from scratch and rows that are no longer
-  // produced are cleared away afterwards.
+  // produced -- or belong to the screen just left -- are cleared away
+  // afterwards.
   beginPass()
-  Promise.all(starts.map((handler) => guarded(handler))).then(endPass)
+  Promise.all(handlersOf(current).map((handler) => guarded(handler))).then(endPass)
 }
 
 const app = {
@@ -228,6 +229,7 @@ const app = {
       Object.assign(scopes.app, JSON.parse(localStorage.getItem('tungsten.preview.state') || '{}'))
     } catch { /* Nothing stored, or storage refused: the defaults stand. */ }
 
+    resetPage = () => { scopes.page = { ...(initial.page || {}) } }
     const scopeOf = (name) => (name in scopes.page ? 'page' : 'app')
     return {
       get: (name) => scopes[scopeOf(name)][name],
@@ -242,23 +244,63 @@ const app = {
       },
     }
   },
-  onStart: (handler) => { starts.push(handler) },
-  onClick: (target, handler) => {
-    // Delegated from the root rather than bound to one element: a button
-    // inside a repeat exists once per row, and every one of them is that
-    // button. Binding by id would only ever reach the first.
-    const bind = () => {
-      const name = String(target)
-      if (!document.getElementById(name)) {
-        log('No element with id "' + name + '" to click. Add a Button block with that id.')
-      }
-      root.addEventListener('click', (event) => {
-        const hit = event.target && event.target.closest ? event.target.closest('[id]') : null
-        if (hit && isCopyOf(hit.id, name)) void guarded(handler)
-      })
-    }
-    bindings.push(bind)
+  /**
+   * Declares the screens. The first is where the app starts, unless the
+   * workbench asked for a particular one -- which it does, so the preview
+   * shows the screen being drawn rather than always the first.
+   */
+  screens: (names) => {
+    screens = Array.prototype.slice.call(names).map(String)
+    if (screens.indexOf(current) < 0) current = screens[0]
+    return screens
   },
+  screen: (name) => ({
+    onStart: (handler) => { starts.push({ screen: String(name), handler: handler }) },
+    onClick: (target, handler) => bindClick(String(name), target, handler),
+  }),
+  onStart: (handler) => { starts.push({ screen: screens[0], handler: handler }) },
+  onClick: (target, handler) => bindClick(screens[0], target, handler),
+  currentScreen: () => current,
+  goTo: (name) => {
+    const target = String(name)
+    if (screens.indexOf(target) < 0) {
+      log('No screen called "' + target + '". Add it in the screen bar, or pick one that exists.')
+      return current
+    }
+    if (target === current) return current
+    trail.push(current)
+    enter(target)
+    return current
+  },
+  back: () => {
+    if (!trail.length) {
+      log('Nothing to go back to: this is the screen the app started on.')
+      return current
+    }
+    enter(trail.pop())
+    return current
+  },
+}
+
+/**
+ * Binds a click, delegated from the root rather than to one element: a
+ * button inside a repeat exists once per row, and every one of them is
+ * that button. Binding by id would only ever reach the first.
+ */
+function bindClick(screen, target, handler) {
+  bindings.push(() => {
+    const name = String(target)
+    if (screen === current && !document.getElementById(name)) {
+      log('No element with id "' + name + '" to click. Add a Button block with that id.')
+    }
+    root.addEventListener('click', (event) => {
+      // A handler belongs to its screen: the element it names can exist on
+      // two of them, and only the one being shown should answer.
+      if (screen !== current) return
+      const hit = event.target && event.target.closest ? event.target.closest('[id]') : null
+      if (hit && isCopyOf(hit.id, name)) void guarded(handler)
+    })
+  })
 }
 
 // Seeded, obviously fake, and honest about it: a preview must not imply that
@@ -296,8 +338,33 @@ const storage = {
   },
 }
 
+/**
+ * The screens, in the sandbox.
+ *
+ * A handler is registered against the screen it was declared on, and only
+ * the current screen's handlers run in a pass. Everything the previous
+ * screen drew goes away on its own: endPass removes what the pass did not
+ * touch, which is the same mechanism that clears a row dropped from a list.
+ */
+let screens = ['home']
+let current = INITIAL_SCREEN
+const trail = []
 const starts = []
 const bindings = []
+/** Restores page variables to their initial values. Set by app.state. */
+let resetPage = () => {}
+
+const handlersOf = (screen) => starts.filter((entry) => entry.screen === screen).map((entry) => entry.handler)
+
+function enter(screen) {
+  current = screen
+  // Page scope belongs to one screen and does not survive leaving it --
+  // the distinction between the two scopes, made real rather than
+  // described. App scope is untouched, which is the whole point of it.
+  resetPage()
+  rerender()
+}
+
 let offset = 0
 const setOffset = (value) => { offset = value }
 
@@ -311,6 +378,15 @@ export type PreviewOptions = {
   document: UiDocument
   /** The generated program, exactly as the code pane shows it. */
   code: string
+  /**
+   * The screen to open on.
+   *
+   * The workbench passes the screen being edited, so the preview shows the
+   * one under the cursor instead of always the first. The document it is
+   * handed must be that same screen's, or the first paint and the first
+   * render would disagree about what is on the page.
+   */
+  screen?: string
 }
 
 /**
@@ -320,7 +396,7 @@ export type PreviewOptions = {
  * network and no same-origin access, so there is nothing for it to fetch and
  * nothing it can reach if it tried.
  */
-export function previewHtml({ document: ui, code }: PreviewOptions): string {
+export function previewHtml({ document: ui, code, screen = 'home' }: PreviewOptions): string {
   const body = [...PREAMBLE, ...code.split('\n')].join('\n')
 
   return `<!doctype html>
@@ -337,6 +413,7 @@ export function previewHtml({ document: ui, code }: PreviewOptions): string {
     </div>
     <script>
       const PREAMBLE_LINES = ${PREVIEW_PREAMBLE_LINES};
+      const INITIAL_SCREEN = ${JSON.stringify(screen)};
       ${RUNTIME}
       try {
         const program = new Function(
@@ -346,7 +423,8 @@ export function previewHtml({ document: ui, code }: PreviewOptions): string {
         program(app, render, db, http, auth, storage, { log, warn: log, error: log }, lineOf, setOffset);
         bindings.forEach((bind) => bind());
         beginPass();
-        Promise.all(starts.map((handler) => guarded(handler))).then(() => { endPass(); post({ kind: 'ready' }); });
+        Promise.all(handlersOf(current).map((handler) => guarded(handler)))
+          .then(() => { endPass(); post({ kind: 'ready' }); });
       } catch (error) {
         report(error, 0);
       }
