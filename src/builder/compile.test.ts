@@ -4,7 +4,13 @@ import { builtinBlocks } from './blockLibrary'
 import { createRegistry, type BlockGraph } from './blockSchema'
 import { addNode, connect, createNode, resetIds, setNodeValue } from './graph'
 import { buildIr, compile } from './compile'
-import { schemaFromGraph, renderDocumentBody } from './uiSchema'
+import {
+  flattenComponents,
+  headingLevelOf,
+  optionsOf,
+  renderDocumentBody,
+  schemaFromGraph,
+} from './uiSchema'
 import { previewHtml, PREVIEW_PREAMBLE_LINES } from './previewRuntime'
 import {
   checkSchema,
@@ -386,5 +392,85 @@ describe('traceback', () => {
   it('passes the message through when no line maps to a block', () => {
     const program = generateProgram({ nodes: [], connections: [] }, registry)
     expect(explainFailure(program, registry, 'Something went wrong').message).toBe('Something went wrong')
+  })
+})
+
+/**
+ * The schema, with the whole library in it.
+ *
+ * The first paint is static HTML and the running app is the sandbox
+ * runtime; both read this schema, so a component that projects wrongly
+ * here is wrong in the preview, the web bundle and all three desktop
+ * targets at once.
+ */
+describe('the component schema, for every control', () => {
+  function one(type: string, values: Record<string, string | number | boolean> = {}) {
+    const { graph, ids } = build([['event.start'], [type]], [['0', 'exec', '1', 'exec']])
+    let next = graph
+    for (const [key, value] of Object.entries(values)) next = setNodeValue(next, ids[1], key, value)
+    return schemaFromGraph(next, registry).components[0]
+  }
+
+  it('gives each block its own component type', () => {
+    expect(one('ui.heading').type).toBe('heading')
+    expect(one('ui.image').type).toBe('image')
+    expect(one('ui.checkbox').type).toBe('checkbox')
+    expect(one('ui.select').type).toBe('select')
+    expect(one('ui.link').type).toBe('link')
+    expect(one('ui.divider').type).toBe('divider')
+  })
+
+  it('clamps a heading level, wherever it came from', () => {
+    expect(headingLevelOf(one('ui.heading', { level: 2 }))).toBe(2)
+    expect(headingLevelOf(one('ui.heading', { level: 99 }))).toBe(6)
+    expect(headingLevelOf(one('ui.heading', { level: -3 }))).toBe(1)
+    // A level that is not a number at all still has to render something.
+    expect(headingLevelOf(one('ui.heading', { level: 'big' }))).toBe(2)
+  })
+
+  it('splits a dropdown\'s choices, and drops the empties', () => {
+    expect(optionsOf(one('ui.select', { options: 'Free, Pro , Team' }))).toEqual(['Free', 'Pro', 'Team'])
+    expect(optionsOf(one('ui.select', { options: 'Only,' }))).toEqual(['Only'])
+    expect(optionsOf(one('ui.select', { options: '' }))).toEqual([])
+  })
+
+  it('renders semantic markup rather than styled divs', () => {
+    expect(renderDocumentBody({ components: [one('ui.heading', { text: 'Hello', level: 3 })] }))
+      .toContain('<h3 id="title"')
+    expect(renderDocumentBody({ components: [one('ui.link', { href: 'https://example.com' })] }))
+      .toContain('<a id="link"')
+    expect(renderDocumentBody({ components: [one('ui.divider')] })).toContain('<hr id="divider"')
+    expect(renderDocumentBody({ components: [one('ui.select', { options: 'A, B' })] }))
+      .toContain('<option>B</option>')
+  })
+
+  it('escapes what the user typed, everywhere it lands', () => {
+    const html = renderDocumentBody({
+      components: [
+        one('ui.heading', { text: '<script>alert(1)</script>' }),
+        one('ui.image', { src: '" onerror="alert(1)', alt: 'x' }),
+        one('ui.link', { text: 'ok', href: '" onclick="alert(1)' }),
+      ],
+    })
+    expect(html).not.toContain('<script>alert(1)</script>')
+    expect(html).not.toContain('onerror="alert(1)"')
+    expect(html).not.toContain('onclick="alert(1)"')
+  })
+
+  it('marks the ticked state on the box, not on the label around it', () => {
+    const html = renderDocumentBody({ components: [one('ui.checkbox', { checked: true })] })
+    expect(html).toContain('<input type="checkbox" checked />')
+    expect(html).toContain('<label id="agree"')
+  })
+
+  it('walks a container when something needs every component', () => {
+    const { graph } = build(
+      [['event.start'], ['ui.stack'], ['ui.heading'], ['ui.input']],
+      [['0', 'exec', '1', 'exec'], ['1', 'children', '2', 'exec'], ['2', 'exec', '3', 'exec']],
+    )
+    const document = schemaFromGraph(graph, registry)
+    expect(document.components).toHaveLength(1)
+    expect(flattenComponents(document.components).map((component) => component.type))
+      .toEqual(['stack', 'heading', 'input'])
   })
 })

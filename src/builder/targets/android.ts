@@ -12,7 +12,7 @@
  * belongs on the platform.
  */
 
-import type { ComponentSchema } from '../uiSchema'
+import { headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeKotlin } from '../uiTokens'
 import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile'
 import { appIdFor, type Project } from '../../project/targets'
@@ -102,36 +102,91 @@ export function kotlinStatement(
   }
 }
 
-/** One component, as a composable call. */
-function composable(component: ComponentSchema): string {
+/**
+ * One component, as a composable call.
+ *
+ * Recursive: a stack is a Column or a Row with the same children the
+ * preview nests inside it, so the phone shows the layout that was drawn
+ * rather than a flat list in the same order.
+ */
+function composable(component: ComponentSchema, indent = BRANCH_BODY): string {
   const text = (key: string, fallback: string) => JSON.stringify(String(component.properties[key] ?? fallback))
+  const id = JSON.stringify(component.id)
+
   if (component.type === 'button') {
     const handler = component.events.click
       ? `{ scope.launch { ${handlerName(component.events.click)}(app) } }`
       : '{}'
-    return `            AppButton(text = ${text('text', 'Submit')}, onClick = ${handler})`
+    return `${indent}AppButton(text = ${text('text', 'Submit')}, onClick = ${handler})`
   }
   if (component.type === 'input') {
-    return `            AppInput(
-                value = app.fields[${JSON.stringify(component.id)}] ?: "",
-                placeholder = ${text('placeholder', '')},
-                onChange = { app.fields[${JSON.stringify(component.id)}] = it },
-            )`
+    return `${indent}AppInput(
+${indent}    value = app.fields[${id}] ?: "",
+${indent}    placeholder = ${text('placeholder', '')},
+${indent}    onChange = { app.fields[${id}] = it },
+${indent})`
   }
-  return `            AppText(text = ${text('value', '')})`
+  if (component.type === 'heading') {
+    return `${indent}AppHeading(text = ${text('text', '')}, level = ${headingLevelOf(component)})`
+  }
+  if (component.type === 'image') {
+    return `${indent}AppImage(url = ${text('src', '')}, alt = ${text('alt', 'Image')})`
+  }
+  if (component.type === 'checkbox') {
+    return `${indent}AppCheckbox(
+${indent}    label = ${text('label', '')},
+${indent}    checked = app.fields[${id}] == "true",
+${indent}    onChange = { app.fields[${id}] = it.toString() },
+${indent})`
+  }
+  if (component.type === 'select') {
+    const choices = optionsOf(component)
+    const initial = String(component.properties.value ?? '') || choices[0] || ''
+    return `${indent}AppSelect(
+${indent}    options = listOf(${choices.map((choice) => JSON.stringify(choice)).join(', ')}),
+${indent}    selected = app.fields[${id}] ?: ${JSON.stringify(initial)},
+${indent}    onChange = { app.fields[${id}] = it },
+${indent})`
+  }
+  if (component.type === 'link') {
+    return `${indent}AppLink(text = ${text('text', '')}, url = ${text('href', '')})`
+  }
+  if (component.type === 'divider') {
+    return `${indent}HorizontalDivider(color = AppTheme.border)`
+  }
+  if (component.type === 'stack') {
+    const row = String(component.properties.direction ?? 'column') === 'row'
+    const gap = Number(component.properties.gap ?? 10)
+    const children = (component.children ?? []).map((child) => composable(child, `${indent}    `))
+    const arrangement = row
+      ? `horizontalArrangement = Arrangement.spacedBy(${gap}.dp),\n${indent}    verticalAlignment = Alignment.CenterVertically,`
+      : `verticalArrangement = Arrangement.spacedBy(${gap}.dp),`
+    return `${indent}${row ? 'Row' : 'Column'}(
+${indent}    ${arrangement}
+${indent}) {
+${children.join('\n') || `${indent}    // Nothing inside this stack yet.`}
+${indent}}`
+  }
+  return `${indent}AppText(text = ${text('value', '')})`
 }
+
+/** Where a `when (app.screen)` branch and its body sit, in the file. */
+const BRANCH = ' '.repeat(20)
+const BRANCH_BODY = ' '.repeat(24)
 
 function screenBranch(screen: { name: string; components: ComponentSchema[] }): string {
   const body = screen.components.length
-    ? screen.components.map(composable).join('\n')
-    : '            AppText(text = "This screen has nothing on it yet.")'
-  return `        ${JSON.stringify(screen.name)} -> {\n${body}\n        }`
+    ? screen.components.map((component) => composable(component, BRANCH_BODY)).join('\n')
+    : `${BRANCH_BODY}AppText(text = "This screen has nothing on it yet.")`
+  return `${BRANCH}${JSON.stringify(screen.name)} -> {\n${body}\n${BRANCH}}`
 }
 
 function startBranch(screen: { name: string; events: IrEvent[] }): string {
   const starts = screen.events
     .filter((event) => event.type === 'event.start')
     .map((event) => `            ${handlerName(event.node)}(app)`)
+  // The start branch is in LaunchedEffect, two levels shallower than the
+  // one that draws the screen.
   return `        ${JSON.stringify(screen.name)} -> {\n${
     starts.length ? starts.join('\n') : '            // No start event on this screen.'
   }\n        }`
@@ -155,14 +210,21 @@ import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -172,9 +234,14 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import coil.compose.AsyncImage
 import kotlinx.coroutines.launch
 
 /** Graphene, from src/theme/tokens.json. One palette, every target. */
@@ -258,6 +325,73 @@ fun AppInput(value: String, placeholder: String, onChange: (String) -> Unit) = O
     onValueChange = onChange,
     placeholder = { Text(placeholder) },
 )
+
+/** A heading. The level is semantic, so it picks a type role, not a size. */
+@Composable
+fun AppHeading(text: String, level: Int) = Text(
+    text = text,
+    color = AppTheme.text,
+    fontWeight = FontWeight.SemiBold,
+    fontSize = when (level) {
+        1 -> 30.sp
+        2 -> 24.sp
+        3 -> 20.sp
+        else -> 17.sp
+    },
+)
+
+/** A remote image, or a labelled box while there is no URL to load. */
+@Composable
+fun AppImage(url: String, alt: String) {
+    if (url.isEmpty()) {
+        Box(modifier = Modifier.padding(12.dp)) { Text(text = alt, color = AppTheme.textMuted) }
+    } else {
+        AsyncImage(model = url, contentDescription = alt)
+    }
+}
+
+@Composable
+fun AppCheckbox(label: String, checked: Boolean, onChange: (Boolean) -> Unit) = Row(
+    verticalAlignment = Alignment.CenterVertically,
+) {
+    Checkbox(checked = checked, onCheckedChange = onChange)
+    Text(text = label, color = AppTheme.text)
+}
+
+/**
+ * A dropdown.
+ *
+ * A button that opens a menu rather than ExposedDropdownMenuBox: this is
+ * half the code, needs no experimental opt-in, and is the same control
+ * from the user's side.
+ */
+@Composable
+fun AppSelect(options: List<String>, selected: String, onChange: (String) -> Unit) {
+    var open by remember { mutableStateOf(false) }
+    Box {
+        AppButton(text = if (selected.isEmpty()) "Choose" else selected, onClick = { open = true })
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            options.forEach { option ->
+                DropdownMenuItem(
+                    text = { Text(option) },
+                    onClick = {
+                        open = false
+                        onChange(option)
+                    },
+                )
+            }
+        }
+    }
+}
+
+/** A link out of the app, opened by the system browser. */
+@Composable
+fun AppLink(text: String, url: String) {
+    val uriHandler = LocalUriHandler.current
+    TextButton(onClick = { uriHandler.openUri(url) }) {
+        Text(text = text, color = AppTheme.accent)
+    }
+}
 
 ${handlers.join('\n\n') || '// No handlers yet.'}
 `
@@ -396,6 +530,9 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.ui:ui")
+    // Image blocks load their URLs with Coil. Pulled in unconditionally so
+    // that adding an Image block to the canvas never means editing Gradle.
+    implementation("io.coil-kt:coil-compose:2.7.0")
 }
 `,
     },

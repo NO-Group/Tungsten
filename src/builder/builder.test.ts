@@ -816,3 +816,79 @@ describe('snapping pieces together', () => {
     expect(snap?.from.node).toBe(ids[1])
   })
 })
+
+/**
+ * The second half of the component library.
+ *
+ * A block is only real once the text it writes can be read back into the
+ * same block: the canvas and the code view are the same document, and a
+ * component that survives generation but not parsing would silently
+ * disappear the first time someone edited the file by hand.
+ */
+describe('headings, pictures and the rest', () => {
+  function roundTrip(graph: BlockGraph) {
+    const before = generateProgram(graph, registry).code
+    const parsed = parseProgram(before, registry)
+    if (!parsed.ok) throw new Error(`${parsed.reason} (line ${parsed.line})`)
+    return { before, after: generateProgram(parsed.graph, registry).code, graph: parsed.graph }
+  }
+
+  const NEW_BLOCKS = ['ui.heading', 'ui.image', 'ui.checkbox', 'ui.select', 'ui.link', 'ui.divider']
+
+  it('puts all six in the UI category of the palette', () => {
+    const ui = registry.byCategory().find((group) => group.category === 'UI')?.blocks ?? []
+    const types = ui.map((block) => block.type)
+    for (const type of NEW_BLOCKS) expect(types).toContain(type)
+  })
+
+  it('survives the round trip, every one of them', () => {
+    for (const type of NEW_BLOCKS) {
+      resetIds()
+      const { graph } = build([['event.start'], [type]], [['0', 'exec', '1', 'exec']])
+      const trip = roundTrip(graph)
+      expect(trip.after).toBe(trip.before)
+      expect(trip.graph.nodes.map((node) => node.type)).toEqual(['event.start', type])
+    }
+  })
+
+  it('keeps the values that were typed into them', () => {
+    const { graph, ids } = build([['event.start'], ['ui.select']], [['0', 'exec', '1', 'exec']])
+    const filled = setNodeValue(
+      setNodeValue(setNodeValue(graph, ids[1], 'id', 'plan'), ids[1], 'options', 'Free, Pro'),
+      ids[1],
+      'value',
+      'Pro',
+    )
+    const trip = roundTrip(filled)
+    expect(trip.before).toContain('render.select({ id: "plan", options: "Free, Pro", value: "Pro" })')
+    expect(trip.after).toBe(trip.before)
+  })
+
+  it('writes a heading level as a number, and clamps a silly one', () => {
+    const { graph, ids } = build([['event.start'], ['ui.heading']], [['0', 'exec', '1', 'exec']])
+    expect(generateProgram(setNodeValue(graph, ids[1], 'level', 9), registry).code)
+      .toContain('level: 6')
+    expect(generateProgram(setNodeValue(graph, ids[1], 'level', 0), registry).code)
+      .toContain('level: 1')
+  })
+
+  it('keeps a checkbox boolean a boolean, not the word "true"', () => {
+    // The parser turns literals back into values, so a quoted true here
+    // would come back as a string and the next generation would quote it
+    // again -- the classic way a round trip stops being stable.
+    const { graph, ids } = build([['event.start'], ['ui.checkbox']], [['0', 'exec', '1', 'exec']])
+    const ticked = setNodeValue(graph, ids[1], 'checked', true)
+    const trip = roundTrip(ticked)
+    expect(trip.before).toContain('checked: true')
+    expect(trip.after).toBe(trip.before)
+    expect(trip.graph.nodes[1].values.checked).toBe(true)
+  })
+
+  it('carries style properties through, as every visual block does', () => {
+    const { graph, ids } = build([['event.start'], ['ui.link']], [['0', 'exec', '1', 'exec']])
+    const styled = setNodeValue(graph, ids[1], 'color', 'accent')
+    const trip = roundTrip(styled)
+    expect(trip.before).toContain('color: "accent"')
+    expect(trip.after).toBe(trip.before)
+  })
+})

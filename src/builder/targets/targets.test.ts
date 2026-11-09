@@ -275,3 +275,136 @@ describe('every target', () => {
     }
   })
 })
+
+/**
+ * Every component, on every target.
+ *
+ * The emitters used to render a button, a field, and a line of text, and
+ * quietly turn everything else -- including a stack and everything inside
+ * it -- into an empty label. These tests exist so that cannot happen
+ * again silently: each control has to show up, in that language's own
+ * idiom, with the children it was given.
+ */
+describe('the component library, compiled', () => {
+  /** One of each control, with two of them inside a row. */
+  function gallery(): BlockGraph {
+    const { graph, ids } = build(
+      [
+        ['event.start', 0, 0],
+        ['ui.heading', 0, 100],
+        ['ui.stack', 0, 200],
+        ['ui.image', 300, 200],
+        ['ui.checkbox', 300, 300],
+        ['ui.select', 0, 400],
+        ['ui.link', 0, 500],
+        ['ui.divider', 0, 600],
+      ],
+      [
+        [0, 'exec', 1, 'exec'],
+        [1, 'exec', 2, 'exec'],
+        [2, 'children', 3, 'exec'],
+        [3, 'exec', 4, 'exec'],
+        [2, 'exec', 5, 'exec'],
+        [5, 'exec', 6, 'exec'],
+        [6, 'exec', 7, 'exec'],
+      ],
+    )
+    let next = setNodeValue(graph, ids[1], 'text', 'Sign up')
+    next = setNodeValue(next, ids[1], 'level', 1)
+    next = setNodeValue(next, ids[2], 'direction', 'row')
+    next = setNodeValue(next, ids[2], 'gap', 12)
+    next = setNodeValue(next, ids[3], 'src', 'https://example.com/logo.png')
+    next = setNodeValue(next, ids[3], 'alt', 'Logo')
+    next = setNodeValue(next, ids[4], 'id', 'terms')
+    next = setNodeValue(next, ids[4], 'label', 'I accept')
+    next = setNodeValue(next, ids[5], 'id', 'plan')
+    next = setNodeValue(next, ids[5], 'options', 'Free, Pro, Team')
+    next = setNodeValue(next, ids[6], 'text', 'Pricing')
+    next = setNodeValue(next, ids[6], 'href', 'https://example.com/pricing')
+    return next
+  }
+
+  function emit(target: CompileTarget, suffix: string): string {
+    const result = compile({ graph: gallery(), registry, target, project: project() })
+    if (!result.ok) throw new Error(result.reason)
+    return at(result.files, suffix)
+  }
+
+  it('renders every control in Compose', () => {
+    const kotlin = emit('android', 'MainActivity.kt')
+    expect(kotlin).toContain('AppHeading(text = "Sign up", level = 1)')
+    expect(kotlin).toContain('AppImage(url = "https://example.com/logo.png", alt = "Logo")')
+    expect(kotlin).toContain('checked = app.fields["terms"] == "true"')
+    expect(kotlin).toContain('options = listOf("Free", "Pro", "Team")')
+    expect(kotlin).toContain('AppLink(text = "Pricing", url = "https://example.com/pricing")')
+    expect(kotlin).toContain('HorizontalDivider(color = AppTheme.border)')
+  })
+
+  it('renders every control in SwiftUI', () => {
+    const swift = emit('ios', 'ContentView.swift')
+    expect(swift).toContain('AppHeading("Sign up", level: 1)')
+    expect(swift).toContain('AppImage(url: "https://example.com/logo.png", alt: "Logo")')
+    expect(swift).toContain('app.fields["terms"] == "true"')
+    expect(swift).toContain('options: ["Free", "Pro", "Team"]')
+    expect(swift).toContain('AppLink("Pricing", url: "https://example.com/pricing")')
+    expect(swift).toContain('Divider().background(AppTheme.border)')
+  })
+
+  it('renders every control in Flutter', () => {
+    const dart = emit('mobile', 'main.dart')
+    expect(dart).toContain('Text("Sign up", style: const TextStyle(fontSize: 30')
+    expect(dart).toContain('Image.network("https://example.com/logo.png", semanticLabel: "Logo")')
+    expect(dart).toContain(`_fields["terms"] == 'true'`)
+    expect(dart).toContain('DropdownMenuItem(value: "Pro", child: Text("Pro"))')
+    expect(dart).toContain('openUrl("https://example.com/pricing")')
+    expect(dart).toContain('Divider(color: AppTheme.border)')
+  })
+
+  it('nests what is inside a stack, rather than flattening it', () => {
+    // The image and the checkbox are inside the row, so each language's
+    // container has to be holding them -- not listing them as siblings.
+    const kotlin = emit('android', 'MainActivity.kt')
+    const row = kotlin.slice(kotlin.indexOf('Row(\n'), kotlin.indexOf('AppSelect('))
+    expect(row).toContain('Arrangement.spacedBy(12.dp)')
+    expect(row).toContain('AppImage(')
+    expect(row).toContain('AppCheckbox(')
+
+    const swift = emit('ios', 'ContentView.swift')
+    const stack = swift.slice(swift.indexOf('HStack('), swift.indexOf('AppSelect('))
+    expect(stack).toContain('spacing: 12')
+    expect(stack).toContain('AppImage(')
+    expect(stack).toContain('AppCheckbox(')
+
+    const dart = emit('mobile', 'main.dart')
+    const flutter = dart.slice(dart.indexOf('Row(\n'), dart.indexOf('DropdownButton'))
+    expect(flutter).toContain('SizedBox(width: 12)')
+    expect(flutter).toContain('Image.network(')
+    expect(flutter).toContain('Checkbox(')
+  })
+
+  it('marks interface blocks as the widget tree rather than leaving them unmapped', () => {
+    // "No mapping yet" is what an unsupported block says. A UI block is
+    // supported -- it is simply not a statement on a phone.
+    const dart = emit('mobile', 'main.dart')
+    expect(dart).not.toContain('has no mobile mapping yet')
+    expect(dart).toContain('// ui.heading is declared in the widget tree.')
+  })
+
+  it('declares a field controller for inputs on every screen, not just the first', () => {
+    const { graph, ids } = build(
+      [['event.start', 0, 0], ['ui.input', 0, 120], ['ui.input', 0, 240]],
+      [[0, 'exec', 1, 'exec'], [1, 'exec', 2, 'exec']],
+    )
+    const named = setNodeValue(setNodeValue(graph, ids[1], 'id', 'email'), ids[2], 'id', 'password')
+    const screens = [{ name: 'home' }, { name: 'second' }]
+    const result = compile({ graph: named, registry, target: 'mobile', project: project(), screens })
+    if (!result.ok) throw new Error(result.reason)
+    const dart = at(result.files, 'main.dart')
+    expect(dart).toContain('final _email = TextEditingController();')
+    expect(dart).toContain('final _password = TextEditingController();')
+  })
+
+  it('pulls in Coil, because an Image block must not mean editing Gradle', () => {
+    expect(at(run('android'), 'build.gradle.kts')).toContain('io.coil-kt:coil-compose')
+  })
+})

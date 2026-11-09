@@ -538,3 +538,124 @@ describe('screens, in the running preview', () => {
     expect(logs[logs.length - 1]).toBe('nothing yet')
   })
 })
+
+/**
+ * The new controls, actually used.
+ *
+ * Rendering the right tag is the easy half. The half worth testing is
+ * whether a handler can read what the user did to them -- which is the
+ * whole promise of the sandbox preview.
+ */
+describe('the rest of the component library, executed', () => {
+  /** A control, a button, and a handler that logs what the control holds. */
+  function reader(controlType: string, controlValues: Record<string, string | number | boolean>) {
+    const { graph, ids } = build(
+      [[controlType], ['ui.button'], ['event.start'], ['event.click'], ['logic.log'], ['ui.value']],
+      [
+        [2, 'exec', 0, 'exec'],
+        [0, 'exec', 1, 'exec'],
+        [3, 'exec', 4, 'exec'],
+        [5, 'value', 4, 'value'],
+      ],
+    )
+    let next = setNodeValue(graph, ids[1], 'id', 'save')
+    next = setNodeValue(next, ids[3], 'target', 'save')
+    next = setNodeValue(next, ids[5], 'id', String(controlValues.id))
+    for (const [key, value] of Object.entries(controlValues)) {
+      next = setNodeValue(next, ids[0], key, value)
+    }
+    return next
+  }
+
+  const click = async (dom: JSDOM, id: string) => {
+    dom.window.document.getElementById(id)!
+      .dispatchEvent(new dom.window.MouseEvent('click', { bubbles: true }))
+    await settle()
+  }
+
+  it('reads a checkbox as "true" or "false"', async () => {
+    const { dom, messages } = await run(reader('ui.checkbox', { id: 'terms', label: 'I accept' }))
+
+    await click(dom, 'save')
+    expect(messages.filter((message) => message.kind === 'log').pop()?.text).toBe('false')
+
+    const box = dom.window.document.querySelector('#terms input') as HTMLInputElement
+    box.checked = true
+    await click(dom, 'save')
+    expect(messages.filter((message) => message.kind === 'log').pop()?.text).toBe('true')
+  })
+
+  it('reads the chosen option out of a dropdown', async () => {
+    const { dom, messages } = await run(reader('ui.select', { id: 'plan', options: 'Free, Pro, Team' }))
+
+    const select = dom.window.document.getElementById('plan') as HTMLSelectElement
+    expect([...select.options].map((option) => option.textContent)).toEqual(['Free', 'Pro', 'Team'])
+
+    select.value = 'Team'
+    await click(dom, 'save')
+    expect(messages.filter((message) => message.kind === 'log').pop()?.text).toBe('Team')
+  })
+
+  it('keeps the user\'s choice when the screen re-renders', async () => {
+    // A pass must not rebuild the options and reset the selection: that
+    // would undo the user's choice every time anything else changed.
+    const { dom, messages } = await run(reader('ui.select', { id: 'plan', options: 'Free, Pro, Team' }))
+    const select = dom.window.document.getElementById('plan') as HTMLSelectElement
+    select.value = 'Pro'
+
+    await click(dom, 'save')
+    await click(dom, 'save')
+
+    expect(select.value).toBe('Pro')
+    expect(messages.filter((message) => message.kind === 'log').pop()?.text).toBe('Pro')
+  })
+
+  it('draws a heading at the level it was given', async () => {
+    const { graph, ids } = build([['event.start'], ['ui.heading']], [[0, 'exec', 1, 'exec']])
+    const titled = setNodeValue(setNodeValue(graph, ids[1], 'text', 'Welcome'), ids[1], 'level', 3)
+    const { dom } = await run(titled)
+    const heading = dom.window.document.getElementById('title')!
+    expect(heading.tagName).toBe('H3')
+    expect(heading.textContent).toBe('Welcome')
+  })
+
+  it('draws a labelled box for an image with no source yet', async () => {
+    const { graph, ids } = build([['event.start'], ['ui.image']], [[0, 'exec', 1, 'exec']])
+    const described = setNodeValue(graph, ids[1], 'alt', 'A photograph goes here')
+    const { dom } = await run(described)
+    const placeholder = dom.window.document.getElementById('image')!
+    expect(placeholder.tagName).toBe('DIV')
+    expect(placeholder.textContent).toBe('A photograph goes here')
+  })
+
+  it('draws a real image once there is a source', async () => {
+    const { graph, ids } = build([['event.start'], ['ui.image']], [[0, 'exec', 1, 'exec']])
+    const sourced = setNodeValue(graph, ids[1], 'src', 'https://example.com/logo.png')
+    const { dom } = await run(sourced)
+    const image = dom.window.document.getElementById('image') as HTMLImageElement
+    expect(image.tagName).toBe('IMG')
+    expect(image.getAttribute('src')).toBe('https://example.com/logo.png')
+  })
+
+  it('draws a link that leaves the app, and a rule', async () => {
+    const { graph, ids } = build([['event.start'], ['ui.link'], ['ui.divider']], [[0, 'exec', 1, 'exec'], [1, 'exec', 2, 'exec']])
+    const { dom } = await run(setNodeValue(graph, ids[1], 'href', 'https://example.com/pricing'))
+    const link = dom.window.document.getElementById('link') as HTMLAnchorElement
+    expect(link.tagName).toBe('A')
+    expect(link.getAttribute('href')).toBe('https://example.com/pricing')
+    expect(link.getAttribute('rel')).toBe('noreferrer noopener')
+    expect(dom.window.document.getElementById('divider')?.tagName).toBe('HR')
+  })
+
+  it('puts what is inside a stack inside it, and nothing else', async () => {
+    const { graph } = build(
+      [['event.start'], ['ui.stack'], ['ui.heading'], ['ui.divider']],
+      [[0, 'exec', 1, 'exec'], [1, 'children', 2, 'exec'], [1, 'exec', 3, 'exec']],
+    )
+    const { dom } = await run(graph)
+    const stack = dom.window.document.getElementById('stack')!
+    expect(stack.querySelector('#title')).not.toBeNull()
+    expect(stack.querySelector('#divider')).toBeNull()
+    expect(dom.window.document.getElementById('divider')).not.toBeNull()
+  })
+})

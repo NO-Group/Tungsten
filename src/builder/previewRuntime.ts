@@ -151,16 +151,125 @@ function applyStyle(element, style) {
   if (style.align) element.style.textAlign = String(style.align)
 }
 
+/**
+ * How to read an interactive element, by id.
+ *
+ * A text field answers with .value and needs nothing here, but a checkbox
+ * answers with .checked and a dropdown drawn this pass may not be in the
+ * document yet. Registering a reader as the element is drawn means
+ * render.value asks the control itself rather than guessing from the tag.
+ */
+const readers = new Map()
+
 const render = {
-  button: ({ id, text }) => {
+  button: ({ id, text, ...style }) => {
     const element = upsert(String(id), () => document.createElement('button'))
     element.textContent = String(text)
+    applyStyle(element, style)
     return element
   },
-  text: (value) => {
+  text: (value, style) => {
     anonymous += 1
     const element = upsert('text-' + anonymous, () => document.createElement('p'))
     element.textContent = format(value)
+    applyStyle(element, style)
+    return element
+  },
+  heading: ({ id, text, level, ...style }) => {
+    const rank = Math.min(6, Math.max(1, Math.round(Number(level) || 2)))
+    const element = upsert(String(id), () => document.createElement('h' + rank))
+    // A level change makes a different element, so the old one is replaced
+    // rather than relabelled: an h2 cannot become an h3 in place.
+    if (element.tagName !== 'H' + rank) {
+      const replacement = document.createElement('h' + rank)
+      replacement.id = element.id
+      element.replaceWith(replacement)
+      replacement.textContent = format(text)
+      applyStyle(replacement, style)
+      return replacement
+    }
+    element.textContent = format(text)
+    applyStyle(element, style)
+    return element
+  },
+  image: ({ id, src, alt, ...style }) => {
+    const source = String(src || '')
+    const label = String(alt == null ? 'Image' : alt)
+    const element = upsert(String(id), () => document.createElement(source ? 'img' : 'div'))
+    const wanted = source ? 'IMG' : 'DIV'
+    if (element.tagName !== wanted) {
+      const replacement = document.createElement(source ? 'img' : 'div')
+      replacement.id = element.id
+      element.replaceWith(replacement)
+      return render.image({ id: replacement.id, src: source, alt: label, ...style })
+    }
+    if (source) {
+      element.src = source
+      element.alt = label
+    } else {
+      element.className = 'placeholder'
+      element.textContent = label
+    }
+    applyStyle(element, style)
+    return element
+  },
+  checkbox: ({ id, label, checked, ...style }) => {
+    const name = String(id)
+    const element = upsert(name, () => {
+      const wrapper = document.createElement('label')
+      wrapper.className = 'checkbox'
+      const box = document.createElement('input')
+      box.type = 'checkbox'
+      box.checked = checked === true
+      wrapper.append(box, document.createElement('span'))
+      return wrapper
+    })
+    element.querySelector('span').textContent = String(label == null ? '' : label)
+    applyStyle(element, style)
+    // Deliberately not re-applying the checked flag on every pass: it is the
+    // starting state, and overwriting it would untick the box under the
+    // user whenever anything else on the screen re-rendered.
+    readers.set(name, () => (element.querySelector('input').checked ? 'true' : 'false'))
+    return element
+  },
+  select: ({ id, options, value, ...style }) => {
+    const name = String(id)
+    const choices = String(options == null ? '' : options)
+      .split(',')
+      .map((option) => option.trim())
+      .filter(Boolean)
+    const element = upsert(name, () => document.createElement('select'))
+    const current = element.value
+    const wanted = choices.join('\u0000')
+    // Rebuilt only when the choices actually changed, so re-rendering does
+    // not throw away what the user picked.
+    if (element.dataset.options !== wanted) {
+      element.dataset.options = wanted
+      element.textContent = ''
+      for (const choice of choices) {
+        const option = document.createElement('option')
+        option.textContent = choice
+        element.append(option)
+      }
+      const start = current || String(value || '')
+      if (choices.indexOf(start) >= 0) element.value = start
+    }
+    applyStyle(element, style)
+    readers.set(name, () => element.value)
+    return element
+  },
+  link: ({ id, text, href, ...style }) => {
+    const element = upsert(String(id), () => document.createElement('a'))
+    element.textContent = String(text == null ? '' : text)
+    element.href = String(href || '#')
+    element.target = '_blank'
+    element.rel = 'noreferrer noopener'
+    applyStyle(element, style)
+    return element
+  },
+  divider: ({ id, ...style }) => {
+    const element = upsert(String(id), () => document.createElement('hr'))
+    applyStyle(element, style)
     return element
   },
   /**
@@ -187,14 +296,28 @@ const render = {
     }
     return element
   },
-  /** What is in a field right now, by element id. */
+  /**
+   * What is in a control right now, by element id.
+   *
+   * Controls that cannot answer with .value register a reader when they
+   * draw. The DOM fallback still handles the case where a start handler
+   * reads a field before anything has drawn it this pass.
+   */
   value: (id) => {
-    const element = document.getElementById(String(id))
-    return element && 'value' in element ? element.value : ''
+    const name = String(id)
+    const reader = readers.get(name)
+    if (reader) return reader()
+    const element = document.getElementById(name)
+    if (!element) return ''
+    if (element.type === 'checkbox') return element.checked ? 'true' : 'false'
+    const box = element.querySelector ? element.querySelector('input[type=checkbox]') : null
+    if (box) return box.checked ? 'true' : 'false'
+    return 'value' in element ? element.value : ''
   },
-  input: ({ id, placeholder }) => {
+  input: ({ id, placeholder, ...style }) => {
     const element = upsert(String(id), () => document.createElement('input'))
     element.placeholder = String(placeholder ?? '')
+    applyStyle(element, style)
     return { get value() { return element.value } }
   },
 }

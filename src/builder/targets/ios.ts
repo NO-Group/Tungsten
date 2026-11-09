@@ -8,7 +8,7 @@
  * both more honest and more likely to still work in two years.
  */
 
-import type { ComponentSchema } from '../uiSchema'
+import { headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeSwift } from '../uiTokens'
 import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile'
 import { appIdFor, slug, type Project } from '../../project/targets'
@@ -97,31 +97,84 @@ export function swiftStatement(
   }
 }
 
-function view(component: ComponentSchema): string {
+/**
+ * One component, as a SwiftUI view.
+ *
+ * Recursive, so a stack becomes a VStack or an HStack holding the same
+ * children the canvas drew inside it.
+ */
+function view(component: ComponentSchema, indent = CASE_BODY): string {
   const text = (key: string, fallback: string) => JSON.stringify(String(component.properties[key] ?? fallback))
+  const id = JSON.stringify(component.id)
+  /** A two-way binding onto the field this component owns. */
+  const binding = (fallback: string, inner = indent) => `Binding(
+${inner}    get: { app.fields[${id}] ?? ${fallback} },
+${inner}    set: { app.fields[${id}] = $0 }
+${inner})`
+
   if (component.type === 'button') {
     const call = component.events.click
       ? `Task { await ${handlerName(component.events.click)}(app) }`
       : '()'
-    return `                AppButton(title: ${text('text', 'Submit')}) { ${call} }`
+    return `${indent}AppButton(title: ${text('text', 'Submit')}) { ${call} }`
   }
   if (component.type === 'input') {
-    return `                AppInput(
-                    placeholder: ${text('placeholder', '')},
-                    text: Binding(
-                        get: { app.fields[${JSON.stringify(component.id)}] ?? "" },
-                        set: { app.fields[${JSON.stringify(component.id)}] = $0 }
-                    )
-                )`
+    return `${indent}AppInput(
+${indent}    placeholder: ${text('placeholder', '')},
+${indent}    text: ${binding('""', `${indent}    `)}
+${indent})`
   }
-  return `                AppText(${text('value', '')})`
+  if (component.type === 'heading') {
+    return `${indent}AppHeading(${text('text', '')}, level: ${headingLevelOf(component)})`
+  }
+  if (component.type === 'image') {
+    return `${indent}AppImage(url: ${text('src', '')}, alt: ${text('alt', 'Image')})`
+  }
+  if (component.type === 'checkbox') {
+    // "true"/"false" in the same field map every other control writes to,
+    // so the Input Value block reads one kind of thing on every target.
+    return `${indent}AppCheckbox(
+${indent}    label: ${text('label', '')},
+${indent}    isOn: Binding(
+${indent}        get: { app.fields[${id}] == "true" },
+${indent}        set: { app.fields[${id}] = $0 ? "true" : "false" }
+${indent}    )
+${indent})`
+  }
+  if (component.type === 'select') {
+    const choices = optionsOf(component)
+    const initial = String(component.properties.value ?? '') || choices[0] || ''
+    return `${indent}AppSelect(
+${indent}    options: [${choices.map((choice) => JSON.stringify(choice)).join(', ')}],
+${indent}    selection: ${binding(JSON.stringify(initial), `${indent}    `)}
+${indent})`
+  }
+  if (component.type === 'link') {
+    return `${indent}AppLink(${text('text', '')}, url: ${text('href', '')})`
+  }
+  if (component.type === 'divider') {
+    return `${indent}Divider().background(AppTheme.border)`
+  }
+  if (component.type === 'stack') {
+    const row = String(component.properties.direction ?? 'column') === 'row'
+    const gap = Number(component.properties.gap ?? 10)
+    const children = (component.children ?? []).map((child) => view(child, `${indent}    `))
+    return `${indent}${row ? 'HStack' : 'VStack'}(alignment: .${row ? 'center' : 'leading'}, spacing: ${gap}) {
+${children.join('\n') || `${indent}    EmptyView()`}
+${indent}}`
+  }
+  return `${indent}AppText(${text('value', '')})`
 }
+
+/** Where a `switch app.screen` case and its body sit, in the file. */
+const CASE = ' '.repeat(20)
+const CASE_BODY = ' '.repeat(24)
 
 function screenCase(screen: { name: string; components: ComponentSchema[] }): string {
   const body = screen.components.length
-    ? screen.components.map(view).join('\n')
-    : '                AppText("This screen has nothing on it yet.")'
-  return `            case ${JSON.stringify(screen.name)}:\n${body}`
+    ? screen.components.map((component) => view(component, CASE_BODY)).join('\n')
+    : `${CASE_BODY}AppText("This screen has nothing on it yet.")`
+  return `${CASE}case ${JSON.stringify(screen.name)}:\n${body}`
 }
 
 function startCase(screen: { name: string; events: IrEvent[] }): string {
@@ -248,6 +301,88 @@ struct AppInput: View {
             .background(AppTheme.raised)
             .foregroundStyle(AppTheme.text)
             .clipShape(RoundedRectangle(cornerRadius: AppTheme.radius))
+    }
+}
+
+/// A heading. The level picks a font role rather than a point size.
+struct AppHeading: View {
+    let value: String
+    let level: Int
+    init(_ value: String, level: Int) {
+        self.value = value
+        self.level = level
+    }
+    var body: some View {
+        Text(value)
+            .font(level == 1 ? .largeTitle : level == 2 ? .title : level == 3 ? .title2 : .headline)
+            .fontWeight(.semibold)
+            .foregroundStyle(AppTheme.text)
+    }
+}
+
+/// A remote image, or a labelled box while there is no URL to load.
+struct AppImage: View {
+    let url: String
+    let alt: String
+    var body: some View {
+        if let link = URL(string: url), !url.isEmpty {
+            AsyncImage(url: link) { image in
+                image.resizable().scaledToFit()
+            } placeholder: {
+                AppText(alt)
+            }
+            .accessibilityLabel(alt)
+        } else {
+            Text(alt)
+                .foregroundStyle(AppTheme.textMuted)
+                .padding(12)
+                .frame(minWidth: 180, minHeight: 110)
+                .background(AppTheme.raised)
+                .clipShape(RoundedRectangle(cornerRadius: AppTheme.radius))
+        }
+    }
+}
+
+struct AppCheckbox: View {
+    let label: String
+    @Binding var isOn: Bool
+    var body: some View {
+        Toggle(isOn: $isOn) {
+            Text(label).foregroundStyle(AppTheme.text)
+        }
+        .toggleStyle(.switch)
+        .tint(AppTheme.accent)
+    }
+}
+
+struct AppSelect: View {
+    let options: [String]
+    @Binding var selection: String
+    var body: some View {
+        Picker("", selection: $selection) {
+            ForEach(options, id: \\.self) { option in
+                Text(option).tag(option)
+            }
+        }
+        .pickerStyle(.menu)
+        .tint(AppTheme.accent)
+    }
+}
+
+/// A link out of the app. Going to another screen is a handler, not this.
+struct AppLink: View {
+    let value: String
+    let url: String
+    init(_ value: String, url: String) {
+        self.value = value
+        self.url = url
+    }
+    var body: some View {
+        if let link = URL(string: url) {
+            Link(value, destination: link).foregroundStyle(AppTheme.accent)
+        } else {
+            AppText(value)
+        }
     }
 }
 

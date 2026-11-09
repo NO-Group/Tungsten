@@ -15,7 +15,10 @@ import type { BlockDefinition, BlockGraph, BlockNode, BlockRegistry } from './bl
 import { outgoing } from './graph'
 import { DEFAULT_SCREENS, screenOf, type Screen } from './screens'
 
-export type ComponentType = 'button' | 'text' | 'input' | 'stack' | 'unknown'
+export type ComponentType =
+  | 'button' | 'text' | 'input' | 'stack'
+  | 'heading' | 'image' | 'checkbox' | 'select' | 'link' | 'divider'
+  | 'unknown'
 
 export type ComponentSchema = {
   /** The element id in the rendered output, and what an event block targets. */
@@ -62,6 +65,12 @@ const TYPE_BY_BLOCK: Record<string, ComponentType> = {
   'ui.text': 'text',
   'ui.input': 'input',
   'ui.stack': 'stack',
+  'ui.heading': 'heading',
+  'ui.image': 'image',
+  'ui.checkbox': 'checkbox',
+  'ui.select': 'select',
+  'ui.link': 'link',
+  'ui.divider': 'divider',
 }
 
 /**
@@ -135,6 +144,20 @@ export function schemaFromGraph(
     if (type === 'button') properties.text = staticValue(node, definition, 'text', 'Submit')
     if (type === 'text') properties.value = staticValue(node, definition, 'value', '')
     if (type === 'input') properties.placeholder = staticValue(node, definition, 'placeholder', '')
+    if (type === 'heading') properties.text = staticValue(node, definition, 'text', 'Heading')
+    if (type === 'image') {
+      properties.src = staticValue(node, definition, 'src', '')
+      properties.alt = staticValue(node, definition, 'alt', 'Image')
+    }
+    if (type === 'checkbox') properties.label = staticValue(node, definition, 'label', '')
+    if (type === 'select') {
+      properties.options = staticValue(node, definition, 'options', '')
+      properties.value = staticValue(node, definition, 'value', '')
+    }
+    if (type === 'link') {
+      properties.text = staticValue(node, definition, 'text', 'Learn more')
+      properties.href = staticValue(node, definition, 'href', '')
+    }
 
     // Style properties travel with the component rather than being applied
     // by whoever renders it: the preview, the web bundle and the mobile
@@ -174,6 +197,44 @@ export function schemaFromGraph(
   }
 
   return { components: [...built.values()].filter((component) => !owned.has(component.nodeId)) }
+}
+
+/**
+ * Every component in a tree, containers included, in drawing order.
+ *
+ * A renderer that needs one entry per control -- a text controller per
+ * field, a binding per checkbox -- cannot walk only the top level once
+ * stacks exist, and three targets needed the same walk.
+ */
+export function flattenComponents(components: readonly ComponentSchema[]): ComponentSchema[] {
+  return components.flatMap((component) => [component, ...flattenComponents(component.children ?? [])])
+}
+
+/**
+ * The heading level a component asks for, clamped to the six that exist.
+ *
+ * Shared rather than re-derived per renderer: the web wants an `h2`, Compose
+ * wants a typography role and SwiftUI wants a font, but all three are
+ * switching on the same number and must agree about what it is.
+ */
+export function headingLevelOf(component: ComponentSchema): number {
+  const raw = Number(component.properties.level ?? 2)
+  if (!Number.isFinite(raw)) return 2
+  return Math.min(6, Math.max(1, Math.round(raw)))
+}
+
+/**
+ * A dropdown's choices.
+ *
+ * One comma-separated string in, a trimmed list out, with the empties
+ * dropped so a trailing comma does not become a blank row in four
+ * different languages.
+ */
+export function optionsOf(component: ComponentSchema): string[] {
+  return String(component.properties.options ?? '')
+    .split(',')
+    .map((option) => option.trim())
+    .filter(Boolean)
 }
 
 /** Escapes text for HTML, since component text is user input. */
@@ -233,6 +294,53 @@ export function renderComponent(component: ComponentSchema): string {
       escapeHtml(String(component.properties.value ?? ''))
     }</p>`
   }
+  if (component.type === 'heading') {
+    const level = headingLevelOf(component)
+    return `<h${level} id="${id}" data-node="${escapeHtml(component.nodeId)}"${style}>${
+      escapeHtml(String(component.properties.text ?? ''))
+    }</h${level}>`
+  }
+  if (component.type === 'image') {
+    const src = String(component.properties.src ?? '')
+    const alt = String(component.properties.alt ?? 'Image')
+    // No source yet is a normal state on a canvas, so it draws a labelled
+    // box rather than a broken-image icon: the layout is the same size it
+    // will be once there is a picture, which is the point of drawing it.
+    if (!src) {
+      return `<div id="${id}" data-node="${escapeHtml(component.nodeId)}" class="placeholder"${style}>${
+        escapeHtml(alt)
+      }</div>`
+    }
+    return `<img id="${id}" data-node="${escapeHtml(component.nodeId)}"${style} src="${
+      escapeHtml(src)
+    }" alt="${escapeHtml(alt)}" />`
+  }
+  if (component.type === 'checkbox') {
+    // The label is the element, and the box lives inside it: clicking the
+    // words ticks the box, which is what everyone expects and what a
+    // separate `for` attribute keeps getting wrong when ids repeat.
+    const checked = component.properties.checked === true ? ' checked' : ''
+    return `<label id="${id}" data-node="${escapeHtml(component.nodeId)}" class="checkbox"${style}><input type="checkbox"${checked} /><span>${
+      escapeHtml(String(component.properties.label ?? ''))
+    }</span></label>`
+  }
+  if (component.type === 'select') {
+    const selected = String(component.properties.value ?? '')
+    const options = optionsOf(component)
+      .map((option) => `<option${option === selected ? ' selected' : ''}>${escapeHtml(option)}</option>`)
+      .join('')
+    return `<select id="${id}" data-node="${escapeHtml(component.nodeId)}"${style}>${options}</select>`
+  }
+  if (component.type === 'link') {
+    return `<a id="${id}" data-node="${escapeHtml(component.nodeId)}"${style} href="${
+      escapeHtml(String(component.properties.href ?? '#'))
+    }" target="_blank" rel="noreferrer noopener">${
+      escapeHtml(String(component.properties.text ?? ''))
+    }</a>`
+  }
+  if (component.type === 'divider') {
+    return `<hr id="${id}" data-node="${escapeHtml(component.nodeId)}"${style} />`
+  }
   if (component.type === 'stack') {
     const direction = String(component.properties.direction ?? 'column') === 'row' ? 'row' : 'column'
     const gap = Number(component.properties.gap ?? 10)
@@ -250,7 +358,7 @@ export function renderComponent(component: ComponentSchema): string {
 
 export function renderDocumentBody(document: UiDocument): string {
   if (!document.components.length) {
-    return '<p class="empty">No interface yet. Add a Button, Text or Text Input block.</p>'
+    return '<p class="empty">No interface yet. Add a Heading, Text, Button or Text Input block.</p>'
   }
   return document.components.map(renderComponent).join('\n      ')
 }

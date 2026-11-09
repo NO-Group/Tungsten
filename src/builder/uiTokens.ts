@@ -92,6 +92,28 @@ export function uiThemeCss(theme: UiTheme = UI_THEME): string {
         min-width: 200px;
       }
       p { margin: 0; }
+      h1, h2, h3, h4, h5, h6 { margin: 0; line-height: 1.25; color: var(--app-text); }
+      h1 { font-size: 2em; } h2 { font-size: 1.6em; } h3 { font-size: 1.3em; }
+      h4, h5, h6 { font-size: 1.1em; }
+      a { color: var(--app-accent); }
+      hr {
+        width: 100%; margin: 4px 0;
+        border: 0; border-top: 1px solid var(--app-border);
+      }
+      img { max-width: 100%; border-radius: var(--app-radius); }
+      select {
+        padding: 6px 9px; font: inherit;
+        color: var(--app-text); background: var(--app-raised);
+        border: 1px solid var(--app-border); border-radius: var(--app-radius);
+      }
+      label.checkbox { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+      /* An image with no source yet: the box it will occupy, labelled. */
+      .placeholder {
+        display: flex; align-items: center; justify-content: center;
+        min-width: 180px; min-height: 110px; padding: 12px;
+        color: var(--app-muted); background: var(--app-raised);
+        border: 1px dashed var(--app-border); border-radius: var(--app-radius);
+      }
       .empty { color: var(--app-muted); }`
 }
 
@@ -109,9 +131,13 @@ function argb(hex: string): string {
 export function uiThemeDart(theme: UiTheme = UI_THEME): string {
   return [
     `  static const surface = Color(${argb(theme.surface)});`,
+    `  static const raised = Color(${argb(theme.surfaceRaised)});`,
+    `  static const border = Color(${argb(theme.border)});`,
     `  static const text = Color(${argb(theme.text)});`,
+    `  static const textMuted = Color(${argb(theme.textMuted)});`,
     `  static const accent = Color(${argb(theme.accent)});`,
     `  static const accentInk = Color(${argb(theme.accentInk)});`,
+    `  static const danger = Color(${argb(theme.danger)});`,
     `  static const radius = ${theme.radius}.0;`,
   ].join('\n')
 }

@@ -184,6 +184,9 @@ const STYLE_PORTS: Port[] = [
 
 const STYLE_KEYS = STYLE_PORTS.map((port) => port.id)
 
+/** Every style port, as a parser map. The same six on every visual block. */
+const STYLE_MAP = Object.fromEntries(STYLE_KEYS.map((key) => [key, key]))
+
 /** Reads `key: value, key: value` back into raw expression text per key. */
 function readOptions(text: string, extra: string[] = []): Record<string, string> {
   const wanted = [...STYLE_KEYS, ...extra]
@@ -215,6 +218,19 @@ function styleFragment(node: BlockNode): string {
   return parts.length ? `, ${parts.join(', ')}` : ''
 }
 
+/**
+ * A heading level, clamped to the six that exist.
+ *
+ * Written unconditionally rather than only when it differs from the
+ * default, because `level` is what every renderer switches on and a
+ * missing one would have each of them inventing its own fallback.
+ */
+function headingLevel(node: BlockNode): number {
+  const raw = Number(node.values.level ?? 2)
+  if (!Number.isFinite(raw)) return 2
+  return Math.min(6, Math.max(1, Math.round(raw)))
+}
+
 const uiButton = defineBlock({
   type: 'ui.button',
   label: 'Button',
@@ -229,7 +245,7 @@ const uiButton = defineBlock({
   outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
   generate: ({ input, node }) =>
     `render.button({ id: ${input('id')}, text: ${input('text')}${styleFragment(node)} })`,
-  parse: parseOptions('render.button', { id: 'id', text: 'text', ...Object.fromEntries(STYLE_KEYS.map((key) => [key, key])) }),
+  parse: parseOptions('render.button', { id: 'id', text: 'text', ...STYLE_MAP }),
 })
 
 /**
@@ -320,7 +336,7 @@ const uiInput = defineBlock({
   outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
   generate: ({ input, node, symbol }) =>
     `const ${symbol} = render.input({ id: ${input('id')}, placeholder: ${input('placeholder')}${styleFragment(node)} })`,
-  parse: parseOptions('render.input', { id: 'id', placeholder: 'placeholder', ...Object.fromEntries(STYLE_KEYS.map((key) => [key, key])) }),
+  parse: parseOptions('render.input', { id: 'id', placeholder: 'placeholder', ...STYLE_MAP }),
 })
 
 /**
@@ -340,6 +356,155 @@ const uiValue = defineBlock({
   outputs: [{ id: 'value', label: 'Value', type: 'String' }],
   generate: ({ input }) => `render.value(${input('id')})`,
   parse: parseCall('render.value', ['id']),
+})
+
+/**
+ * A heading.
+ *
+ * Deliberately not "a Text block with a bigger font". A level is semantic
+ * and every target has somewhere real to put it -- `<h2>` on the web,
+ * `headlineMedium` in Compose, `.title` in SwiftUI, a weighted TextStyle in
+ * Flutter. Faking one with a font size throws that away on all four, and
+ * takes the document outline and the screen reader with it.
+ */
+const uiHeading = defineBlock({
+  type: 'ui.heading',
+  label: 'Heading',
+  category: 'UI',
+  description: 'A heading. Its level is semantic, not a font size.',
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'id', label: 'Element id', type: 'String', default: 'title' },
+    { id: 'text', label: 'Text', type: 'Any', default: 'Heading', required: true },
+    { id: 'level', label: 'Level (1-6)', type: 'Number', default: 2, property: true },
+    ...STYLE_PORTS,
+  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  generate: ({ input, node }) =>
+    `render.heading({ id: ${input('id')}, text: ${input('text')}, level: ${headingLevel(node)}${styleFragment(node)} })`,
+  parse: parseOptions('render.heading', { id: 'id', text: 'text', level: 'level', ...STYLE_MAP }),
+})
+
+/**
+ * An image.
+ *
+ * The source defaults to empty rather than to some stock photograph on a
+ * host that may not be reachable: an empty source draws a labelled
+ * placeholder, which is honest about there being no picture yet and works
+ * with the network off.
+ */
+const uiImage = defineBlock({
+  type: 'ui.image',
+  label: 'Image',
+  category: 'UI',
+  description: 'A picture, from a URL. An empty source draws a placeholder.',
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'id', label: 'Element id', type: 'String', default: 'image' },
+    { id: 'src', label: 'Source URL', type: 'String', default: '', required: true },
+    { id: 'alt', label: 'Alt text', type: 'String', default: 'Image' },
+    ...STYLE_PORTS,
+  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  generate: ({ input, node }) =>
+    `render.image({ id: ${input('id')}, src: ${input('src')}, alt: ${input('alt')}${styleFragment(node)} })`,
+  parse: parseOptions('render.image', { id: 'id', src: 'src', alt: 'alt', ...STYLE_MAP }),
+})
+
+/**
+ * A checkbox.
+ *
+ * Its state is read by the Input Value block, exactly as a text field is,
+ * and arrives as the string "true" or "false". One way to read what the
+ * user did beats a second block that exists only because the control is a
+ * different shape.
+ */
+const uiCheckbox = defineBlock({
+  type: 'ui.checkbox',
+  label: 'Checkbox',
+  category: 'UI',
+  description: 'A box to tick. Read it with Input Value; it answers "true" or "false".',
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'id', label: 'Element id', type: 'String', default: 'agree', required: true },
+    { id: 'label', label: 'Label', type: 'String', default: 'I agree' },
+    { id: 'checked', label: 'Ticked to start', type: 'Boolean', default: false, property: true },
+    ...STYLE_PORTS,
+  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  generate: ({ input, node }) =>
+    `render.checkbox({ id: ${input('id')}, label: ${input('label')}, checked: ${
+      node.values.checked === true ? 'true' : 'false'
+    }${styleFragment(node)} })`,
+  parse: parseOptions('render.checkbox', { id: 'id', label: 'label', checked: 'checked', ...STYLE_MAP }),
+})
+
+/**
+ * A dropdown.
+ *
+ * The choices are one comma-separated string rather than a list port,
+ * because every alternative was worse: a list port needs a block to build
+ * the list, and a repeated port needs inspector machinery no other block
+ * would use. Splitting on commas is a rule a person can hold in their head.
+ */
+const uiSelect = defineBlock({
+  type: 'ui.select',
+  label: 'Dropdown',
+  category: 'UI',
+  description: 'A list of choices, comma separated. Read it with Input Value.',
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'id', label: 'Element id', type: 'String', default: 'choice', required: true },
+    { id: 'options', label: 'Choices', type: 'String', default: 'One, Two, Three', required: true },
+    { id: 'value', label: 'Selected', type: 'String', default: '' },
+    ...STYLE_PORTS,
+  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  generate: ({ input, node }) =>
+    `render.select({ id: ${input('id')}, options: ${input('options')}, value: ${input('value')}${styleFragment(node)} })`,
+  parse: parseOptions('render.select', { id: 'id', options: 'options', value: 'value', ...STYLE_MAP }),
+})
+
+/**
+ * A link out of the app.
+ *
+ * Going to another screen is the Go To Screen block; this is for leaving.
+ * Keeping them apart means the generated code never has to guess whether
+ * "/pricing" meant a screen or a URL -- on a phone, where one is a view
+ * change and the other opens the browser, guessing wrong is very visible.
+ */
+const uiLink = defineBlock({
+  type: 'ui.link',
+  label: 'Link',
+  category: 'UI',
+  description: 'Opens a URL outside the app. Use Go To Screen to move within it.',
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'id', label: 'Element id', type: 'String', default: 'link' },
+    { id: 'text', label: 'Text', type: 'String', default: 'Learn more', required: true },
+    { id: 'href', label: 'URL', type: 'String', default: 'https://example.com', required: true },
+    ...STYLE_PORTS,
+  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  generate: ({ input, node }) =>
+    `render.link({ id: ${input('id')}, text: ${input('text')}, href: ${input('href')}${styleFragment(node)} })`,
+  parse: parseOptions('render.link', { id: 'id', text: 'text', href: 'href', ...STYLE_MAP }),
+})
+
+/** A rule between sections. */
+const uiDivider = defineBlock({
+  type: 'ui.divider',
+  label: 'Divider',
+  category: 'UI',
+  description: 'A horizontal rule.',
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'id', label: 'Element id', type: 'String', default: 'divider' },
+    ...STYLE_PORTS,
+  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  generate: ({ input, node }) => `render.divider({ id: ${input('id')}${styleFragment(node)} })`,
+  parse: parseOptions('render.divider', { id: 'id', ...STYLE_MAP }),
 })
 
 // ----------------------------------------------------------------- Logic
@@ -754,6 +919,7 @@ const storageUpload = defineBlock({
 export const builtinBlocks: BlockDefinition[] = [
   onAppStart, onClick,
   uiButton, uiText, uiInput, uiValue, uiStack,
+  uiHeading, uiImage, uiCheckbox, uiSelect, uiLink, uiDivider,
   navGo, navBack, navCurrent,
   logicIf, logicForEach, logicCompare, logicMath, logicExists, logicLog,
   dataQuery, dataInsert, dataVariable, dataNumber,

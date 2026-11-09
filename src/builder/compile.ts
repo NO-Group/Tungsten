@@ -19,7 +19,15 @@ import { incoming, nodeById, outgoing } from './graph'
 import { createFetchers, createMigration, type DataSchema } from './dataSchema'
 import { previewHtml } from './previewRuntime'
 import { uiThemeDart } from './uiTokens'
-import { renderDocumentBody, schemaFromGraph, type ComponentSchema, type UiDocument } from './uiSchema'
+import {
+  flattenComponents,
+  headingLevelOf,
+  optionsOf,
+  renderDocumentBody,
+  schemaFromGraph,
+  type ComponentSchema,
+  type UiDocument,
+} from './uiSchema'
 import { DEFAULT_SCREENS, homeScreen, screenOf, type Screen } from './screens'
 import type { AppVariable } from './appState'
 import {
@@ -259,7 +267,16 @@ function dartStatement(statement: IrStatement, indent: string, names: Map<string
     case 'ui.button':
       return [`${indent}// Button "\${${value('text')}}" is declared in the widget tree.`]
     case 'ui.input':
-      return [`${indent}// Input ${value('id')} is declared in the widget tree.`]
+    case 'ui.heading':
+    case 'ui.image':
+    case 'ui.checkbox':
+    case 'ui.select':
+    case 'ui.link':
+    case 'ui.divider':
+    case 'ui.stack':
+      // Interface blocks are the widget tree, not statements: the handler
+      // that "draws" one on the web is, here, a widget that already exists.
+      return [`${indent}// ${statement.type} is declared in the widget tree.`]
     case 'logic.if': {
       const inner = body('body')
       const otherwise = body('else')
@@ -287,16 +304,101 @@ function dartStatement(statement: IrStatement, indent: string, names: Map<string
   }
 }
 
-/** The Flutter widget for one component. */
-function dartWidget(component: ComponentSchema): string {
+/** A Dart identifier for an element id, used for controllers and fields. */
+function dartField(id: string): string {
+  return id.replace(/[^A-Za-z0-9_]/g, '_')
+}
+
+/** The font size a heading level gets in Flutter. */
+const DART_HEADING_SIZES = [30.0, 24.0, 20.0, 18.0, 17.0, 16.0]
+
+/**
+ * The Flutter widget for one component.
+ *
+ * Recursive, because a stack has children: the same component tree the
+ * preview nests is nested here, rather than flattened into a list that
+ * happens to be in the right order.
+ */
+function dartWidget(component: ComponentSchema, indent = '          '): string {
+  const text = (key: string, fallback: string) => JSON.stringify(String(component.properties[key] ?? fallback))
+  const field = dartField(component.id)
+
   if (component.type === 'button') {
-    const handler = component.events.click ? `() => _handle_${component.events.click.replace(/[^A-Za-z0-9_]/g, '_')}()` : 'null'
-    return `        ElevatedButton(onPressed: ${handler}, child: Text(${JSON.stringify(String(component.properties.text ?? 'Submit'))})),`
+    const handler = component.events.click ? `() => ${dartName(component.events.click)}()` : 'null'
+    return `${indent}ElevatedButton(onPressed: ${handler}, child: Text(${text('text', 'Submit')})),`
   }
   if (component.type === 'input') {
-    return `        TextField(controller: _${component.id.replace(/[^A-Za-z0-9_]/g, '_')}, decoration: InputDecoration(hintText: ${JSON.stringify(String(component.properties.placeholder ?? ''))})),`
+    return `${indent}TextField(controller: _${field}, decoration: InputDecoration(hintText: ${text('placeholder', '')})),`
   }
-  return `        Text(${JSON.stringify(String(component.properties.value ?? ''))}),`
+  if (component.type === 'heading') {
+    const size = DART_HEADING_SIZES[headingLevelOf(component) - 1]
+    return `${indent}Text(${text('text', '')}, style: const TextStyle(fontSize: ${size}, fontWeight: FontWeight.w600, color: AppTheme.text)),`
+  }
+  if (component.type === 'image') {
+    const source = String(component.properties.src ?? '')
+    if (!source) {
+      return `${indent}Container(
+${indent}  padding: const EdgeInsets.all(12),
+${indent}  alignment: Alignment.center,
+${indent}  constraints: const BoxConstraints(minWidth: 180, minHeight: 110),
+${indent}  decoration: BoxDecoration(border: Border.all(color: AppTheme.text.withValues(alpha: 0.3))),
+${indent}  child: Text(${text('alt', 'Image')}),
+${indent}),`
+    }
+    return `${indent}Image.network(${JSON.stringify(source)}, semanticLabel: ${text('alt', 'Image')}),`
+  }
+  if (component.type === 'checkbox') {
+    return `${indent}Row(children: [
+${indent}  Checkbox(
+${indent}    value: _fields[${JSON.stringify(component.id)}] == 'true',
+${indent}    onChanged: (value) => setState(() => _fields[${JSON.stringify(component.id)}] = value == true ? 'true' : 'false'),
+${indent}  ),
+${indent}  Text(${text('label', '')}),
+${indent}]),`
+  }
+  if (component.type === 'select') {
+    const choices = optionsOf(component)
+    const items = choices
+      .map((choice) => `${indent}    DropdownMenuItem(value: ${JSON.stringify(choice)}, child: Text(${JSON.stringify(choice)})),`)
+      .join('\n')
+    const initial = String(component.properties.value ?? '') || choices[0] || ''
+    return `${indent}DropdownButton<String>(
+${indent}  value: _fields[${JSON.stringify(component.id)}] ?? ${JSON.stringify(initial)},
+${indent}  items: [
+${items || `${indent}    // No choices yet.`}
+${indent}  ],
+${indent}  onChanged: (value) => setState(() => _fields[${JSON.stringify(component.id)}] = value ?? ''),
+${indent}),`
+  }
+  if (component.type === 'link') {
+    return `${indent}TextButton(
+${indent}  onPressed: () => openUrl(${text('href', '')}),
+${indent}  child: Text(${text('text', '')}),
+${indent}),`
+  }
+  if (component.type === 'divider') {
+    return `${indent}Divider(color: AppTheme.border),`
+  }
+  if (component.type === 'stack') {
+    const row = String(component.properties.direction ?? 'column') === 'row'
+    const gap = Number(component.properties.gap ?? 10)
+    // Separators rather than the `spacing` argument: that landed in
+    // Flutter 3.27, and the generated pubspec asks only for 3.4.
+    const inner = `${indent}    `
+    const children = (component.children ?? []).flatMap((child, index) => (
+      index === 0
+        ? [dartWidget(child, inner)]
+        : [`${inner}${row ? `SizedBox(width: ${gap})` : `SizedBox(height: ${gap})`},`, dartWidget(child, inner)]
+    ))
+    return `${indent}${row ? 'Row' : 'Column'}(
+${indent}  crossAxisAlignment: CrossAxisAlignment.${row ? 'center' : 'start'},
+${indent}  mainAxisSize: MainAxisSize.min,
+${indent}  children: [
+${children.join('\n') || `${indent}    // Nothing inside this stack yet.`}
+${indent}  ],
+${indent}),`
+  }
+  return `${indent}Text(${text('value', '')}),`
 }
 
 /**
@@ -366,15 +468,20 @@ function mobileFiles(root: string, ir: Ir, project: Project): CompiledFile[] {
     return `  Future<void> ${dartName(event.node)}() async {\n${body.join('\n') || '    // Nothing connected yet.'}\n  }`
   })
 
-  const controllers = ir.components
-    .filter((component) => component.type === 'input')
-    .map((component) => `  final _${component.id.replace(/[^A-Za-z0-9_]/g, '_')} = TextEditingController();`)
+  // Every input on every screen, not only the home one: the controllers
+  // live for as long as the app does, and a field on the second screen
+  // still has to keep what was typed into it.
+  const inputs = new Map<string, ComponentSchema>()
+  for (const component of ir.screens.flatMap((screen) => flattenComponents(screen.components))) {
+    if (component.type === 'input') inputs.set(component.id, component)
+  }
+  const controllers = [...inputs.keys()].map((id) => `  final _${dartField(id)} = TextEditingController();`)
 
   /** The widgets of one screen, and the start handlers it runs on entry. */
   const widgetsFor = ir.screens.map((screen) => [
     `      case ${JSON.stringify(screen.name)}:`,
     '        return [',
-    ...screen.components.map((component) => `    ${dartWidget(component)}`),
+    ...screen.components.map((component) => dartWidget(component)),
     '        ];',
   ].join('\n'))
 
@@ -431,6 +538,10 @@ class BuilderScreen extends StatefulWidget {
 
 class _BuilderScreenState extends State<BuilderScreen> {
 ${controllers.join('\n')}
+  /// What the non-text controls hold, by element id. Checkboxes keep
+  /// "true"/"false" here so the Input Value block reads one kind of thing
+  /// whatever drew it, exactly as on the web.
+  final Map<String, String> _fields = {};
   final List<Widget> output = [];
 
   /// Which screen is showing, and the ones behind it. Navigation is state,
@@ -518,6 +629,18 @@ class Auth {
 
 class Storage {
   Future<String> upload(String bucket, Object? file) async => 'https://example.com/' + bucket;
+}
+
+/// Opening a link.
+///
+/// A stub like the services above. Add url_launcher to the pubspec and the
+/// body becomes launchUrl(Uri.parse(url)) -- not done for you,
+/// because that package needs per-platform set-up this generator cannot
+/// perform, and a link that silently did nothing would be worse than one
+/// that says what it would have opened.
+void openUrl(String url) {
+  // ignore: avoid_print
+  print('open ' + url);
 }
 
 final api = Api();
