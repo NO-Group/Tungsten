@@ -15,6 +15,7 @@
 import { headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeKotlin } from '../uiTokens'
 import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile'
+import { ARITHMETIC, COMPARISONS, isEquality, isTextual, operatorOf } from './expressions'
 import { appIdFor, type Project } from '../../project/targets'
 
 /** `com.acme.timer` → `com/acme/timer`, where Gradle expects the sources. */
@@ -32,17 +33,59 @@ function literal(value: string | number | boolean): string {
 }
 
 /** One IR statement, as Kotlin. Mirrors the Dart lowering case for case. */
+/**
+ * A value, as Kotlin.
+ *
+ * The three arms that matter: a literal is written out, a statement's
+ * result is the variable it was bound to, and a pure expression block is
+ * lowered in place -- which is how reading a text field or comparing two
+ * things reaches the phone at all.
+ */
+function kotlinValue(value: IrValue | undefined, names: Map<string, string>): string {
+  if (!value || value.kind === 'empty') return 'null'
+  if (value.kind === 'literal') return literal(value.value)
+  if (value.kind === 'reference') return names.get(value.node) ?? 'null'
+
+  const input = (id: string) => kotlinValue(value.inputs[id], names)
+  const key = (id: string) => (isTextual(value.inputs[id]) ? input(id) : `toText(${input(id)})`)
+  switch (value.type) {
+    case 'ui.value':
+      return `(app.fields[${key('id')}] ?: "")`
+    case 'state.get':
+      return `app.state[${key('name')}]`
+    case 'nav.current':
+      return 'app.screen'
+    case 'data.text':
+    case 'data.number':
+      return input('value')
+    case 'logic.exists':
+      return `(${input('value')} != null)`
+    case 'logic.compare': {
+      const operator = operatorOf(value, COMPARISONS, '===')
+      if (isEquality(operator)) {
+        return `(toText(${input('left')}) ${operator === '===' ? '==' : '!='} toText(${input('right')}))`
+      }
+      return `(toNumber(${input('left')}) ${operator} toNumber(${input('right')}))`
+    }
+    case 'logic.math':
+      return `(toNumber(${input('left')}) ${operatorOf(value, ARITHMETIC, '+')} toNumber(${input('right')}))`
+    default:
+      // A plugin block, or something newer than this emitter. Null is the
+      // honest answer, and the comment says whose fault it is.
+      return `null /* ${value.type} has no Android mapping yet */`
+  }
+}
+
 export function kotlinStatement(
   statement: IrStatement,
   indent: string,
   names: Map<string, string>,
 ): string[] {
-  const value = (id: string): string => {
-    const input: IrValue | undefined = statement.inputs[id]
-    if (!input || input.kind === 'empty') return 'null'
-    if (input.kind === 'literal') return literal(input.value)
-    return names.get(input.node) ?? 'null'
-  }
+  const value = (id: string): string => kotlinValue(statement.inputs[id], names)
+  /** The same value where a String is wanted, without a pointless cast. */
+  const text = (id: string): string => (
+    isTextual(statement.inputs[id]) ? value(id) : `toText(${value(id)})`
+  )
 
   const name = () => {
     const existing = names.get(statement.node)
@@ -58,15 +101,15 @@ export function kotlinStatement(
 
   switch (statement.type) {
     case 'logic.log':
-      return [`${indent}println("\${${value('value')}}")`]
+      return [`${indent}println(${text('value')})`]
     case 'nav.go':
-      return [`${indent}app.goTo(${value('screen')}.toString())`]
+      return [`${indent}app.goTo(${text('screen')})`]
     case 'nav.back':
       return [`${indent}app.back()`]
     case 'ui.text':
-      return [`${indent}app.output.add("\${${value('value')}}")`]
+      return [`${indent}app.output.add(${text('value')})`]
     case 'ui.button':
-      return [`${indent}// Button "\${${value('text')}}" is declared in the composable.`]
+      return [`${indent}// Button ${value('text')} is declared in the composable.`]
     case 'ui.input':
       return [`${indent}// Input ${value('id')} is declared in the composable.`]
     case 'logic.if': {
@@ -84,19 +127,21 @@ export function kotlinStatement(
         `${indent}}`,
       ]
     case 'data.query':
-      return [`${indent}val ${name()} = Api.select(${value('table')}.toString())`]
+      return [`${indent}val ${name()} = Api.select(${text('table')})`]
     case 'data.insert':
-      return [`${indent}val ${name()} = Api.insert(${value('table')}.toString(), ${value('row')})`]
+      return [`${indent}val ${name()} = Api.insert(${text('table')}, ${value('row')})`]
     case 'network.fetch':
-      return [`${indent}val ${name()} = Api.request(${value('url')}.toString(), ${value('method')}.toString())`]
+      return [`${indent}val ${name()} = Api.request(${text('url')}, ${text('method')})`]
     case 'auth.signUp':
-      return [`${indent}val ${name()} = Auth.signUp(${value('email')}.toString(), ${value('password')}.toString())`]
+      return [`${indent}val ${name()} = Auth.signUp(${text('email')}, ${text('password')})`]
     case 'auth.oauth':
-      return [`${indent}val ${name()} = Auth.oauth(${value('provider')}.toString())`]
+      return [`${indent}val ${name()} = Auth.oauth(${text('provider')})`]
     case 'auth.session':
       return [`${indent}val ${name()} = Auth.session()`]
     case 'storage.upload':
-      return [`${indent}val ${name()} = Storage.upload(${value('bucket')}.toString(), ${value('file')})`]
+      return [`${indent}val ${name()} = Storage.upload(${text('bucket')}, ${value('file')})`]
+    case 'state.set':
+      return [`${indent}app.state[${text('name')}] = ${value('value')}`]
     default:
       return [`${indent}// ${statement.type} has no Android mapping yet.`]
   }
@@ -260,6 +305,9 @@ ${uiThemeKotlin()}
 class AppState {
     val output = mutableStateListOf<String>()
     val fields = mutableStateMapOf<String, String>()
+
+    /** The app's variables. The web target calls the same thing state. */
+    val state = mutableStateMapOf<String, Any?>()
     var screen by mutableStateOf(${JSON.stringify(ir.home)})
         private set
     private val trail = mutableListOf<String>()
@@ -408,6 +456,20 @@ function runtime(identifier: string): string {
 // generated handlers keep compiling.
 
 package ${identifier}
+
+/**
+ * Values out of a field map have no static type, so the two conversions
+ * every generated comparison needs live here. Ordering compares numbers
+ * and equality compares text: "3" < "20" being true is a bug that takes an
+ * hour to find in code you did not write.
+ */
+fun toText(value: Any?): String = value?.toString() ?: ""
+
+fun toNumber(value: Any?): Double = when (value) {
+    is Number -> value.toDouble()
+    is Boolean -> if (value) 1.0 else 0.0
+    else -> value?.toString()?.toDoubleOrNull() ?: 0.0
+}
 
 object Api {
     suspend fun select(table: String): List<Map<String, Any?>> {

@@ -400,11 +400,157 @@ describe('the component library, compiled', () => {
     const result = compile({ graph: named, registry, target: 'mobile', project: project(), screens })
     if (!result.ok) throw new Error(result.reason)
     const dart = at(result.files, 'main.dart')
-    expect(dart).toContain('final _email = TextEditingController();')
-    expect(dart).toContain('final _password = TextEditingController();')
+    expect(dart).toContain('"email": TextEditingController(),')
+    expect(dart).toContain('"password": TextEditingController(),')
   })
 
   it('pulls in Coil, because an Image block must not mean editing Gradle', () => {
     expect(at(run('android'), 'build.gradle.kts')).toContain('io.coil-kt:coil-compose')
+  })
+})
+
+/**
+ * Expressions, on a phone.
+ *
+ * The IR could only describe values that came out of a statement, so every
+ * target reading the IR rather than the generated TypeScript -- which is
+ * all three native ones -- turned reading a field, comparing two things or
+ * doing arithmetic into `null`. The sign-in recipe compiled to an Android
+ * app that really did call signUp(null, null). These tests are the reason
+ * that cannot come back.
+ */
+describe('expressions reach the native targets', () => {
+  /** A click handler whose argument comes from a pure expression block. */
+  function reading(expressionType: string, values: Record<string, string | number> = {}) {
+    const { graph, ids } = build(
+      [
+        ['ui.button', 0, 0],
+        ['event.click', 0, 120],
+        ['logic.log', 220, 120],
+        [expressionType, 440, 120],
+      ],
+      [[1, 'exec', 2, 'exec']],
+    )
+    const definition = registry.get(expressionType)
+    const port = definition?.outputs[0].id ?? 'value'
+    const result = connect(graph, registry, { node: ids[3], port }, { node: ids[2], port: 'value' })
+    if (result.rejected) throw new Error(result.rejected)
+    let next = result.graph
+    for (const [key, value] of Object.entries(values)) next = setNodeValue(next, ids[3], key, value)
+    return next
+  }
+
+  /** One variable, so the state blocks have something to refer to. */
+  const state = [{ name: 'count', type: 'Number' as const, scope: 'app' as const, initial: '0' }]
+
+  function emit(graph: BlockGraph, target: CompileTarget, suffix: string): string {
+    const result = compile({ graph, registry, target, project: project(), state })
+    if (!result.ok) throw new Error(result.reason)
+    return at(result.files, suffix)
+  }
+
+  const everywhere = (graph: BlockGraph) => ({
+    kotlin: emit(graph, 'android', 'MainActivity.kt'),
+    swift: emit(graph, 'ios', 'ContentView.swift'),
+    dart: emit(graph, 'mobile', 'main.dart'),
+  })
+
+  it('reads a text field instead of passing null', () => {
+    const { kotlin, swift, dart } = everywhere(reading('ui.value', { id: 'email' }))
+    expect(kotlin).toContain('println((app.fields["email"] ?: ""))')
+    expect(swift).toContain('print((app.fields["email"] ?? ""))')
+    expect(dart).toContain('debugPrint(_valueOf("email"));')
+  })
+
+  it('compares as text for equality and as numbers for ordering', () => {
+    // "3" < "20" is true as text and false as arithmetic. Field maps are
+    // untyped, so the emitter has to choose, and it chooses per operator.
+    const { kotlin, swift, dart } = everywhere(reading('logic.compare', { operator: '<', left: 3, right: 20 }))
+    for (const source of [kotlin, swift, dart]) expect(source).toContain('toNumber(')
+    const equal = everywhere(reading('logic.compare', { operator: '===', left: 'a', right: 'b' }))
+    expect(equal.kotlin).toContain('toText(')
+    expect(equal.swift).toContain('toText(')
+    expect(equal.dart).toContain('toText(')
+  })
+
+  it('refuses an operator it does not recognise', () => {
+    // The operator is never interpolated from a connected block, and a
+    // value the inspector should not have allowed cannot become source.
+    const { kotlin } = everywhere(reading('logic.compare', { operator: '&& system(', left: 1, right: 2 }))
+    expect(kotlin).not.toContain('system(')
+    expect(kotlin).toContain('==')
+  })
+
+  it('does arithmetic rather than emitting null', () => {
+    const { kotlin, swift, dart } = everywhere(reading('logic.math', { operator: '*' }))
+    for (const source of [kotlin, swift, dart]) {
+      expect(source).toMatch(/toNumber\(.*\) \* toNumber\(/)
+    }
+  })
+
+  it('reads the current screen and a variable', () => {
+    const current = everywhere(reading('nav.current'))
+    expect(current.kotlin).toContain('app.screen')
+    expect(current.swift).toContain('app.screen')
+    expect(current.dart).toContain('_screen')
+
+    const variable = everywhere(reading('state.get', { name: 'count' }))
+    expect(variable.kotlin).toContain('app.state["count"]')
+    expect(variable.swift).toContain('app.state["count"]')
+    expect(variable.dart).toContain('_state["count"]')
+  })
+
+  it('writes a variable, with somewhere to write it to', () => {
+    const { graph, ids } = build(
+      [['event.start', 0, 0], ['state.set', 220, 0]],
+      [[0, 'exec', 1, 'exec']],
+    )
+    const named = setNodeValue(setNodeValue(graph, ids[1], 'name', 'count'), ids[1], 'value', 2)
+    const { kotlin, swift, dart } = everywhere(named)
+    expect(kotlin).toContain('app.state["count"] = 2')
+    expect(kotlin).toContain('val state = mutableStateMapOf<String, Any?>()')
+    expect(swift).toContain('app.state["count"] = 2')
+    expect(swift).toContain('@Published var state: [String: Any] = [:]')
+    expect(dart).toContain('_state["count"] = 2')
+    expect(dart).toContain('final Map<String, dynamic> _state = {};')
+  })
+
+  it('ships the two conversions the generated code calls', () => {
+    const files = run('android')
+    expect(at(files, 'Runtime.kt')).toContain('fun toText(value: Any?): String')
+    expect(at(files, 'Runtime.kt')).toContain('fun toNumber(value: Any?): Double')
+    expect(at(run('ios'), 'Runtime.swift')).toContain('func toNumber(_ value: Any?) -> Double')
+    expect(at(run('mobile'), 'runtime.dart')).toContain('double toNumber(Object? value)')
+  })
+
+  it('does not wrap something that is already a string', () => {
+    // Readability is the point of generating source at all: toText("x")
+    // in every argument would be correct and unreadable.
+    const { kotlin } = everywhere(reading('ui.value', { id: 'email' }))
+    expect(kotlin).not.toContain('toText("email")')
+  })
+
+  it('still compiles a sign-in form into real arguments, on all three', () => {
+    const { graph, ids } = build(
+      [
+        ['ui.input', 0, 0],
+        ['ui.button', 0, 120],
+        ['event.click', 0, 240],
+        ['auth.signUp', 220, 240],
+        ['ui.value', 440, 240],
+      ],
+      [
+        [2, 'exec', 3, 'exec'],
+        [4, 'value', 3, 'email'],
+      ],
+    )
+    let wired = setNodeValue(graph, ids[0], 'id', 'email')
+    wired = setNodeValue(wired, ids[4], 'id', 'email')
+    wired = setNodeValue(wired, ids[3], 'password', 'hunter2')
+    const { kotlin, swift, dart } = everywhere(wired)
+    expect(kotlin).toContain('Auth.signUp((app.fields["email"] ?: "")')
+    expect(swift).toContain('Auth.signUp(email: (app.fields["email"] ?? "")')
+    expect(dart).toContain('auth.signUp(_valueOf("email")')
+    for (const source of [kotlin, swift, dart]) expect(source).not.toContain('signUp(null')
   })
 })

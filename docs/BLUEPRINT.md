@@ -475,6 +475,51 @@ having: adding six targets required no change to the canvas, the parser,
 the generator, the integrity checker or the preview. A target is a function
 over the IR. The number of things that know what a block is did not go up.
 
+## The IR had no expressions
+
+Adding six components to the library was the visible half of this rung.
+The half worth writing down is what adding them exposed.
+
+The IR described a value in three ways: a literal, the variable a statement
+bound, or nothing. There was no fourth way, and there needed to be — a
+Compare block, a Math block, an Input Value block and a Read Variable
+block are all *pure*: they occupy no step, bind no variable, and are
+inlined wherever they are used. The web target never noticed, because it
+is generated from the graph by the code generator, which inlines them
+itself. The three native targets are generated from the IR, and the IR had
+nowhere to put them. So they resolved to `null`.
+
+The sign-in recipe — the one on the welcome screen — compiled to an Android
+app that called `Auth.signUp(null, null)`. It compiled. It ran. It was
+wrong in the quietest possible way.
+
+The fix is one more arm:
+
+    | { kind: 'call'; node; type; port; inputs: Record<string, IrValue> }
+
+and a lowering step that recurses into any source block with no Exec input.
+Each native emitter gained a `value()` of its own that knows how to spell
+the eight pure blocks, which is about forty lines each.
+
+Two decisions inside that are worth defending.
+
+**Equality compares text; ordering compares numbers.** Values coming out
+of a field map have no static type, and `"3" < "20"` is true as text and
+false as arithmetic. Rather than guess per call site, every generated
+comparison routes through `toText` or `toNumber` from the target's runtime
+file, chosen by the operator. The alternative — emitting `a < b` and
+letting Kotlin, Swift and Dart each decide — produces three apps that
+disagree with each other and with the preview.
+
+**The operator is never interpolated.** It is a literal choice on a
+property port, checked against a list of six before it reaches a source
+file. A Compare block whose operator says `&& system(` generates `==`.
+
+And one piece of good news about the architecture: nothing above the IR
+changed. The canvas, the parser, the generator, the integrity checker and
+the preview are all untouched by this. The thing that was missing was
+missing in exactly one place.
+
 ## The three deliberate deviations
 
 **Tauri and Rust → Electron.** Tungsten already had a working Electron shell

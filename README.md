@@ -438,6 +438,24 @@ three times. Type your own identifier and a later rename will not overwrite
 it. A Linux package name is the slug, `timer`, because `com.acme.timer` as a
 .deb name is wrong.
 
+### The component library
+
+Eleven blocks in the UI category: Heading, Text, Button, Text Input,
+Input Value, Checkbox, Dropdown, Image, Link, Divider and Stack. Each one
+renders on all six targets in that platform's own idiom — a Heading is an
+`<h2>` on the web, `headlineMedium` in Compose, `.title` in SwiftUI and a
+weighted `TextStyle` in Flutter, because a level is semantic and faking one
+with a font size throws away the outline and the screen reader with it.
+
+Checkboxes and dropdowns are read with the same Input Value block that
+reads a text field: a box answers `"true"` or `"false"`, a dropdown answers
+the chosen string. One way to read what the user did, whatever the control
+looks like.
+
+A Stack is a row or a column, and whatever is wired into its body is drawn
+inside it — on the phone targets too, which until recently flattened
+containers into an empty label.
+
 ### What is actually generated
 
 Everything is lowered once into an IR — events, statements, components,

@@ -11,6 +11,7 @@
 import { headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeSwift } from '../uiTokens'
 import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile'
+import { ARITHMETIC, COMPARISONS, isEquality, isTextual, operatorOf } from './expressions'
 import { appIdFor, slug, type Project } from '../../project/targets'
 
 function handlerName(nodeId: string): string {
@@ -23,21 +24,56 @@ function literal(value: string | number | boolean): string {
 }
 
 /** One IR statement, as Swift. */
+/**
+ * A value, as Swift.
+ *
+ * Same three arms as every other target: literal, the variable a statement
+ * bound, or a pure expression block lowered where it is used.
+ */
+function swiftValue(value: IrValue | undefined, names: Map<string, string>): string {
+  if (!value || value.kind === 'empty') return 'nil'
+  if (value.kind === 'literal') return literal(value.value)
+  if (value.kind === 'reference') return names.get(value.node) ?? 'nil'
+
+  const input = (id: string) => swiftValue(value.inputs[id], names)
+  const key = (id: string) => (isTextual(value.inputs[id]) ? input(id) : `toText(${input(id)})`)
+  switch (value.type) {
+    case 'ui.value':
+      return `(app.fields[${key('id')}] ?? "")`
+    case 'state.get':
+      return `app.state[${key('name')}]`
+    case 'nav.current':
+      return 'app.screen'
+    case 'data.text':
+    case 'data.number':
+      return input('value')
+    case 'logic.exists':
+      return `(${input('value')} != nil)`
+    case 'logic.compare': {
+      const operator = operatorOf(value, COMPARISONS, '===')
+      if (isEquality(operator)) {
+        return `(toText(${input('left')}) ${operator === '===' ? '==' : '!='} toText(${input('right')}))`
+      }
+      return `(toNumber(${input('left')}) ${operator} toNumber(${input('right')}))`
+    }
+    case 'logic.math':
+      return `(toNumber(${input('left')}) ${operatorOf(value, ARITHMETIC, '+')} toNumber(${input('right')}))`
+    default:
+      return `nil /* ${value.type} has no iOS mapping yet */`
+  }
+}
+
 export function swiftStatement(
   statement: IrStatement,
   indent: string,
   names: Map<string, string>,
 ): string[] {
-  const value = (id: string): string => {
-    const input: IrValue | undefined = statement.inputs[id]
-    if (!input || input.kind === 'empty') return 'nil'
-    if (input.kind === 'literal') return literal(input.value)
-    return names.get(input.node) ?? 'nil'
-  }
+  const value = (id: string): string => swiftValue(statement.inputs[id], names)
 
   // Swift will not interpolate an Optional without complaining, and the
-  // generated app should not be full of warnings on first open.
-  const text = (id: string) => `String(describing: ${value(id)} ?? "")`
+  // generated app should not be full of warnings on first open. toText is
+  // in the runtime file and takes anything, optional or not.
+  const text = (id: string) => (isTextual(statement.inputs[id]) ? value(id) : `toText(${value(id)})`)
 
   const name = () => {
     const existing = names.get(statement.node)
@@ -92,6 +128,8 @@ export function swiftStatement(
       return [`${indent}let ${name()} = try await Auth.session()`]
     case 'storage.upload':
       return [`${indent}let ${name()} = try await Storage.upload(bucket: ${text('bucket')}, file: ${value('file')})`]
+    case 'state.set':
+      return [`${indent}app.state[${text('name')}] = ${value('value')}`]
     default:
       return [`${indent}// ${statement.type} has no iOS mapping yet.`]
   }
@@ -219,6 +257,9 @@ ${uiThemeSwift()}
 final class AppState: ObservableObject {
     @Published var output: [String] = []
     @Published var fields: [String: String] = [:]
+
+    /// The app's variables, under the name the web target uses for them.
+    @Published var state: [String: Any] = [:]
     @Published private(set) var screen: String = ${JSON.stringify(ir.home)}
     private var trail: [String] = []
 
@@ -422,6 +463,25 @@ struct GeneratedApp: App {
 // signatures.
 
 import Foundation
+
+/// Values out of a field map have no static type, so the two conversions
+/// every generated comparison needs live here. Equality compares text and
+/// ordering compares numbers, because "3" < "20" being true is a bug that
+/// takes an hour to find in code you did not write.
+func toText(_ value: Any?) -> String {
+    guard let value else { return "" }
+    return String(describing: value)
+}
+
+func toNumber(_ value: Any?) -> Double {
+    switch value {
+    case let number as Double: return number
+    case let number as Int: return Double(number)
+    case let flag as Bool: return flag ? 1 : 0
+    case let text as String: return Double(text) ?? 0
+    default: return 0
+    }
+}
 
 enum Api {
     static func select(_ table: String) async throws -> [[String: Any]] {

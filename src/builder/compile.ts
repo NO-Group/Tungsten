@@ -37,6 +37,7 @@ import {
   type Project,
   type TargetKind,
 } from '../project/targets'
+import { ARITHMETIC, COMPARISONS, isEquality, isTextual, operatorOf } from './targets/expressions'
 import { androidFiles } from './targets/android'
 import { iosFiles } from './targets/ios'
 import { desktopFiles, isDesktopKind } from './targets/desktop'
@@ -45,8 +46,22 @@ export const IR_VERSION = 1
 
 export type IrValue =
   | { kind: 'literal'; value: string | number | boolean }
+  /** The result of a block that occupied a step, held in a variable. */
   | { kind: 'reference'; node: string; port: string }
+  /**
+   * A pure expression block, inlined where it is used.
+   *
+   * Without this the IR could only describe values that came out of a
+   * statement, so every target that reads the IR rather than the generated
+   * TypeScript -- the three native ones -- turned reading a field, comparing
+   * two things or doing arithmetic into `null`. A phone app built from a
+   * sign-in form really did call signUp(null, null).
+   */
+  | { kind: 'call'; node: string; type: string; port: string; inputs: Record<string, IrValue> }
   | { kind: 'empty' }
+
+/** The `call` arm, named: the emitters all switch on it. */
+export type IrCall = Extract<IrValue, { kind: 'call' }>
 
 export type IrStatement = {
   /** The block this came from; every target keeps it for the traceback. */
@@ -95,13 +110,36 @@ export function buildIr(
 ): Ir {
   const ui = schemaFromGraph(graph, registry)
 
-  const valueFor = (node: BlockNode, portId: string): IrValue => {
+  const valueFor = (node: BlockNode, portId: string, seen: Set<string> = new Set()): IrValue => {
     const link = incoming(graph, node.id, portId)
-    if (link) return { kind: 'reference', node: link.from.node, port: link.from.port }
-    const definition = registry.get(node.type)
-    const port = definition?.inputs.find((candidate) => candidate.id === portId)
-    const value = node.values[portId] ?? port?.default
-    return value === undefined ? { kind: 'empty' } : { kind: 'literal', value }
+    if (!link) {
+      const definition = registry.get(node.type)
+      const port = definition?.inputs.find((candidate) => candidate.id === portId)
+      const value = node.values[portId] ?? port?.default
+      return value === undefined ? { kind: 'empty' } : { kind: 'literal', value }
+    }
+
+    const source = nodeById(graph, link.from.node)
+    const definition = source && registry.get(source.type)
+    if (!source || !definition) return { kind: 'empty' }
+
+    // A block that occupies a step stored its result in a variable, so it
+    // is referred to by name. A pure expression has no variable to refer
+    // to -- it is lowered in place, arguments and all.
+    const isStatement = definition.inputs.some((port) => port.type === 'Exec')
+    if (isStatement) return { kind: 'reference', node: link.from.node, port: link.from.port }
+    // Expressions cannot legally form a cycle, but a corrupt file can
+    // describe one, and recursing into it would be an infinite loop
+    // rather than an error message.
+    if (seen.has(source.id)) return { kind: 'empty' }
+
+    const inner = new Set(seen).add(source.id)
+    const inputs: Record<string, IrValue> = {}
+    for (const port of definition.inputs) {
+      if (port.type === 'Exec') continue
+      inputs[port.id] = valueFor(source, port.id, inner)
+    }
+    return { kind: 'call', node: source.id, type: source.type, port: link.from.port, inputs }
   }
 
   const chain = (fromNode: string, fromPort: string, seen: Set<string>): IrStatement[] => {
@@ -231,17 +269,54 @@ export type CompileInput = {
 }
 
 /** Dart for one IR statement, for the mobile target. */
-function dartStatement(statement: IrStatement, indent: string, names: Map<string, string>): string[] {
-  const value = (id: string): string => {
-    const input = statement.inputs[id]
-    if (!input || input.kind === 'empty') return 'null'
-    if (input.kind === 'literal') {
-      if (typeof input.value === 'string') return JSON.stringify(input.value)
-      if (typeof input.value === 'boolean') return String(input.value)
-      return String(input.value)
-    }
-    return names.get(input.node) ?? 'null'
+/**
+ * A value, as Dart.
+ *
+ * Literal, the variable a statement bound, or -- the arm that was missing
+ * until the IR grew one -- a pure expression block lowered in place.
+ */
+function dartValue(value: IrValue | undefined, names: Map<string, string>): string {
+  if (!value || value.kind === 'empty') return 'null'
+  if (value.kind === 'literal') {
+    if (typeof value.value === 'string') return JSON.stringify(value.value)
+    return String(value.value)
   }
+  if (value.kind === 'reference') return names.get(value.node) ?? 'null'
+
+  const input = (id: string) => dartValue(value.inputs[id], names)
+  const key = (id: string) => (isTextual(value.inputs[id]) ? input(id) : `toText(${input(id)})`)
+  switch (value.type) {
+    case 'ui.value':
+      return `_valueOf(${key('id')})`
+    case 'state.get':
+      return `_state[${key('name')}]`
+    case 'nav.current':
+      return '_screen'
+    case 'data.text':
+    case 'data.number':
+      return input('value')
+    case 'logic.exists':
+      return `(${input('value')} != null)`
+    case 'logic.compare': {
+      const operator = operatorOf(value, COMPARISONS, '===')
+      if (isEquality(operator)) {
+        return `(toText(${input('left')}) ${operator === '===' ? '==' : '!='} toText(${input('right')}))`
+      }
+      return `(toNumber(${input('left')}) ${operator} toNumber(${input('right')}))`
+    }
+    case 'logic.math':
+      return `(toNumber(${input('left')}) ${operatorOf(value, ARITHMETIC, '+')} toNumber(${input('right')}))`
+    default:
+      return `null /* ${value.type} has no mobile mapping yet */`
+  }
+}
+
+function dartStatement(statement: IrStatement, indent: string, names: Map<string, string>): string[] {
+  const value = (id: string): string => dartValue(statement.inputs[id], names)
+  /** The same value where a String is wanted, without a pointless cast. */
+  const text = (id: string): string => (
+    isTextual(statement.inputs[id]) ? value(id) : `toText(${value(id)})`
+  )
 
   const name = () => {
     const base = statement.type.split('.').pop() ?? 'value'
@@ -257,15 +332,15 @@ function dartStatement(statement: IrStatement, indent: string, names: Map<string
 
   switch (statement.type) {
     case 'logic.log':
-      return [`${indent}debugPrint('\${${value('value')}}');`]
+      return [`${indent}debugPrint(${text('value')});`]
     case 'nav.go':
-      return [`${indent}_goTo(${value('screen')});`]
+      return [`${indent}_goTo(${text('screen')});`]
     case 'nav.back':
       return [`${indent}_back();`]
     case 'ui.text':
-      return [`${indent}setState(() => output.add(Text('\${${value('value')}}')));`]
+      return [`${indent}setState(() => output.add(Text(${text('value')})));`]
     case 'ui.button':
-      return [`${indent}// Button "\${${value('text')}}" is declared in the widget tree.`]
+      return [`${indent}// Button ${value('text')} is declared in the widget tree.`]
     case 'ui.input':
     case 'ui.heading':
     case 'ui.image':
@@ -284,29 +359,26 @@ function dartStatement(statement: IrStatement, indent: string, names: Map<string
       return otherwise.length ? [...lines.slice(0, -1), `${indent}} else {`, ...otherwise, `${indent}}`] : lines
     }
     case 'logic.forEach':
-      return [`${indent}for (final item in ${value('list')} ?? []) {`, ...body('body'), `${indent}}`]
+      return [`${indent}for (final item in (${value('list')} as List<dynamic>? ?? [])) {`, ...body('body'), `${indent}}`]
     case 'data.query':
-      return [`${indent}final ${name()} = await api.select(${value('table')});`]
+      return [`${indent}final ${name()} = await api.select(${text('table')});`]
     case 'data.insert':
-      return [`${indent}final ${name()} = await api.insert(${value('table')}, ${value('row')});`]
+      return [`${indent}final ${name()} = await api.insert(${text('table')}, ${value('row')});`]
     case 'network.fetch':
-      return [`${indent}final ${name()} = await api.request(${value('url')}, ${value('method')});`]
+      return [`${indent}final ${name()} = await api.request(${text('url')}, ${text('method')});`]
     case 'auth.signUp':
-      return [`${indent}final ${name()} = await auth.signUp(${value('email')}, ${value('password')});`]
+      return [`${indent}final ${name()} = await auth.signUp(${text('email')}, ${text('password')});`]
     case 'auth.oauth':
-      return [`${indent}final ${name()} = await auth.oauth(${value('provider')});`]
+      return [`${indent}final ${name()} = await auth.oauth(${text('provider')});`]
     case 'auth.session':
       return [`${indent}final ${name()} = await auth.session();`]
     case 'storage.upload':
-      return [`${indent}final ${name()} = await storage.upload(${value('bucket')}, ${value('file')});`]
+      return [`${indent}final ${name()} = await storage.upload(${text('bucket')}, ${value('file')});`]
+    case 'state.set':
+      return [`${indent}setState(() => _state[${value('name')}] = ${value('value')});`]
     default:
       return [`${indent}// ${statement.type} has no mobile mapping yet.`]
   }
-}
-
-/** A Dart identifier for an element id, used for controllers and fields. */
-function dartField(id: string): string {
-  return id.replace(/[^A-Za-z0-9_]/g, '_')
 }
 
 /** The font size a heading level gets in Flutter. */
@@ -321,14 +393,13 @@ const DART_HEADING_SIZES = [30.0, 24.0, 20.0, 18.0, 17.0, 16.0]
  */
 function dartWidget(component: ComponentSchema, indent = '          '): string {
   const text = (key: string, fallback: string) => JSON.stringify(String(component.properties[key] ?? fallback))
-  const field = dartField(component.id)
 
   if (component.type === 'button') {
     const handler = component.events.click ? `() => ${dartName(component.events.click)}()` : 'null'
     return `${indent}ElevatedButton(onPressed: ${handler}, child: Text(${text('text', 'Submit')})),`
   }
   if (component.type === 'input') {
-    return `${indent}TextField(controller: _${field}, decoration: InputDecoration(hintText: ${text('placeholder', '')})),`
+    return `${indent}TextField(controller: _controllers[${JSON.stringify(component.id)}], decoration: InputDecoration(hintText: ${text('placeholder', '')})),`
   }
   if (component.type === 'heading') {
     const size = DART_HEADING_SIZES[headingLevelOf(component) - 1]
@@ -475,7 +546,7 @@ function mobileFiles(root: string, ir: Ir, project: Project): CompiledFile[] {
   for (const component of ir.screens.flatMap((screen) => flattenComponents(screen.components))) {
     if (component.type === 'input') inputs.set(component.id, component)
   }
-  const controllers = [...inputs.keys()].map((id) => `  final _${dartField(id)} = TextEditingController();`)
+  const controllers = [...inputs.keys()].map((id) => `    ${JSON.stringify(id)}: TextEditingController(),`)
 
   /** The widgets of one screen, and the start handlers it runs on entry. */
   const widgetsFor = ir.screens.map((screen) => [
@@ -537,12 +608,25 @@ class BuilderScreen extends StatefulWidget {
 }
 
 class _BuilderScreenState extends State<BuilderScreen> {
+  /// One controller per text field, by element id. A map rather than a
+  /// field apiece so that reading a value by id -- which is what the
+  /// Input Value block does -- is a lookup instead of a generated switch.
+  final Map<String, TextEditingController> _controllers = {
 ${controllers.join('\n')}
+  };
+
   /// What the non-text controls hold, by element id. Checkboxes keep
   /// "true"/"false" here so the Input Value block reads one kind of thing
   /// whatever drew it, exactly as on the web.
   final Map<String, String> _fields = {};
+
+  /// The app's variables, under the name the web target uses for them.
+  final Map<String, dynamic> _state = {};
+
   final List<Widget> output = [];
+
+  /// What a control holds right now, whichever kind of control it is.
+  String _valueOf(String id) => _controllers[id]?.text ?? _fields[id] ?? '';
 
   /// Which screen is showing, and the ones behind it. Navigation is state,
   /// not a route stack: the whole app is one widget, so going back is
@@ -615,9 +699,21 @@ ${handlers.join('\n\n')}
     contents: `// The three services the generated handlers call. Point them at your
 // backend; nothing above this line needs to change when you do.
 
+/// Values out of a field map have no static type, so the two conversions
+/// every generated comparison needs live here. Equality compares text and
+/// ordering compares numbers: "3" < "20" being true is a bug that takes an
+/// hour to find in code you did not write.
+String toText(Object? value) => value?.toString() ?? '';
+
+double toNumber(Object? value) {
+  if (value is num) return value.toDouble();
+  if (value is bool) return value ? 1 : 0;
+  return double.tryParse(value?.toString() ?? '') ?? 0;
+}
+
 class Api {
   Future<List<Map<String, dynamic>>> select(String table, [Map<String, dynamic>? where]) async => [];
-  Future<Map<String, dynamic>> insert(String table, Map<String, dynamic> row) async => row;
+  Future<Map<String, dynamic>> insert(String table, Object? row) async => {'table': table};
   Future<Map<String, dynamic>> request(String url, String method) async => {'ok': true};
 }
 
