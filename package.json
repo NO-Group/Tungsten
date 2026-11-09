@@ -24,7 +24,11 @@
     "check": "npm run graphene -- --check && npm run lint && npm run test && npm run build",
     "preview": "vite preview --host 0.0.0.0",
     "graphene": "node scripts/build-graphene.mjs",
-    "icon": "node scripts/prepare-icon.mjs"
+    "icon": "node scripts/prepare-icon.mjs",
+    "web:icons": "node scripts/web-icons.mjs",
+    "web:build": "node scripts/build-web.mjs",
+    "web:serve": "node scripts/build-web.mjs && vite preview --host 0.0.0.0 --outDir dist",
+    "domain": "node scripts/set-domain.mjs"
   },
   "keywords": [
     "ide",

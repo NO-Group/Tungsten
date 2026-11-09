@@ -365,6 +365,55 @@ The eight integrity rules are `unknown-block`, `type-mismatch`,
 `unused-result`. Diagnostics are sorted by node then rule so the list is
 stable, and each one names the fix.
 
+## Somewhere to put it
+
+A builder that compiles an app is only half an answer if the builder itself
+has to be installed before anyone can try it. So Tungsten ships twice from
+one source tree: as desktop installers, and as a website.
+
+Nothing was forked to do this. The web build is the same `vite build` the
+desktop packager consumes, plus a script that writes the files a deployment
+needs and the desktop one does not — manifest, service worker, crawler
+files, host headers, `CNAME`. Everything those files contain is derived from
+one `site.json` by pure functions in `src/web/site.ts`, which is why the
+deploy script has no logic worth testing and the logic has no filesystem to
+mock.
+
+Three decisions are worth recording, because each one is a mistake that is
+easy to make and expensive to find.
+
+**The domain is optional.** A build with no domain emits only relative
+paths, which means the same `dist/` works from a subdirectory, a preview
+URL, or a local file. Setting the domain adds the four things that genuinely
+need an absolute address — canonical link, social card, sitemap, `CNAME` —
+and nothing else. The alternative, baking a hostname into the bundle, is how
+a staging deployment ends up advertising production's URL to crawlers.
+
+**The 404 page redirects; it is not a copy of the app.** Static hosts
+conventionally serve `404.html` for unknown paths and the usual trick is to
+copy `index.html` over it. With `base: './'` that is a trap: a request for
+`/a/b/c` resolves the relative asset paths against `/a/b/`, and the page
+loads nothing. A six-line meta refresh to the root cannot break, needs no
+JavaScript, and needs no host-specific rewrite rule.
+
+**The service worker precaches the shell, not the product.** `dist/` is 16
+MB, most of it Monaco and the TypeScript language worker. Precaching all of
+it would make the first visit — the only visit most people make — wait for
+an entire toolchain. So install time stores about 780 kB: the page, the
+styles, the fonts, the entry chunk and React. Everything else is cache-first
+at runtime, permanent once fetched because every filename contains a hash of
+its contents. After one real session Tungsten works with no network at all,
+and nobody paid for that up front.
+
+The update path reuses something that already existed rather than adding a
+banner. The desktop app has a status bar slot that reads *Up to date* and
+becomes *Restart to update* when the updater has downloaded something. On
+the web the situation is identical — a new version exists, the running one
+still works, the user decides when to take it — so the same slot reads
+*Reload to update*, and clicking it tells the waiting worker to activate and
+reloads once it has. The same slot reads *Offline* when the network goes
+away. One place to look, three kinds of news.
+
 ## The three deliberate deviations
 
 **Tauri and Rust → Electron.** Tungsten already had a working Electron shell

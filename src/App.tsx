@@ -154,6 +154,7 @@ import { useUserConfiguration } from './configuration/useUserConfiguration'
 import { diffEditorOptionsFromConfiguration, editorOptionsFromConfiguration } from './configuration/editorOptions'
 import { applySaveActions, saveOptionsFromConfiguration } from './configuration/saveActions'
 import { useTerminalSessions } from './terminal/useTerminalSessions'
+import { statusLabel, statusTitle, useWebRuntime } from './web/useWebRuntime'
 import { APP_VERSION } from './version'
 import './styles.css'
 
@@ -328,6 +329,10 @@ export default function App({ onReady }: AppProps = {}) {
   const [projectName, setProjectName] = useState('my-tungsten-app')
   const [watchInput, setWatchInput] = useState('')
   const [updateState, setUpdateState] = useState('Up to date')
+  // On the web the service worker plays the part the desktop updater plays
+  // everywhere else: it knows when a newer build exists, and whether there
+  // is a network at all. Both report through the same status bar slot.
+  const web = useWebRuntime()
   const [editorInstance, setEditorInstance] = useState<any>(null)
   const [toast, setToast] = useState('')
   const [menuOpen, setMenuOpen] = useState<string | null>(null)
@@ -2128,10 +2133,13 @@ export default function App({ onReady }: AppProps = {}) {
         themeLabel={activeTheme.label}
         onPickTheme={() => { setThemePickerOpen(true); setPaletteQuery('') }}
         lsp={diagnostics.status}
-        updateState={updateState}
+        updateState={statusLabel(web, updateState)}
+        updateTitle={statusTitle(web, statusLabel(web, updateState))}
         onUpdate={() => {
-          if (updateState === 'Restart to update') void window.tungsten?.installUpdate()
-          else void window.tungsten?.checkForUpdates()
+          if (web.waiting) { web.apply(); return }
+          if (updateState === 'Restart to update') { void window.tungsten?.installUpdate(); return }
+          if (window.tungsten) { void window.tungsten.checkForUpdates(); return }
+          web.check()
         }}
       />}
 

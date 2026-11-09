@@ -1,0 +1,10 @@
+{
+  "domain": "",
+  "name": "Tungsten",
+  "shortName": "Tungsten",
+  "title": "Tungsten — a rugged development environment",
+  "description": "Tungsten is a development environment you can run in a browser: a real editor, a terminal, and a visual builder whose blocks and code are the same program.",
+  "themeColor": "#111311",
+  "backgroundColor": "#111311",
+  "socialImage": "icons/social.png"
+}

@@ -22,7 +22,11 @@ try {
   }
   if (!response?.ok) throw new Error(`Preview did not become ready.\n${logs}`)
   const html = await response.text()
-  if (!html.includes('<title>Tungsten IDE</title>') || !html.includes('id="root"')) throw new Error('The production shell is missing Tungsten bootstrap markup.')
+  // The title is not hard-coded any more: `npm run web:build` rewrites it
+  // from site.json, so this checks that the shell has *a* Tungsten title
+  // rather than one exact string that a deploy is allowed to change.
+  const title = html.match(/<title>([^<]*)<\/title>/)?.[1] ?? ''
+  if (!title.includes('Tungsten') || !html.includes('id="root"')) throw new Error(`The production shell is missing Tungsten bootstrap markup (title: ${JSON.stringify(title)}).`)
   const asset = html.match(/<script[^>]+src="([^"]+)"/)?.[1]
   if (!asset) throw new Error('The production shell did not include an application bundle.')
   const bundle = await fetch(new URL(asset, `http://127.0.0.1:${port}/`))

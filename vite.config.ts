@@ -33,6 +33,16 @@ export default defineConfig({
     host: '0.0.0.0',
     allowedHosts: true,
   },
+  // `npm run web:serve` uses this to check a real deployment locally --
+  // the service worker, the manifest and the install prompt only exist in
+  // a production build, so none of them can be tested against the dev
+  // server. The host allowance matches `server` above: these are both
+  // developer tools, often reached through a tunnel or a cloud sandbox,
+  // never the deployed site itself.
+  preview: {
+    host: '0.0.0.0',
+    allowedHosts: true,
+  },
   test: {
     // Most suites are pure logic and run fastest in Node. The theme service
     // writes CSS custom properties onto elements, so those files opt into jsdom

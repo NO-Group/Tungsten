@@ -42,6 +42,8 @@ export type StatusBarProps = {
   lsp: { running: boolean; language: string; message: string }
 
   updateState: string
+  /** Longer explanation for the hover; defaults to the label itself. */
+  updateTitle?: string
   onUpdate: () => void
 }
 
@@ -49,7 +51,7 @@ export function StatusBar({
   remoteConnected, onOpenRemote, branch, changeCount, onOpenSourceControl, onRefreshGit,
   errorCount, warningCount, onOpenProblems, pendingChord, workspaceName, workspaceRoot,
   platform, showEditorStatus, cursor, language, gotoLineShortcut, onGotoLine, themeLabel,
-  onPickTheme, lsp, updateState, onUpdate,
+  onPickTheme, lsp, updateState, updateTitle, onUpdate,
 }: StatusBarProps) {
   return (
     <footer className="statusbar">
@@ -101,7 +103,7 @@ export function StatusBar({
           <Zap size={12} /><span>{lsp.running ? `${lsp.language} LSP` : 'Syntax'}</span>
         </button>
 
-        <button title={updateState} onClick={onUpdate}><Download size={12} /><span>{updateState}</span></button>
+        <button title={updateTitle ?? updateState} onClick={onUpdate}><Download size={12} /><span>{updateState}</span></button>
         <button title="Notifications"><Bell size={13} /></button>
       </div>
     </footer>

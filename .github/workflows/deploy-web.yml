@@ -1,0 +1,77 @@
+name: Deploy the website
+
+# Tungsten ships twice from the same source: as desktop installers
+# (desktop-build.yml) and as a website. This is the second one.
+#
+# It deploys to GitHub Pages, which is free, serves the custom domain in
+# site.json via the CNAME the build writes, and issues the certificate
+# itself. Any other static host works the same way -- see "Run it on the
+# web" in the README -- because the output is just a folder.
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - 'arena/01a0d03d-tungsten'
+
+# Required by actions/deploy-pages; `id-token` is how it proves to Pages
+# that the artifact came from this workflow.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deploy at a time, and never cancel one halfway: an interrupted
+# deployment can leave the site serving a partial build.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The same gate the desktop build runs. A website is not a reason to
+      # ship something that does not pass its tests.
+      - run: npm run check
+
+      # The install icons are committed, so this only proves they still
+      # match resources/icon.png -- no image tooling is needed here.
+      - run: npm run web:icons -- --check
+
+      # `npm run check` has already produced dist/, so this adds the
+      # manifest, worker, headers and crawler files to it.
+      - run: npm run web:build -- --no-build
+
+      - name: Report what will be served
+        run: |
+          echo "### Site contents" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          du -sh dist >> "$GITHUB_STEP_SUMMARY"
+          cat dist/CNAME 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || echo "no custom domain set" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v4
+        with:
+          path: dist
+
+  deploy:
+    name: Deploy
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

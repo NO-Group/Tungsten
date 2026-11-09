@@ -1,0 +1,12 @@
+{
+  "source": "resources/icon.png",
+  "sha256": "8efce41be25752f1da521181bdee89deef75c5e867e7aa7f942308b6058b44ac",
+  "icons": [
+    "icon-192.png",
+    "icon-512.png",
+    "icon-maskable-512.png",
+    "apple-touch-icon.png",
+    "social.png"
+  ],
+  "tool": "convert"
+}
