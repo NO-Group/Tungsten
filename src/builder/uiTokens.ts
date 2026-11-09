@@ -95,14 +95,70 @@ export function uiThemeCss(theme: UiTheme = UI_THEME): string {
       .empty { color: var(--app-muted); }`
 }
 
+/**
+ * `0xFFRRGGBB`, which is how both Dart and Kotlin spell a colour.
+ *
+ * Shared rather than written twice because the two targets were already
+ * drifting apart on whether the digits were upper case.
+ */
+function argb(hex: string): string {
+  return `0xFF${hex.replace('#', '').slice(0, 6).toUpperCase()}`
+}
+
 /** The same palette for the mobile target, as Dart constants. */
 export function uiThemeDart(theme: UiTheme = UI_THEME): string {
-  const dartColour = (hex: string) => `Color(0xFF${hex.replace('#', '').slice(0, 6).toUpperCase()})`
   return [
-    `  static const surface = ${dartColour(theme.surface)};`,
-    `  static const text = ${dartColour(theme.text)};`,
-    `  static const accent = ${dartColour(theme.accent)};`,
-    `  static const accentInk = ${dartColour(theme.accentInk)};`,
+    `  static const surface = Color(${argb(theme.surface)});`,
+    `  static const text = Color(${argb(theme.text)});`,
+    `  static const accent = Color(${argb(theme.accent)});`,
+    `  static const accentInk = Color(${argb(theme.accentInk)});`,
     `  static const radius = ${theme.radius}.0;`,
+  ].join('\n')
+}
+
+/**
+ * The same palette for the Android target, as the body of a Kotlin object.
+ *
+ * Compose takes an ARGB literal directly, so this is the Dart emitter with
+ * different punctuation -- which is the argument for both of them living
+ * here instead of inside their generators.
+ */
+export function uiThemeKotlin(theme: UiTheme = UI_THEME): string {
+  return [
+    `    val surface = Color(${argb(theme.surface)})`,
+    `    val raised = Color(${argb(theme.surfaceRaised)})`,
+    `    val border = Color(${argb(theme.border)})`,
+    `    val text = Color(${argb(theme.text)})`,
+    `    val textMuted = Color(${argb(theme.textMuted)})`,
+    `    val accent = Color(${argb(theme.accent)})`,
+    `    val accentInk = Color(${argb(theme.accentInk)})`,
+    `    val danger = Color(${argb(theme.danger)})`,
+    `    val radius = ${theme.radius}.dp`,
+  ].join('\n')
+}
+
+/**
+ * The same palette for the iOS target, as the body of a Swift enum.
+ *
+ * SwiftUI has no hex initialiser in the standard library, so the channels
+ * are divided out here. Three decimal places is the point at which the
+ * round trip back to 8-bit is exact for every value in the ramp.
+ */
+export function uiThemeSwift(theme: UiTheme = UI_THEME): string {
+  const swiftColour = (hex: string) => {
+    const value = hex.replace('#', '').slice(0, 6)
+    const channel = (at: number) => (Number.parseInt(value.slice(at, at + 2), 16) / 255).toFixed(3)
+    return `Color(red: ${channel(0)}, green: ${channel(2)}, blue: ${channel(4)})`
+  }
+  return [
+    `    static let surface = ${swiftColour(theme.surface)}`,
+    `    static let raised = ${swiftColour(theme.surfaceRaised)}`,
+    `    static let border = ${swiftColour(theme.border)}`,
+    `    static let text = ${swiftColour(theme.text)}`,
+    `    static let textMuted = ${swiftColour(theme.textMuted)}`,
+    `    static let accent = ${swiftColour(theme.accent)}`,
+    `    static let accentInk = ${swiftColour(theme.accentInk)}`,
+    `    static let danger = ${swiftColour(theme.danger)}`,
+    `    static let radius: CGFloat = ${theme.radius}`,
   ].join('\n')
 }
