@@ -481,6 +481,13 @@ all — no install step, no package to be yanked out from under it.
 | `/data/<table>` | GET, POST, PATCH, DELETE for every table in the schema editor |
 | `/storage/<bucket>` | files in, files out |
 
+The palette matches it. **Sign Up with Email**, **Sign In with Email**,
+**Sign Out**, **Sign In with Provider**, **Current Session**, **Query
+Table**, **Insert Row**, **Update Row**, **Delete Row** and **Upload File**
+each compile to one of those routes, in every language — a block that
+worked on the web and turned into a comment on Android would be a trap
+rather than a feature.
+
 The tables are the boxes you drew in the **Data** tab. Nothing outside that
 schema reaches SQL: table and column names are looked up in a generated
 map and every value is a bound parameter, so a field that is not a column

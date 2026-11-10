@@ -601,6 +601,15 @@ What it is:
 - **Files.** Bytes in, a URL out, stored under a generated name because an
   upload must not get to choose where on disk it lands.
 
+The palette was then short of the service: sign-in, sign-out, update and
+delete all existed as routes with no block that could call them. They are
+blocks now — `auth.signIn`, `auth.signOut`, `data.update`, `data.remove` —
+which meant one addition each to the library, the preview runtime and the
+three native emitters, and nothing at all to the canvas, the parser or the
+integrity checker. Two of them bind no result, because deleting a row and
+signing out have nothing worth naming, and `const x = await` with an
+unused `x` is a lint error in somebody else's project.
+
 Two decisions worth defending.
 
 **One service for all six targets, not one per target.** The question "does

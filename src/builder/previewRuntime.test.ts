@@ -659,3 +659,49 @@ describe('the rest of the component library, executed', () => {
     expect(dom.window.document.getElementById('divider')).not.toBeNull()
   })
 })
+
+/**
+ * The backend blocks, in the sandbox.
+ *
+ * The preview must simulate these and say so. A preview that reached a
+ * real database would be a preview that could ruin an afternoon, so the
+ * test that matters here is the negative one: nothing left the sandbox,
+ * and the log says as much in words a person can act on.
+ */
+describe('the backend blocks in the preview', () => {
+  const logs = (messages: PreviewMessage[]) => messages
+    .filter((message): message is PreviewMessage & { kind: 'log'; text: string } => message.kind === 'log')
+    .map((message) => message.text)
+
+  it('simulates a sign-in and says that is what it did', async () => {
+    const { graph, ids } = build([['event.start'], ['auth.signIn']], [[0, 'exec', 1, 'exec']])
+    let next = setNodeValue(graph, ids[1], 'email', 'ada@example.com')
+    next = setNodeValue(next, ids[1], 'password', 'correct horse')
+    const { messages } = await run(next)
+    expect(logs(messages).some((text) => text.includes('auth.signIn("ada@example.com") — preview account'))).toBe(true)
+  })
+
+  it('simulates an update and a delete without writing anything', async () => {
+    const { graph, ids } = build(
+      [['event.start'], ['data.update'], ['data.remove']],
+      [[0, 'exec', 1, 'exec'], [1, 'exec', 2, 'exec']],
+    )
+    let next = setNodeValue(graph, ids[1], 'table', 'notes')
+    next = setNodeValue(next, ids[1], 'id', '7')
+    next = setNodeValue(next, ids[2], 'table', 'notes')
+    next = setNodeValue(next, ids[2], 'id', '7')
+    const { messages } = await run(next)
+    const text = logs(messages).join('\n')
+    expect(text).toContain('nothing was changed')
+    expect(text).toContain('nothing was deleted')
+  })
+
+  it('signs out without complaining that there was no session', async () => {
+    const { graph } = build([['event.start'], ['auth.signOut'], ['logic.log']],
+      [[0, 'exec', 1, 'exec'], [1, 'exec', 2, 'exec']])
+    const { messages } = await run(graph)
+    // The log after it still runs: a failed sign-out would stop the chain.
+    expect(messages.some((message) => message.kind === 'ready')).toBe(true)
+    expect(messages.some((message) => message.kind === 'error')).toBe(false)
+  })
+})

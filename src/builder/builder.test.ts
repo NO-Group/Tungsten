@@ -892,3 +892,70 @@ describe('headings, pictures and the rest', () => {
     expect(trip.after).toBe(trip.before)
   })
 })
+
+/**
+ * The backend blocks, against the backend that now exists.
+ *
+ * Sign-in, sign-out, update and delete were missing from the palette while
+ * the generated service answered all four. A route nothing can call is
+ * dead weight, and a block whose call nothing answers is worse, so these
+ * tests hold the two sides together.
+ */
+describe('the blocks the backend can answer', () => {
+  function roundTrip(graph: BlockGraph) {
+    const before = generateProgram(graph, registry).code
+    const parsed = parseProgram(before, registry)
+    if (!parsed.ok) throw new Error(`${parsed.reason} (line ${parsed.line})`)
+    return { before, after: generateProgram(parsed.graph, registry).code, graph: parsed.graph }
+  }
+
+  const BACKEND_BLOCKS = ['auth.signIn', 'auth.signOut', 'data.update', 'data.remove']
+
+  it('files them under the category they belong to', () => {
+    const groups = registry.byCategory()
+    const auth = groups.find((group) => group.category === 'Auth')?.blocks.map((block) => block.type) ?? []
+    const data = groups.find((group) => group.category === 'Data')?.blocks.map((block) => block.type) ?? []
+    expect(auth).toContain('auth.signIn')
+    expect(auth).toContain('auth.signOut')
+    expect(data).toContain('data.update')
+    expect(data).toContain('data.remove')
+  })
+
+  it('survives the round trip, every one of them', () => {
+    for (const type of BACKEND_BLOCKS) {
+      resetIds()
+      const { graph } = build([['event.start'], [type]], [['0', 'exec', '1', 'exec']])
+      const trip = roundTrip(graph)
+      expect(trip.after).toBe(trip.before)
+      expect(trip.graph.nodes.map((node) => node.type)).toEqual(['event.start', type])
+    }
+  })
+
+  it('writes the call the runtime actually has', () => {
+    const { graph, ids } = build(
+      [['event.start'], ['data.update'], ['data.remove'], ['auth.signIn'], ['auth.signOut']],
+      [['0', 'exec', '1', 'exec'], ['1', 'exec', '2', 'exec'], ['2', 'exec', '3', 'exec'], ['3', 'exec', '4', 'exec']],
+    )
+    let next = setNodeValue(graph, ids[1], 'table', 'notes')
+    next = setNodeValue(next, ids[1], 'id', '7')
+    next = setNodeValue(next, ids[2], 'table', 'notes')
+    next = setNodeValue(next, ids[2], 'id', '7')
+    next = setNodeValue(next, ids[3], 'email', 'ada@example.com')
+    next = setNodeValue(next, ids[3], 'password', 'correct horse')
+    const { code } = generateProgram(next, registry)
+    expect(code).toContain('await db.update("notes", "7",')
+    expect(code).toContain('await db.remove("notes", "7")')
+    expect(code).toContain('await auth.signIn("ada@example.com", "correct horse")')
+    expect(code).toContain('await auth.signOut()')
+  })
+
+  it('binds a result only where there is one to bind', () => {
+    // Deleting a row and signing out return nothing worth naming, so they
+    // are statements rather than `const x = ...` with an unused x.
+    const { graph } = build([['event.start'], ['data.remove'], ['auth.signOut']],
+      [['0', 'exec', '1', 'exec'], ['1', 'exec', '2', 'exec']])
+    const { code } = generateProgram(graph, registry)
+    expect(code).not.toMatch(/const \w+ = await db\.remove/)
+    expect(code).not.toMatch(/const \w+ = await auth\.signOut/)
+  })
+})

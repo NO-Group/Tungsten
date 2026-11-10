@@ -757,3 +757,93 @@ describe('the generated runtimes call the generated backend', () => {
     }
   })
 })
+
+/**
+ * Update, delete, sign in, sign out — on the phones too.
+ *
+ * A block that works on the web and compiles to a comment on Android is
+ * not a block, it is a trap. The four blocks added once the backend could
+ * answer them are checked in all three native languages at once.
+ */
+describe('the newest backend blocks reach the native targets', () => {
+  /** One chain with all four, filled in. */
+  function chain(): BlockGraph {
+    const { graph, ids } = build(
+      [
+        ['event.start', 0, 0],
+        ['data.update', 220, 0],
+        ['data.remove', 440, 0],
+        ['auth.signIn', 660, 0],
+        ['auth.signOut', 880, 0],
+      ],
+      [[0, 'exec', 1, 'exec'], [1, 'exec', 2, 'exec'], [2, 'exec', 3, 'exec'], [3, 'exec', 4, 'exec']],
+    )
+    let next = setNodeValue(graph, ids[1], 'table', 'notes')
+    next = setNodeValue(next, ids[1], 'id', '7')
+    next = setNodeValue(next, ids[1], 'changes', '{ done: true }')
+    next = setNodeValue(next, ids[2], 'table', 'notes')
+    next = setNodeValue(next, ids[2], 'id', '7')
+    next = setNodeValue(next, ids[3], 'email', 'ada@example.com')
+    next = setNodeValue(next, ids[3], 'password', 'correct horse')
+    return next
+  }
+
+  function emit(target: CompileTarget, suffix: string, toolchains: Toolchains = NATIVE): string {
+    const result = compile({ graph: chain(), registry, target, project: project(toolchains) })
+    if (!result.ok) throw new Error(result.reason)
+    return at(result.files, suffix)
+  }
+
+  it('compiles all four, in every language', () => {
+    const kotlin = emit('android', 'MainActivity.kt')
+    expect(kotlin).toContain('Api.update("notes", "7"')
+    expect(kotlin).toContain('Api.remove("notes", "7")')
+    expect(kotlin).toContain('Auth.signIn("ada@example.com", "correct horse")')
+    expect(kotlin).toContain('Auth.signOut()')
+
+    const swift = emit('ios', 'ContentView.swift')
+    expect(swift).toContain('Api.update("notes", id: "7"')
+    expect(swift).toContain('try await Api.remove("notes", id: "7")')
+    expect(swift).toContain('Auth.signIn(email: "ada@example.com", password: "correct horse")')
+    expect(swift).toContain('try await Auth.signOut()')
+
+    const dart = emit('mobile', 'main.dart', {})
+    expect(dart).toContain("api.update(\"notes\", \"7\"")
+    expect(dart).toContain("await api.remove(\"notes\", \"7\");")
+    expect(dart).toContain('auth.signIn("ada@example.com", "correct horse")')
+    expect(dart).toContain('await auth.signOut();')
+  })
+
+  it('leaves no block as a comment saying it has no mapping', () => {
+    for (const source of [
+      emit('android', 'MainActivity.kt'),
+      emit('ios', 'ContentView.swift'),
+      emit('mobile', 'main.dart', {}),
+    ]) {
+      expect(source).not.toMatch(/has no (Android|iOS|Flutter) mapping yet/)
+    }
+  })
+
+  it('ships the runtime methods those calls land on', () => {
+    expect(at(run('android', NATIVE), 'Runtime.kt')).toContain('suspend fun update(table: String, id: String')
+    expect(at(run('ios', NATIVE), 'Runtime.swift')).toContain('static func update(_ table: String, id: String')
+    expect(at(run('mobile'), 'runtime.dart')).toContain('Future<void> remove(String table, String id)')
+  })
+
+  it('sends them to the routes the generated backend serves', () => {
+    const server = at(run('server'), 'main.js')
+    for (const source of [
+      at(run('android', NATIVE), 'Runtime.kt'),
+      at(run('ios', NATIVE), 'Runtime.swift'),
+      at(run('mobile'), 'runtime.dart'),
+      at(run('web'), 'index.html'),
+    ]) {
+      expect(source).toContain('/auth/sign-in')
+      expect(source).toContain('/auth/sign-out')
+      expect(source).toContain('PATCH')
+      expect(source).toContain('DELETE')
+    }
+    expect(server).toContain("path === '/auth/sign-in'")
+    expect(server).toContain("path === '/auth/sign-out'")
+  })
+})
