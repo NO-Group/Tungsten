@@ -163,6 +163,10 @@ Build host: ${builder.host}.
 - \`main.cjs\` is the Electron shell: one window, no node integration, links
   opened in the real browser.
 
+This folder was written by the Electron toolchain. Switching this target to
+Tauri writes a different kind of project into the same folder, so delete it
+first rather than building over the top.
+
 Application id \`${appId}\`, version ${project.version}, from the project in
 the Targets panel.
 `,

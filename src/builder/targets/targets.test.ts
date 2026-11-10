@@ -4,7 +4,13 @@ import { compile, type CompileTarget, type CompiledFile } from '../compile'
 import { builtinBlocks } from '../blockLibrary'
 import { addNode, connect, createNode, resetIds, setNodeValue } from '../graph'
 import { createRegistry, type BlockGraph } from '../blockSchema'
-import { createOrganization, createProject, type Project } from '../../project/targets'
+import {
+  createOrganization,
+  createProject,
+  type Project,
+  type TargetKind,
+  type Toolchain,
+} from '../../project/targets'
 import { packagePath } from './android'
 import { isDesktopKind } from './desktop'
 
@@ -35,7 +41,27 @@ function build(
   return { graph, ids }
 }
 
-const project = (): Project => createProject(createOrganization('Acme'), 'Timer')
+type Toolchains = Partial<Record<TargetKind, Toolchain>>
+
+const project = (toolchains: Toolchains = {}): Project => ({
+  ...createProject(createOrganization('Acme'), 'Timer'),
+  toolchains,
+})
+
+/**
+ * The other toolchain for every platform that has one.
+ *
+ * The defaults are Flutter and Tauri, so the suites that assert on Kotlin,
+ * Swift or Electron output have to ask for them -- which is the point:
+ * both halves of every choice stay covered.
+ */
+const NATIVE: Toolchains = {
+  android: 'kotlin',
+  ios: 'swift',
+  windows: 'electron',
+  macos: 'electron',
+  linux: 'electron',
+}
 
 /** A button that logs, on one screen: enough to exercise every emitter. */
 function app(): BlockGraph {
@@ -45,8 +71,8 @@ function app(): BlockGraph {
   ).graph
 }
 
-function run(target: CompileTarget): CompiledFile[] {
-  const result = compile({ graph: app(), registry, target, project: project() })
+function run(target: CompileTarget, toolchains: Toolchains = {}): CompiledFile[] {
+  const result = compile({ graph: app(), registry, target, project: project(toolchains) })
   if (!result.ok) throw new Error(result.reason)
   return result.files
 }
@@ -84,8 +110,8 @@ describe('where targets are written', () => {
   })
 })
 
-describe('the Android target', () => {
-  const files = () => run('android')
+describe('the Android target, built with Kotlin', () => {
+  const files = () => run('android', NATIVE)
 
   it('writes a Gradle project, not a folder of loose files', () => {
     const paths = files().map((file) => file.path.replace('targets/timer/android/', ''))
@@ -143,8 +169,8 @@ describe('the Android target', () => {
   })
 })
 
-describe('the iOS target', () => {
-  const files = () => run('ios')
+describe('the iOS target, built with Swift', () => {
+  const files = () => run('ios', NATIVE)
 
   it('writes a buildable Swift project', () => {
     const paths = files().map((file) => file.path.replace('targets/timer/ios/', ''))
@@ -187,7 +213,7 @@ describe('the iOS target', () => {
   })
 })
 
-describe('the desktop targets', () => {
+describe('the desktop targets, built with Electron', () => {
   it('knows which kinds it covers', () => {
     expect(isDesktopKind('windows')).toBe(true)
     expect(isDesktopKind('macos')).toBe(true)
@@ -197,7 +223,7 @@ describe('the desktop targets', () => {
   })
 
   it('renders with the web output, on purpose', () => {
-    const paths = run('linux').map((file) => file.path.replace('targets/timer/linux/', ''))
+    const paths = run('linux', NATIVE).map((file) => file.path.replace('targets/timer/linux/', ''))
     expect(paths).toContain('app/index.html')
     expect(paths).toContain('app/app.ts')
     expect(paths).toContain('app/ui.schema.json')
@@ -205,34 +231,34 @@ describe('the desktop targets', () => {
   })
 
   it('asks electron-builder for the right installer per platform', () => {
-    const read = (kind: CompileTarget) => JSON.parse(at(run(kind), 'package.json'))
+    const read = (kind: CompileTarget) => JSON.parse(at(run(kind, NATIVE), 'package.json'))
     expect(JSON.stringify(read('windows').build.win)).toContain('nsis')
     expect(JSON.stringify(read('macos').build.mac)).toContain('dmg')
     expect(read('linux').build.linux.target).toEqual(['AppImage', 'deb'])
   })
 
   it('uses the reverse-DNS id everywhere except a Linux package name', () => {
-    expect(JSON.parse(at(run('macos'), 'package.json')).build.appId).toBe('com.acme.timer')
-    expect(JSON.parse(at(run('linux'), 'package.json')).name).toBe('timer')
+    expect(JSON.parse(at(run('macos', NATIVE), 'package.json')).build.appId).toBe('com.acme.timer')
+    expect(JSON.parse(at(run('linux', NATIVE), 'package.json')).name).toBe('timer')
   })
 
   it('opens one window with no node integration', () => {
-    const main = at(run('windows'), 'main.cjs')
+    const main = at(run('windows', NATIVE), 'main.cjs')
     expect(main).toContain('nodeIntegration: false')
     expect(main).toContain('contextIsolation: true')
     expect(main).toContain("loadFile(path.join(__dirname, 'app', 'index.html'))")
   })
 
   it('sends outside links to the real browser', () => {
-    expect(at(run('macos'), 'main.cjs')).toContain('shell.openExternal')
+    expect(at(run('macos', NATIVE), 'main.cjs')).toContain('shell.openExternal')
   })
 
   it('quits with the last window everywhere but macOS', () => {
-    expect(at(run('linux'), 'main.cjs')).toContain("process.platform !== 'darwin'")
+    expect(at(run('linux', NATIVE), 'main.cjs')).toContain("process.platform !== 'darwin'")
   })
 
   it('writes a package.json that is valid JSON with the project version', () => {
-    const manifest = JSON.parse(at(run('windows'), 'package.json'))
+    const manifest = JSON.parse(at(run('windows', NATIVE), 'package.json'))
     expect(manifest.version).toBe('1.0.0')
     expect(manifest.productName).toBe('Timer')
     expect(manifest.main).toBe('main.cjs')
@@ -325,7 +351,7 @@ describe('the component library, compiled', () => {
   }
 
   function emit(target: CompileTarget, suffix: string): string {
-    const result = compile({ graph: gallery(), registry, target, project: project() })
+    const result = compile({ graph: gallery(), registry, target, project: project(NATIVE) })
     if (!result.ok) throw new Error(result.reason)
     return at(result.files, suffix)
   }
@@ -405,7 +431,7 @@ describe('the component library, compiled', () => {
   })
 
   it('pulls in Coil, because an Image block must not mean editing Gradle', () => {
-    expect(at(run('android'), 'build.gradle.kts')).toContain('io.coil-kt:coil-compose')
+    expect(at(run('android', NATIVE), 'build.gradle.kts')).toContain('io.coil-kt:coil-compose')
   })
 })
 
@@ -444,7 +470,7 @@ describe('expressions reach the native targets', () => {
   const state = [{ name: 'count', type: 'Number' as const, scope: 'app' as const, initial: '0' }]
 
   function emit(graph: BlockGraph, target: CompileTarget, suffix: string): string {
-    const result = compile({ graph, registry, target, project: project(), state })
+    const result = compile({ graph, registry, target, project: project(NATIVE), state })
     if (!result.ok) throw new Error(result.reason)
     return at(result.files, suffix)
   }
@@ -516,10 +542,10 @@ describe('expressions reach the native targets', () => {
   })
 
   it('ships the two conversions the generated code calls', () => {
-    const files = run('android')
+    const files = run('android', NATIVE)
     expect(at(files, 'Runtime.kt')).toContain('fun toText(value: Any?): String')
     expect(at(files, 'Runtime.kt')).toContain('fun toNumber(value: Any?): Double')
-    expect(at(run('ios'), 'Runtime.swift')).toContain('func toNumber(_ value: Any?) -> Double')
+    expect(at(run('ios', NATIVE), 'Runtime.swift')).toContain('func toNumber(_ value: Any?) -> Double')
     expect(at(run('mobile'), 'runtime.dart')).toContain('double toNumber(Object? value)')
   })
 
@@ -552,5 +578,111 @@ describe('expressions reach the native targets', () => {
     expect(swift).toContain('Auth.signUp(email: (app.fields["email"] ?? "")')
     expect(dart).toContain('auth.signUp(_valueOf("email")')
     for (const source of [kotlin, swift, dart]) expect(source).not.toContain('signUp(null')
+  })
+})
+
+/**
+ * The toolchain is a second dimension, not a rename of the target.
+ *
+ * A target says where the app runs; a toolchain says what it is made of.
+ * These tests pin both halves: the defaults, and the fact that choosing
+ * the other one actually changes what is written.
+ */
+describe('toolchains, compiled', () => {
+  const names = (files: CompiledFile[], kind: string) => (
+    files.map((file) => file.path.replace(`targets/timer/${kind}/`, ''))
+  )
+
+  it('builds Android with Flutter by default', () => {
+    const files = names(run('android'), 'android')
+    expect(files).toContain('lib/main.dart')
+    expect(files).not.toContain('app/build.gradle.kts')
+  })
+
+  it('builds iOS with Flutter by default', () => {
+    const files = names(run('ios'), 'ios')
+    expect(files).toContain('lib/main.dart')
+    expect(files).not.toContain('Sources/ContentView.swift')
+  })
+
+  it('writes Kotlin into the Android tree when Kotlin is chosen', () => {
+    const files = names(run('android', { android: 'kotlin' }), 'android')
+    expect(files).toContain('app/src/main/java/com/acme/timer/MainActivity.kt')
+    expect(files).not.toContain('lib/main.dart')
+  })
+
+  it('writes Swift into the iOS tree when Swift is chosen', () => {
+    const files = names(run('ios', { ios: 'swift' }), 'ios')
+    expect(files.some((path) => path.endsWith('ContentView.swift'))).toBe(true)
+    expect(files).not.toContain('lib/main.dart')
+  })
+
+  it('tells each Flutter target what to run, and that the folder is Flutter', () => {
+    expect(at(run('android'), 'README.md')).toContain('flutter run -d android')
+    expect(at(run('ios'), 'README.md')).toContain('flutter run -d ios')
+    for (const kind of ['android', 'ios', 'mobile'] as const) {
+      expect(at(run(kind), 'README.md')).toContain('Flutter toolchain')
+    }
+  })
+
+  it('leaves the Cross-Platform Mobile Target on Flutter whatever is asked for', () => {
+    // There is no second toolchain for it, and a request for one is a
+    // saved file being wrong rather than a choice to honour.
+    const files = names(run('mobile', { mobile: 'kotlin' as Toolchain }), 'mobile')
+    expect(files).toContain('lib/main.dart')
+  })
+
+  it('builds the desktop with Tauri by default', () => {
+    const files = names(run('macos'), 'macos')
+    expect(files).toEqual([
+      'app/index.html',
+      'app/app.ts',
+      'app/ui.schema.json',
+      'src-tauri/Cargo.toml',
+      'src-tauri/tauri.conf.json',
+      'src-tauri/build.rs',
+      'src-tauri/src/main.rs',
+      'package.json',
+      'README.md',
+    ])
+  })
+
+  it('renders the Tauri window with the web output, like Electron does', () => {
+    const html = at(run('windows'), 'index.html')
+    expect(html).toContain('<!doctype html>')
+    expect(JSON.parse(at(run('windows'), 'tauri.conf.json')).build.frontendDist).toBe('../app')
+  })
+
+  it('asks the bundler for the right installer per platform', () => {
+    const targets = (kind: CompileTarget) => JSON.parse(at(run(kind), 'tauri.conf.json')).bundle.targets
+    expect(targets('windows')).toEqual(['nsis', 'msi'])
+    expect(targets('macos')).toEqual(['dmg', 'app'])
+    expect(targets('linux')).toEqual(['appimage', 'deb'])
+  })
+
+  it('uses the project identifier and version in the Rust shell', () => {
+    const config = JSON.parse(at(run('linux'), 'tauri.conf.json'))
+    expect(config.identifier).toBe('com.acme.timer')
+    expect(config.version).toBe('1.0.0')
+    expect(at(run('linux'), 'Cargo.toml')).toContain('name = "timer"')
+  })
+
+  it('grants the page nothing from the machine', () => {
+    const main = at(run('macos'), 'main.rs')
+    expect(main).toContain('tauri::Builder::default()')
+    expect(main).not.toContain('.invoke_handler(')
+    expect(main).toContain('generate_context!()')
+  })
+
+  it('switches the desktop to Electron when Electron is chosen', () => {
+    const files = names(run('windows', { windows: 'electron' }), 'windows')
+    expect(files).toContain('main.cjs')
+    expect(files).not.toContain('src-tauri/Cargo.toml')
+  })
+
+  it('warns that the folder belongs to the toolchain that wrote it', () => {
+    expect(at(run('macos'), 'README.md')).toContain('delete')
+    expect(at(run('macos', NATIVE), 'README.md')).toContain('delete')
+    expect(at(run('android'), 'README.md')).toContain('delete')
   })
 })
