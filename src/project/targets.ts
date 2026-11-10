@@ -46,14 +46,120 @@ export type TargetInfo = {
   /** The name in the tree, exactly as it is shown to the user. */
   label: string
   group: TargetGroup
-  language: string
-  framework: string
   /** Where this target's source tree is written, under `targets/`. */
   directory: string
-  /** What you get at the end. */
+  /** What you get at the end. True whichever toolchain produced it. */
   artifact: string
-  /** What has to be installed to turn the source into that artifact. */
-  toolchain: string
+}
+
+/**
+ * How a platform is built.
+ *
+ * A target is a place to run; a toolchain is the way of getting there, and
+ * the two are not the same choice. An Android app can be Flutter or Kotlin
+ * and a desktop app can be Tauri or Electron -- the result is an app on
+ * that platform either way, and which one is right depends on the team,
+ * not on the platform.
+ */
+export type Toolchain = 'flutter' | 'kotlin' | 'swift' | 'tauri' | 'electron' | 'web'
+
+export type ToolchainInfo = {
+  id: Toolchain
+  label: string
+  language: string
+  framework: string
+  /** What has to be installed to turn the source into an artifact. */
+  requires: string
+}
+
+export const TOOLCHAINS: readonly ToolchainInfo[] = [
+  {
+    id: 'flutter',
+    label: 'Flutter',
+    language: 'Dart',
+    framework: 'Flutter',
+    requires: 'the Flutter SDK',
+  },
+  {
+    id: 'kotlin',
+    label: 'Kotlin',
+    language: 'Kotlin',
+    framework: 'Jetpack Compose',
+    requires: 'Android Studio or the Android SDK with Gradle',
+  },
+  {
+    id: 'swift',
+    label: 'Swift',
+    language: 'Swift',
+    framework: 'SwiftUI',
+    requires: 'Xcode on macOS, plus XcodeGen for the project file',
+  },
+  {
+    id: 'tauri',
+    label: 'Tauri',
+    language: 'Rust and TypeScript',
+    framework: 'Tauri 2',
+    requires: 'Rust with cargo, and the Tauri CLI',
+  },
+  {
+    id: 'electron',
+    label: 'Electron',
+    language: 'TypeScript',
+    framework: 'Electron',
+    requires: 'Node and electron-builder',
+  },
+  {
+    id: 'web',
+    label: 'Web',
+    language: 'TypeScript',
+    framework: 'none — it is the DOM',
+    requires: 'nothing; any static host will do',
+  },
+]
+
+const BY_TOOLCHAIN = new Map(TOOLCHAINS.map((entry) => [entry.id, entry]))
+
+export function toolchainInfo(toolchain: Toolchain): ToolchainInfo {
+  const info = BY_TOOLCHAIN.get(toolchain)
+  if (!info) throw new Error(`Unknown toolchain: ${toolchain}`)
+  return info
+}
+
+export function isToolchain(value: string): value is Toolchain {
+  return BY_TOOLCHAIN.has(value as Toolchain)
+}
+
+/**
+ * Which toolchains can build which platform, best first.
+ *
+ * Flutter leads on the phones because one source tree covering both is
+ * less to keep in step than two, and Tauri leads on the desktop because a
+ * Rust shell around the same web output ships a fraction of the bytes
+ * Electron does. Neither is forced: the second entry is a real option, not
+ * a legacy path waiting to be removed.
+ */
+export const TOOLCHAINS_FOR: Readonly<Record<TargetKind, readonly Toolchain[]>> = {
+  android: ['flutter', 'kotlin'],
+  ios: ['flutter', 'swift'],
+  mobile: ['flutter'],
+  windows: ['tauri', 'electron'],
+  macos: ['tauri', 'electron'],
+  linux: ['tauri', 'electron'],
+  web: ['web'],
+}
+
+/** The toolchains a platform can be built with. Never empty. */
+export function toolchainsFor(kind: TargetKind): readonly Toolchain[] {
+  return TOOLCHAINS_FOR[targetInfo(kind).kind]
+}
+
+/** What a platform is built with unless the project says otherwise. */
+export function defaultToolchain(kind: TargetKind): Toolchain {
+  return toolchainsFor(kind)[0]
+}
+
+export function supportsToolchain(kind: TargetKind, toolchain: Toolchain): boolean {
+  return toolchainsFor(kind).includes(toolchain)
 }
 
 /**
@@ -68,71 +174,50 @@ export const TARGETS: readonly TargetInfo[] = [
     kind: 'android',
     label: 'Android App Target',
     group: 'mobile',
-    language: 'Kotlin',
-    framework: 'Jetpack Compose',
     directory: 'android',
     artifact: 'an APK or an Android App Bundle',
-    toolchain: 'Android Studio or the Android SDK with Gradle',
   },
   {
     kind: 'ios',
     label: 'iOS App Target',
     group: 'mobile',
-    language: 'Swift',
-    framework: 'SwiftUI',
     directory: 'ios',
     artifact: 'an .ipa, or a run on the simulator',
-    toolchain: 'Xcode on macOS, plus XcodeGen for the project file',
   },
   {
     kind: 'mobile',
     label: 'Cross-Platform Mobile Target',
     group: 'mobile',
-    language: 'Dart',
-    framework: 'Flutter',
     directory: 'mobile',
     artifact: 'one source tree that builds for both phones',
-    toolchain: 'the Flutter SDK',
   },
   {
     kind: 'windows',
     label: 'Windows Desktop Target',
     group: 'desktop',
-    language: 'TypeScript',
-    framework: 'Electron',
     directory: 'windows',
-    artifact: 'an NSIS installer and a portable .exe',
-    toolchain: 'Node and electron-builder; signing is optional',
+    artifact: 'an installer and a portable executable',
   },
   {
     kind: 'macos',
     label: 'macOS Desktop Target',
     group: 'desktop',
-    language: 'TypeScript',
-    framework: 'Electron',
     directory: 'macos',
     artifact: 'a .dmg and a .zip, universal binary',
-    toolchain: 'Node and electron-builder, on macOS for notarisation',
   },
   {
     kind: 'linux',
     label: 'Linux Desktop Target',
     group: 'desktop',
-    language: 'TypeScript',
-    framework: 'Electron',
     directory: 'linux',
     artifact: 'an AppImage and a .deb',
-    toolchain: 'Node and electron-builder',
   },
   {
     kind: 'web',
     label: 'Web Target',
     group: 'web',
-    language: 'TypeScript',
-    framework: 'none — it is the DOM',
     directory: 'web',
     artifact: 'a folder of static files',
-    toolchain: 'nothing; any static host will do',
   },
 ]
 
@@ -171,6 +256,14 @@ export type Project = {
   identifier: string
   version: string
   targets: readonly TargetKind[]
+  /**
+   * How each platform is built, where that differs from the default.
+   *
+   * Sparse on purpose: a project that has not chosen anything stores
+   * nothing, so the defaults can change without every saved file
+   * disagreeing with them.
+   */
+  toolchains: Readonly<Partial<Record<TargetKind, Toolchain>>>
 }
 
 export type Organization = {
@@ -267,6 +360,7 @@ export function createProject(
     identifier: identifierFor(organization, clean),
     version: '1.0.0',
     targets: orderTargets(targets),
+    toolchains: {},
   }
 }
 
@@ -346,6 +440,32 @@ export function toggleTarget(project: Project, kind: TargetKind): Project {
   }
 }
 
+/** How this project builds a platform. */
+export function toolchainFor(project: Project, kind: TargetKind): Toolchain {
+  const chosen = project.toolchains?.[kind]
+  return chosen && supportsToolchain(kind, chosen) ? chosen : defaultToolchain(kind)
+}
+
+/**
+ * Chooses a toolchain for one platform.
+ *
+ * Setting it back to the default removes the entry rather than storing it:
+ * two ways to say the same thing in a saved file is two things that can
+ * disagree later.
+ */
+export function setToolchain(project: Project, kind: TargetKind, toolchain: Toolchain): Project {
+  if (!supportsToolchain(kind, toolchain)) return project
+  const toolchains = { ...project.toolchains }
+  if (toolchain === defaultToolchain(kind)) delete toolchains[kind]
+  else toolchains[kind] = toolchain
+  return { ...project, toolchains }
+}
+
+/** What has to be installed to build this target, in this project. */
+export function requirementsFor(project: Project, kind: TargetKind): string {
+  return toolchainInfo(toolchainFor(project, kind)).requires
+}
+
 // ----------------------------------------------------------------- tree
 
 /** Where a target's generated source tree goes in the workspace. */
@@ -370,7 +490,8 @@ export function formatTree(organization: Organization): string {
     if (!targets.length) lines.push(`${indent}└── (no targets yet)`)
     targets.forEach((kind, at) => {
       const lastTarget = at === targets.length - 1
-      lines.push(`${indent}${lastTarget ? '└──' : '├──'} ${targetInfo(kind).label}`)
+      const toolchain = toolchainInfo(toolchainFor(project, kind)).label
+      lines.push(`${indent}${lastTarget ? '└──' : '├──'} ${targetInfo(kind).label} (${toolchain})`)
     })
   })
   if (!organization.projects.length) lines.push('└── (no projects yet)')
@@ -423,6 +544,20 @@ export function readOrganization(raw: unknown): Organization {
           typeof kind === 'string' && isTargetKind(kind)
         )))
         : [...DEFAULT_TARGETS]
+      // A toolchain is only kept when it is one this platform can
+      // actually be built with: a saved file naming Electron for iOS is
+      // not a preference, it is a mistake to correct silently.
+      const toolchains: Partial<Record<TargetKind, Toolchain>> = {}
+      const saved = project.toolchains
+      if (saved && typeof saved === 'object') {
+        for (const [kind, toolchain] of Object.entries(saved)) {
+          if (!isTargetKind(kind) || typeof toolchain !== 'string' || !isToolchain(toolchain)) continue
+          if (!supportsToolchain(kind, toolchain)) continue
+          if (toolchain === defaultToolchain(kind)) continue
+          toolchains[kind] = toolchain
+        }
+      }
+
       return [{
         name: projectName,
         identifier,
@@ -430,6 +565,7 @@ export function readOrganization(raw: unknown): Organization {
           ? project.version
           : '1.0.0',
         targets,
+        toolchains,
       }]
     })
     : []

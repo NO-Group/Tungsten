@@ -39,11 +39,13 @@ import {
   readOrganization,
   removeProject,
   renameOrganization,
+  setToolchain,
   toggleTarget,
   updateProject,
   type Organization,
   type Project,
   type TargetKind,
+  type Toolchain,
 } from '../project/targets'
 import { EMPTY_SCHEMA, type Column, type DataSchema, type Table } from './dataSchema'
 import { previewHtml } from './previewRuntime'
@@ -246,6 +248,8 @@ export type BuilderState = {
   removeProject: (index: number) => void
   setProject: (index: number, change: Partial<Project>) => void
   toggleTarget: (kind: TargetKind) => void
+  /** Chooses how one platform is built -- Flutter or Kotlin, Tauri or Electron. */
+  setToolchain: (kind: TargetKind, toolchain: Toolchain) => void
   /** Compiles for a target, or refuses with a reason. */
   build: (target: CompileTarget) => CompileResult
   /** A line the preview logged. */
@@ -981,6 +985,16 @@ export function useBuilder(host: BuilderHost): BuilderState {
     })
   }, [projectIndex])
 
+  const setProjectToolchain = useCallback((kind: TargetKind, toolchain: Toolchain) => {
+    setOrganization((current) => {
+      const at = Math.min(projectIndex, current.projects.length - 1)
+      const existing = current.projects[at]
+      if (!existing) return current
+      const next = setToolchain(existing, kind, toolchain)
+      return next === existing ? current : updateProject(current, at, { toolchains: next.toolchains })
+    })
+  }, [projectIndex])
+
   const appendLog = useCallback((text: string) => {
     setLogs((current) => [...current, text].slice(-MAX_PREVIEW_LOGS))
   }, [])
@@ -1081,6 +1095,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     removeProject: removeProjectAt,
     setProject: setProjectAt,
     toggleTarget: toggleProjectTarget,
+    setToolchain: setProjectToolchain,
     build,
     appendLog,
     clearLogs,

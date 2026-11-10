@@ -475,6 +475,7 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
                 onRenameOrganization={builder.setOrganizationName}
                 onChangeProject={builder.setProject}
                 onToggleTarget={builder.toggleTarget}
+                onChangeToolchain={builder.setToolchain}
                 onBuild={onBuild}
               />
             ) : (

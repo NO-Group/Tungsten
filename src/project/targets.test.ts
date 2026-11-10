@@ -20,8 +20,16 @@ import {
   removeProject,
   renameOrganization,
   slug,
+  defaultToolchain,
+  isToolchain,
+  requirementsFor,
+  setToolchain,
+  supportsToolchain,
   targetInfo,
   toggleTarget,
+  toolchainFor,
+  toolchainInfo,
+  toolchainsFor,
   updateProject,
   uniqueProjectName,
   type Organization,
@@ -57,11 +65,23 @@ describe('the target catalogue', () => {
     expect(groupOf('web')).toBe('web')
   })
 
-  it('says what each one needs and produces', () => {
+  it('says what each one produces', () => {
     for (const target of TARGETS) {
       expect(target.artifact.length).toBeGreaterThan(5)
-      expect(target.toolchain.length).toBeGreaterThan(5)
       expect(target.directory).toMatch(/^[a-z]+$/)
+    }
+  })
+
+  it('offers every platform at least one toolchain, and says what it needs', () => {
+    for (const target of TARGETS) {
+      const choices = toolchainsFor(target.kind)
+      expect(choices.length).toBeGreaterThan(0)
+      for (const choice of choices) {
+        const info = toolchainInfo(choice)
+        expect(info.language.length).toBeGreaterThan(1)
+        expect(info.framework.length).toBeGreaterThan(1)
+        expect(info.requires.length).toBeGreaterThan(5)
+      }
     }
   })
 
@@ -239,12 +259,12 @@ describe('formatTree', () => {
     expect(formatTree(acme())).toBe([
       '[ Acme ]',
       '└── [ Timer ]',
-      '    ├── Android App Target',
-      '    ├── iOS App Target',
-      '    ├── Cross-Platform Mobile Target',
-      '    ├── Windows Desktop Target',
-      '    ├── macOS Desktop Target',
-      '    └── Linux Desktop Target',
+      '    ├── Android App Target (Flutter)',
+      '    ├── iOS App Target (Flutter)',
+      '    ├── Cross-Platform Mobile Target (Flutter)',
+      '    ├── Windows Desktop Target (Tauri)',
+      '    ├── macOS Desktop Target (Tauri)',
+      '    └── Linux Desktop Target (Tauri)',
     ].join('\n'))
   })
 
@@ -257,9 +277,9 @@ describe('formatTree', () => {
     expect(lines).toEqual([
       '[ Acme ]',
       '├── [ Timer ]',
-      '│   └── Android App Target',
+      '│   └── Android App Target (Flutter)',
       '└── [ Notes ]',
-      '    └── Linux Desktop Target',
+      '    └── Linux Desktop Target (Tauri)',
     ])
   })
 
@@ -328,5 +348,105 @@ describe('readOrganization', () => {
 
   it('always leaves at least one project to build', () => {
     expect(readOrganization({ name: 'Acme', projects: [] }).projects).toHaveLength(1)
+  })
+})
+
+describe('toolchains', () => {
+  it('defaults the phones to Flutter and the desktops to Tauri', () => {
+    expect(defaultToolchain('android')).toBe('flutter')
+    expect(defaultToolchain('ios')).toBe('flutter')
+    expect(defaultToolchain('mobile')).toBe('flutter')
+    expect(defaultToolchain('windows')).toBe('tauri')
+    expect(defaultToolchain('macos')).toBe('tauri')
+    expect(defaultToolchain('linux')).toBe('tauri')
+    expect(defaultToolchain('web')).toBe('web')
+  })
+
+  it('keeps the native toolchains as a real second option', () => {
+    expect(toolchainsFor('android')).toEqual(['flutter', 'kotlin'])
+    expect(toolchainsFor('ios')).toEqual(['flutter', 'swift'])
+    expect(toolchainsFor('macos')).toEqual(['tauri', 'electron'])
+  })
+
+  it('knows which toolchains a platform can be built with', () => {
+    expect(supportsToolchain('android', 'kotlin')).toBe(true)
+    expect(supportsToolchain('android', 'swift')).toBe(false)
+    expect(supportsToolchain('web', 'electron')).toBe(false)
+  })
+
+  it('recognises its own toolchains and nothing else', () => {
+    expect(isToolchain('tauri')).toBe(true)
+    expect(isToolchain('cordova')).toBe(false)
+  })
+
+  it('refuses to describe a toolchain it does not have', () => {
+    // @ts-expect-error -- the guard exists for data read back from disk.
+    expect(() => toolchainInfo('cordova')).toThrow(/Unknown toolchain/)
+  })
+
+  it('reads the default back when a project has chosen nothing', () => {
+    const project = acme().projects[0]!
+    expect(project.toolchains).toEqual({})
+    expect(toolchainFor(project, 'android')).toBe('flutter')
+  })
+
+  it('remembers a choice away from the default', () => {
+    const chosen = setToolchain(acme().projects[0]!, 'android', 'kotlin')
+    expect(chosen.toolchains).toEqual({ android: 'kotlin' })
+    expect(toolchainFor(chosen, 'android')).toBe('kotlin')
+    expect(toolchainFor(chosen, 'ios')).toBe('flutter')
+  })
+
+  it('stores nothing when the choice is the default again', () => {
+    const chosen = setToolchain(acme().projects[0]!, 'macos', 'electron')
+    const back = setToolchain(chosen, 'macos', 'tauri')
+    expect(back.toolchains).toEqual({})
+  })
+
+  it('ignores a toolchain the platform cannot use', () => {
+    const project = acme().projects[0]!
+    expect(setToolchain(project, 'ios', 'kotlin')).toBe(project)
+  })
+
+  it('says what the chosen toolchain needs installed', () => {
+    const project = acme().projects[0]!
+    expect(requirementsFor(project, 'android')).toMatch(/Flutter/)
+    expect(requirementsFor(setToolchain(project, 'android', 'kotlin'), 'android')).toMatch(/Gradle/)
+  })
+
+  it('shows the chosen toolchain in the tree', () => {
+    const organization = updateProject(acme(), 0, {
+      targets: ['android'],
+      toolchains: { android: 'kotlin' },
+    })
+    expect(formatTree(organization)).toContain('Android App Target (Kotlin)')
+  })
+
+  it('drops a saved toolchain the platform cannot use', () => {
+    const organization = readOrganization({
+      name: 'Acme',
+      projects: [{
+        name: 'Timer',
+        identifier: 'com.acme.timer',
+        version: '1.0.0',
+        targets: ['android', 'macos'],
+        toolchains: { android: 'swift', macos: 'electron', symbian: 'web' },
+      }],
+    })
+    expect(organization.projects[0]!.toolchains).toEqual({ macos: 'electron' })
+  })
+
+  it('does not store a saved toolchain that is already the default', () => {
+    const organization = readOrganization({
+      name: 'Acme',
+      projects: [{
+        name: 'Timer',
+        identifier: 'com.acme.timer',
+        version: '1.0.0',
+        targets: ['android'],
+        toolchains: { android: 'flutter' },
+      }],
+    })
+    expect(organization.projects[0]!.toolchains).toEqual({})
   })
 })

@@ -4,11 +4,16 @@ import {
   TARGETS,
   describeTargets,
   formatTree,
+  isToolchain,
   isValidIdentifier,
   outputRoot,
+  toolchainFor,
+  toolchainInfo,
+  toolchainsFor,
   type Organization,
   type Project,
   type TargetKind,
+  type Toolchain,
 } from '../../project/targets'
 
 export type TargetsPanelProps = {
@@ -23,6 +28,7 @@ export type TargetsPanelProps = {
   onRenameOrganization: (name: string) => void
   onChangeProject: (index: number, change: Partial<Project>) => void
   onToggleTarget: (kind: TargetKind) => void
+  onChangeToolchain: (kind: TargetKind, toolchain: Toolchain) => void
   onBuild: (kind: TargetKind) => void
 }
 
@@ -50,6 +56,7 @@ export function TargetsPanel({
   onRenameOrganization,
   onChangeProject,
   onToggleTarget,
+  onChangeToolchain,
   onBuild,
 }: TargetsPanelProps) {
   const identifierValid = isValidIdentifier(project.identifier)
@@ -144,6 +151,9 @@ export function TargetsPanel({
         <ul className="targets-list">
           {TARGETS.map((target) => {
             const enabled = project.targets.includes(target.kind)
+            const choices = toolchainsFor(target.kind)
+            const chosen = toolchainFor(project, target.kind)
+            const built = toolchainInfo(chosen)
             return (
               <li key={target.kind} className={enabled ? 'enabled' : undefined}>
                 <label>
@@ -155,13 +165,30 @@ export function TargetsPanel({
                   />
                   <span className="targets-label">{target.label}</span>
                 </label>
-                <span className="targets-meta">{target.language} · {target.framework}</span>
+                {choices.length > 1 ? (
+                  <select
+                    className="targets-toolchain"
+                    aria-label={`Toolchain for the ${target.label}`}
+                    value={chosen}
+                    onChange={(event) => {
+                      const next = event.target.value
+                      if (isToolchain(next)) onChangeToolchain(target.kind, next)
+                    }}
+                  >
+                    {choices.map((choice) => (
+                      <option key={choice} value={choice}>{toolchainInfo(choice).label}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <span className="targets-meta">{built.label}</span>
+                )}
+                <span className="targets-meta">{built.language} · {built.framework}</span>
                 <code>{outputRoot(project, target.kind)}</code>
                 <button
                   aria-label={`Build the ${target.label}`}
                   title={blocked
                     ? 'Fix the integrity errors first'
-                    : `${target.artifact}. Needs ${target.toolchain}.`}
+                    : `${target.artifact}. Needs ${built.requires}.`}
                   onClick={() => onBuild(target.kind)}
                   disabled={blocked || !enabled}
                 >
