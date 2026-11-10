@@ -485,6 +485,20 @@ const db = {
     }
     return (await backend('/data/' + table, { method: 'POST', json: row || {} })).row || {}
   },
+  update: async (table, id, changes) => {
+    if (!BACKEND) {
+      log('db.update("' + table + '", ' + id + ') — preview only, nothing was changed')
+      return { id, ...changes }
+    }
+    return (await backend('/data/' + table + '/' + id, { method: 'PATCH', json: changes || {} })).row || {}
+  },
+  remove: async (table, id) => {
+    if (!BACKEND) {
+      log('db.remove("' + table + '", ' + id + ') — preview only, nothing was deleted')
+      return { ok: true }
+    }
+    return backend('/data/' + table + '/' + id, { method: 'DELETE' })
+  },
 }
 
 const http = {

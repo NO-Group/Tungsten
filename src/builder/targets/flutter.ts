@@ -132,10 +132,18 @@ function dartStatement(statement: IrStatement, indent: string, names: Map<string
       return [`${indent}final ${name()} = await api.select(${text('table')});`]
     case 'data.insert':
       return [`${indent}final ${name()} = await api.insert(${text('table')}, ${value('row')});`]
+    case 'data.update':
+      return [`${indent}final ${name()} = await api.update(${text('table')}, ${text('id')}, ${value('changes')});`]
+    case 'data.remove':
+      return [`${indent}await api.remove(${text('table')}, ${text('id')});`]
     case 'network.fetch':
       return [`${indent}final ${name()} = await api.request(${text('url')}, ${text('method')});`]
     case 'auth.signUp':
       return [`${indent}final ${name()} = await auth.signUp(${text('email')}, ${text('password')});`]
+    case 'auth.signIn':
+      return [`${indent}final ${name()} = await auth.signIn(${text('email')}, ${text('password')});`]
+    case 'auth.signOut':
+      return [`${indent}await auth.signOut();`]
     case 'auth.oauth':
       return [`${indent}final ${name()} = await auth.oauth(${text('provider')});`]
     case 'auth.session':
@@ -517,6 +525,17 @@ class Api {
     final reply = await _call('/data/' + table, method: 'POST', body: body);
     final inserted = reply['row'];
     return inserted is Map<String, dynamic> ? inserted : <String, dynamic>{};
+  }
+
+  Future<Map<String, dynamic>> update(String table, String id, Object? changes) async {
+    final body = changes is Map ? Map<String, dynamic>.from(changes) : {'value': toText(changes)};
+    final reply = await _call('/data/' + table + '/' + id, method: 'PATCH', body: body);
+    final saved = reply['row'];
+    return saved is Map<String, dynamic> ? saved : <String, dynamic>{};
+  }
+
+  Future<void> remove(String table, String id) async {
+    await _call('/data/' + table + '/' + id, method: 'DELETE');
   }
 
   /// Anything else, including URLs that are not this backend.

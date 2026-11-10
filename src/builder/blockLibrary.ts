@@ -778,6 +778,44 @@ const dataInsert = defineBlock({
   parse: parseCall('await db.insert', ['table', 'row']),
 })
 
+const dataUpdate = defineBlock({
+  type: 'data.update',
+  label: 'Update Row',
+  category: 'Data',
+  description: 'Changes the fields you give, on one row. Runs asynchronously.',
+  isAsync: true,
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'table', label: 'Table', type: 'String', default: 'users', required: true },
+    { id: 'id', label: 'Row id', type: 'String', required: true },
+    { id: 'changes', label: 'Changes', type: 'Object', required: true },
+  ],
+  outputs: [
+    { id: 'exec', label: 'Then', type: 'Exec' },
+    { id: 'saved', label: 'Saved row', type: 'Object' },
+  ],
+  generate: ({ input, symbol }) => (
+    `const ${symbol} = await db.update(${input('table')}, ${input('id')}, ${input('changes')})`
+  ),
+  parse: parseCall('await db.update', ['table', 'id', 'changes']),
+})
+
+const dataRemove = defineBlock({
+  type: 'data.remove',
+  label: 'Delete Row',
+  category: 'Data',
+  description: 'Removes one row by id. Runs asynchronously.',
+  isAsync: true,
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'table', label: 'Table', type: 'String', default: 'users', required: true },
+    { id: 'id', label: 'Row id', type: 'String', required: true },
+  ],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  generate: ({ input }) => `await db.remove(${input('table')}, ${input('id')})`,
+  parse: parseCall('await db.remove', ['table', 'id']),
+})
+
 const dataVariable = defineBlock({
   type: 'data.text',
   label: 'Text Value',
@@ -848,6 +886,37 @@ const authSignUp = defineBlock({
   ],
   generate: ({ input, symbol }) => `const ${symbol} = await auth.signUp(${input('email')}, ${input('password')})`,
   parse: parseCall('await auth.signUp', ['email', 'password']),
+})
+
+const authSignIn = defineBlock({
+  type: 'auth.signIn',
+  label: 'Sign In with Email',
+  category: 'Auth',
+  description: 'Starts a session for an account that already exists.',
+  isAsync: true,
+  inputs: [
+    { id: 'exec', label: 'Run', type: 'Exec' },
+    { id: 'email', label: 'Email', type: 'String', required: true },
+    { id: 'password', label: 'Password', type: 'String', required: true },
+  ],
+  outputs: [
+    { id: 'exec', label: 'Then', type: 'Exec' },
+    { id: 'user', label: 'User', type: 'Object' },
+  ],
+  generate: ({ input, symbol }) => `const ${symbol} = await auth.signIn(${input('email')}, ${input('password')})`,
+  parse: parseCall('await auth.signIn', ['email', 'password']),
+})
+
+const authSignOut = defineBlock({
+  type: 'auth.signOut',
+  label: 'Sign Out',
+  category: 'Auth',
+  description: 'Forgets the session, here and on the backend.',
+  isAsync: true,
+  inputs: [{ id: 'exec', label: 'Run', type: 'Exec' }],
+  outputs: [{ id: 'exec', label: 'Then', type: 'Exec' }],
+  generate: () => 'await auth.signOut()',
+  parse: parseCall('await auth.signOut', []),
 })
 
 const authOauth = defineBlock({
@@ -922,9 +991,9 @@ export const builtinBlocks: BlockDefinition[] = [
   uiHeading, uiImage, uiCheckbox, uiSelect, uiLink, uiDivider,
   navGo, navBack, navCurrent,
   logicIf, logicForEach, logicCompare, logicMath, logicExists, logicLog,
-  dataQuery, dataInsert, dataVariable, dataNumber,
+  dataQuery, dataInsert, dataUpdate, dataRemove, dataVariable, dataNumber,
   stateGet, stateSet,
   networkFetch,
-  authSignUp, authOauth, authSession,
+  authSignUp, authSignIn, authSignOut, authOauth, authSession,
   storageUpload,
 ]

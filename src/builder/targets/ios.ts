@@ -119,10 +119,18 @@ export function swiftStatement(
       return [`${indent}let ${name()} = try await Api.select(${text('table')})`]
     case 'data.insert':
       return [`${indent}let ${name()} = try await Api.insert(${text('table')}, ${value('row')})`]
+    case 'data.update':
+      return [`${indent}let ${name()} = try await Api.update(${text('table')}, id: ${text('id')}, changes: ${value('changes')})`]
+    case 'data.remove':
+      return [`${indent}try await Api.remove(${text('table')}, id: ${text('id')})`]
     case 'network.fetch':
       return [`${indent}let ${name()} = try await Api.request(${text('url')}, method: ${text('method')})`]
     case 'auth.signUp':
       return [`${indent}let ${name()} = try await Auth.signUp(email: ${text('email')}, password: ${text('password')})`]
+    case 'auth.signIn':
+      return [`${indent}let ${name()} = try await Auth.signIn(email: ${text('email')}, password: ${text('password')})`]
+    case 'auth.signOut':
+      return [`${indent}try await Auth.signOut()`]
     case 'auth.oauth':
       return [`${indent}let ${name()} = try await Auth.oauth(${text('provider')})`]
     case 'auth.session':
@@ -557,6 +565,15 @@ enum Api {
     static func insert(_ table: String, _ row: Any?) async throws -> [String: Any] {
         let body = row as? [String: Any] ?? ["value": toText(row)]
         return try await call("/data/" + table, method: "POST", body: body)["row"] as? [String: Any] ?? [:]
+    }
+
+    static func update(_ table: String, id: String, changes: Any?) async throws -> [String: Any] {
+        let body = changes as? [String: Any] ?? ["value": toText(changes)]
+        return try await call("/data/" + table + "/" + id, method: "PATCH", body: body)["row"] as? [String: Any] ?? [:]
+    }
+
+    static func remove(_ table: String, id: String) async throws {
+        _ = try await call("/data/" + table + "/" + id, method: "DELETE")
     }
 
     /// Anything else, including URLs that are not this backend.

@@ -140,10 +140,18 @@ export function kotlinStatement(
       return [`${indent}val ${name()} = Api.select(${text('table')})`]
     case 'data.insert':
       return [`${indent}val ${name()} = Api.insert(${text('table')}, ${value('row')})`]
+    case 'data.update':
+      return [`${indent}val ${name()} = Api.update(${text('table')}, ${text('id')}, ${value('changes')})`]
+    case 'data.remove':
+      return [`${indent}Api.remove(${text('table')}, ${text('id')})`]
     case 'network.fetch':
       return [`${indent}val ${name()} = Api.request(${text('url')}, ${text('method')})`]
     case 'auth.signUp':
       return [`${indent}val ${name()} = Auth.signUp(${text('email')}, ${text('password')})`]
+    case 'auth.signIn':
+      return [`${indent}val ${name()} = Auth.signIn(${text('email')}, ${text('password')})`]
+    case 'auth.signOut':
+      return [`${indent}Auth.signOut()`]
     case 'auth.oauth':
       return [`${indent}val ${name()} = Auth.oauth(${text('provider')})`]
     case 'auth.session':
@@ -576,6 +584,19 @@ object Api {
         }
         @Suppress("UNCHECKED_CAST")
         return (asMap(call("/data/" + table, "POST", body))["row"] as? Map<String, Any?>) ?: emptyMap()
+    }
+
+    suspend fun update(table: String, id: String, changes: Any?): Map<String, Any?> {
+        val body = when (changes) {
+            is Map<*, *> -> JSONObject(changes.entries.associate { toText(it.key) to it.value })
+            else -> JSONObject().put("value", changes)
+        }
+        @Suppress("UNCHECKED_CAST")
+        return (asMap(call("/data/" + table + "/" + id, "PATCH", body))["row"] as? Map<String, Any?>) ?: emptyMap()
+    }
+
+    suspend fun remove(table: String, id: String) {
+        call("/data/" + table + "/" + id, "DELETE")
     }
 
     /** Anything else, including URLs that are not this backend. */
