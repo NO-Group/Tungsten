@@ -15,7 +15,7 @@
 import { headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeKotlin } from '../uiTokens'
 import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile'
-import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral } from './expressions'
+import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral, rowFields } from './expressions'
 import { appIdFor, type Project } from '../../project/targets'
 import { DEFAULT_API_PORT } from './server'
 
@@ -68,6 +68,8 @@ function kotlinValue(value: IrValue | undefined, names: Map<string, string>): st
     case 'data.text':
     case 'data.number':
       return input('value')
+    case 'data.row':
+      return objectIn('kotlin', rowFields(value, (field) => kotlinValue(field, names)))
     case 'logic.exists':
       return `(${input('value')} != null)`
     case 'logic.compare': {

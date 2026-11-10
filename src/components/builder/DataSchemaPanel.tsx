@@ -7,7 +7,7 @@
  */
 
 import { useState } from 'react'
-import { Plus, Sparkles, Trash2 } from 'lucide-react'
+import { LayoutTemplate, Plus, Sparkles, Trash2 } from 'lucide-react'
 
 import {
   checkSchema,
@@ -24,6 +24,8 @@ export type DataSchemaPanelProps = {
   onAddTable: () => void
   /** Drafts tables from a description of the app. */
   onDraft?: (description: string) => void
+  /** Builds a screen on the canvas for one table. */
+  onScaffold?: (index: number) => void
   onRenameTable: (index: number, name: string) => void
   onRemoveTable: (index: number) => void
   onAddColumn: (table: number) => void
@@ -32,7 +34,7 @@ export type DataSchemaPanelProps = {
 }
 
 export function DataSchemaPanel(props: DataSchemaPanelProps) {
-  const { schema, onDraft } = props
+  const { schema, onDraft, onScaffold } = props
   const problems = checkSchema(schema)
   const [description, setDescription] = useState('')
 
@@ -88,6 +90,17 @@ export function DataSchemaPanel(props: DataSchemaPanelProps) {
               value={table.name}
               onChange={(event) => props.onRenameTable(tableIndex, event.target.value)}
             />
+            {/* Next to the table rather than in a menu: the screen is
+                what the table is for. */}
+            {onScaffold && (
+              <button
+                aria-label={`Build a screen for ${table.name}`}
+                title="A heading, a form and a list, wired to this table"
+                onClick={() => onScaffold(tableIndex)}
+              >
+                <LayoutTemplate size={12} /> Screen
+              </button>
+            )}
             <button
               aria-label={`Delete table ${table.name}`}
               onClick={() => props.onRemoveTable(tableIndex)}

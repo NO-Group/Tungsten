@@ -433,6 +433,24 @@ describe('the preview, the database and the build', () => {
     expect(draft.disabled).toBe(true)
   })
 
+  it('builds a whole screen for a drafted table', async () => {
+    click(tab('Data'))
+    type(container.querySelector('[aria-label="Describe the data"]') as HTMLInputElement, 'tasks')
+    click(container.querySelector('[aria-label="Draft the tables"]'))
+    await flushEffects()
+
+    click(container.querySelector('[aria-label="Build a screen for tasks"]'))
+    await flushEffects()
+
+    // The canvas has the screen on it, and the code says what it does.
+    click(tab('Code'))
+    const program = code()
+    expect(program).toContain('render.heading({ id: "tasks-heading", text: "Tasks"')
+    expect(program).toContain('await db.select("tasks")')
+    expect(program).toContain('db.insert("tasks", { "title": render.value("tasks-title")')
+    expect(notify.mock.calls.flat().join(' ')).toContain('a tasks screen')
+  })
+
   it('draws a table and shows the migration it will write', () => {
     click(tab('Data'))
     click(container.querySelector('.builder-schema header button'))

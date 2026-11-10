@@ -11,7 +11,7 @@
 import { headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeSwift } from '../uiTokens'
 import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile'
-import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral } from './expressions'
+import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral, rowFields } from './expressions'
 import { appIdFor, slug, type Project } from '../../project/targets'
 import { DEFAULT_API_URL } from './server'
 
@@ -48,6 +48,8 @@ function swiftValue(value: IrValue | undefined, names: Map<string, string>): str
     case 'data.text':
     case 'data.number':
       return input('value')
+    case 'data.row':
+      return objectIn('swift', rowFields(value, (field) => swiftValue(field, names)))
     case 'logic.exists':
       return `(${input('value')} != nil)`
     case 'logic.compare': {

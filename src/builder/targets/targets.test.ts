@@ -900,3 +900,55 @@ describe('object ports become objects', () => {
     expect(at(result.files, 'MainActivity.kt')).toContain('Api.insert("notes", "whatever the user typed")')
   })
 })
+
+/**
+ * A row built on the canvas, in three languages.
+ *
+ * The Row Fields block is the only way to write a row whose values came
+ * from the screen, so it has to survive the trip to each native target
+ * as a real map rather than a comment.
+ */
+describe('Row Fields reaches the phones', () => {
+  function typed(): BlockGraph {
+    const { graph, ids } = build(
+      [
+        ['event.start', 0, 0],
+        ['ui.input', 220, 0],
+        ['data.row', 440, 0],
+        ['ui.value', 440, 160],
+        ['data.insert', 660, 0],
+      ],
+      [[0, 'exec', 1, 'exec'], [3, 'value', 2, 'value1'], [2, 'row', 4, 'row'], [1, 'exec', 4, 'exec']],
+    )
+    let next = setNodeValue(graph, ids[1], 'id', 'title')
+    next = setNodeValue(next, ids[3], 'id', 'title')
+    next = setNodeValue(next, ids[2], 'name1', 'title')
+    next = setNodeValue(next, ids[4], 'table', 'notes')
+    return next
+  }
+
+  function emitted(target: CompileTarget, suffix: string, toolchains: Toolchains = NATIVE): string {
+    const result = compile({ graph: typed(), registry, target, project: project(toolchains) })
+    if (!result.ok) throw new Error(result.reason)
+    return at(result.files, suffix)
+  }
+
+  it('maps the field into the language a map is written in', () => {
+    expect(emitted('android', 'MainActivity.kt'))
+      .toContain('Api.insert("notes", mapOf("title" to (app.fields["title"] ?: "")))')
+    expect(emitted('ios', 'ContentView.swift'))
+      .toContain('Api.insert("notes", ["title": (app.fields["title"] ?? "")])')
+    expect(emitted('mobile', 'main.dart', {}))
+      .toContain('api.insert("notes", <String, dynamic>{"title": _valueOf("title")})')
+  })
+
+  it('never degrades into a comment', () => {
+    for (const source of [
+      emitted('android', 'MainActivity.kt'),
+      emitted('ios', 'ContentView.swift'),
+      emitted('mobile', 'main.dart', {}),
+    ]) {
+      expect(source).not.toMatch(/has no (Android|iOS|Flutter) mapping yet/)
+    }
+  })
+})

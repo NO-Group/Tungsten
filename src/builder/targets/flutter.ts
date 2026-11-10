@@ -21,7 +21,7 @@ import {
 import type { CompiledFile, Ir, IrStatement, IrValue } from '../compile'
 import { flattenComponents, headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeDart } from '../uiTokens'
-import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral } from './expressions'
+import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral, rowFields } from './expressions'
 import { DEFAULT_API_PORT, DEFAULT_API_URL } from './server'
 
 /** The host machine, as seen from an Android emulator. */
@@ -63,6 +63,8 @@ function dartValue(value: IrValue | undefined, names: Map<string, string>): stri
     case 'data.text':
     case 'data.number':
       return input('value')
+    case 'data.row':
+      return objectIn('dart', rowFields(value, (field) => dartValue(field, names)))
     case 'logic.exists':
       return `(${input('value')} != null)`
     case 'logic.compare': {

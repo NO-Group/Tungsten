@@ -11,6 +11,7 @@
  */
 
 import { defineBlock, type BlockDefinition, type BlockNode, type Port } from './blockSchema'
+import { safeName } from './dataSchema'
 
 /** A string the generator can safely drop into source. */
 function quote(value: string): string {
@@ -778,6 +779,66 @@ const dataInsert = defineBlock({
   parse: parseCall('await db.insert', ['table', 'row']),
 })
 
+/** How many fields one Row Fields block offers. */
+const ROW_FIELDS = [1, 2, 3, 4] as const
+
+/**
+ * A row, assembled from values on the canvas.
+ *
+ * Insert Row and Update Row take an object, and until this existed the
+ * only way to give them one was to type it -- which meant every row
+ * written from the canvas was a constant. This is the block that lets a
+ * typed-in email reach the database.
+ *
+ * Four fields, named in the inspector rather than wired: a name is a
+ * column, not a value, and a port for each would double the width of
+ * the block for no gain. A field with no name is left out entirely, so
+ * an unused slot costs nothing.
+ */
+const dataRow = defineBlock({
+  type: 'data.row',
+  label: 'Row Fields',
+  category: 'Data',
+  description: 'Builds a row from up to four named fields, for Insert Row and Update Row.',
+  inputs: ROW_FIELDS.flatMap((index) => ([
+    { id: `name${index}`, label: `Field ${index}`, type: 'String' as const, default: '', property: true },
+    { id: `value${index}`, label: `Value ${index}`, type: 'Any' as const },
+  ])),
+  outputs: [{ id: 'row', label: 'Row', type: 'Object' }],
+  generate: ({ node, input }) => {
+    const fields = ROW_FIELDS.flatMap((index) => {
+      // A column name goes straight into SQL at the other end, so it is
+      // cleaned here rather than trusted.
+      const name = safeName(String(node.values[`name${index}`] ?? ''), '')
+      return name ? [`${quote(name)}: ${input(`value${index}`)}`] : []
+    })
+    return fields.length ? `{ ${fields.join(', ')} }` : '{}'
+  },
+  parse: (text) => {
+    const fields = objectFields(text)
+    if (!fields) return undefined
+    const entries = Object.entries(fields)
+    if (entries.length > ROW_FIELDS.length) return undefined
+    const inputs: Record<string, string> = {}
+    entries.forEach(([key, value], position) => {
+      // The key was quoted on the way out; it goes back in as a literal
+      // so the inspector shows the column name rather than its quotes.
+      inputs[`name${position + 1}`] = JSON.stringify(literalKey(key))
+      inputs[`value${position + 1}`] = value
+    })
+    return { inputs }
+  },
+})
+
+/** `"title"` and `title` are the same column name. */
+function literalKey(key: string): string {
+  const trimmed = key.trim()
+  if ((trimmed.startsWith('"') && trimmed.endsWith('"')) || (trimmed.startsWith("'") && trimmed.endsWith("'"))) {
+    return trimmed.slice(1, -1)
+  }
+  return trimmed
+}
+
 const dataUpdate = defineBlock({
   type: 'data.update',
   label: 'Update Row',
@@ -991,7 +1052,7 @@ export const builtinBlocks: BlockDefinition[] = [
   uiHeading, uiImage, uiCheckbox, uiSelect, uiLink, uiDivider,
   navGo, navBack, navCurrent,
   logicIf, logicForEach, logicCompare, logicMath, logicExists, logicLog,
-  dataQuery, dataInsert, dataUpdate, dataRemove, dataVariable, dataNumber,
+  dataQuery, dataInsert, dataRow, dataUpdate, dataRemove, dataVariable, dataNumber,
   stateGet, stateSet,
   networkFetch,
   authSignUp, authSignIn, authSignOut, authOauth, authSession,

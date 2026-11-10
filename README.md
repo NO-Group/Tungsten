@@ -506,6 +506,22 @@ says so instead of drawing a `users` table, because the service already
 has one. Everything it draws is a draft you edit in the panel right
 underneath, and nothing you already drew is touched.
 
+### And a screen to go with it
+
+Each table has a **Screen** button beside it. Press it and the canvas
+gets the twenty blocks everybody builds first: a heading, an input for
+every column you would actually type into — a checkbox for a boolean —
+a save button, the insert behind it, the query that fills the list, and
+the reload that makes the new row appear. It arrives as ordinary blocks
+you can edit, delete and undo; the only special thing about it is that
+nobody had to place it.
+
+It is wired through the new **Row Fields** block, which builds a row out
+of up to four named fields. Until it existed, Insert Row and Update Row
+could only be given an object you typed, which meant every row written
+from the canvas was a constant. Now a typed-in email reaches the
+database — in JavaScript, Kotlin, Swift and Dart.
+
 The tables are the boxes you drew in the **Data** tab. Nothing outside that
 schema reaches SQL: table and column names are looked up in a generated
 map and every value is a bound parameter, so a field that is not a column

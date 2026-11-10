@@ -637,6 +637,28 @@ silence, and `applyPlan` never rewrites a table that already exists: a
 draft that clobbered ten minutes of work would be the last time anyone
 pressed the button.
 
+Drafting the tables exposed the next gap, which had been there all
+along: the canvas could read the database but could only write
+constants to it. `data.insert` takes an Object, and no block produced
+one, so the row was whatever you typed into the port. **Row Fields**
+fixes that — four named fields, names in the inspector because a column
+name is not a value, each paired with a wired-in value, generating
+`{ "title": render.value("email") }`. Its parser is the interesting
+part: it matches any object literal, which means a row somebody typed by
+hand now comes *back* off the code as a Row Fields block. Text in, blocks
+out, which is the direction the parser is supposed to pull.
+
+With that in place a table can scaffold its own screen. `scaffoldFor`
+returns an ordinary `Recipe` — same shape as the six shipped ones, same
+`instantiate`, same undo step — so the generated screen is editable and
+deletable like anything drawn by hand, and `tableScaffold.test.ts` holds
+it to the same four-part standard `recipes.test.ts` applies: no refused
+links, code that compiles, zero integrity errors, and an unchanged round
+trip through the parser. The column rules are small and visible: `id`,
+`created_at` and anything ending `_id` are the service's business, a
+boolean becomes a checkbox, and four fields is the limit because a form
+with nine inputs is not a starting point.
+
 Then the three steps became one command. Build, start, point the preview
 at it: each is small, and remembering all three in order is exactly the
 kind of friction that stops people trying the thing. `builder.runServer`

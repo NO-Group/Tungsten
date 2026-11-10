@@ -49,6 +49,7 @@ import {
 } from '../project/targets'
 import { EMPTY_SCHEMA, type Column, type DataSchema, type Table } from './dataSchema'
 import { applyPlan, describePlan, planSchema } from './schemaPlanner'
+import { scaffoldFor } from './tableScaffold'
 import { previewHtml } from './previewRuntime'
 import { schemaFromGraph, type UiDocument } from './uiSchema'
 import { explainFailure, type Traceback } from './traceback'
@@ -266,6 +267,8 @@ export type BuilderState = {
   setBackend: (url: string) => void
   /** Drafts tables from a plain-English description of the app. */
   draftSchema: (description: string) => void
+  /** Builds a heading, a form and a list for one drawn table. */
+  scaffoldTable: (index: number) => void
   /** A line the preview logged. */
   appendLog: (text: string) => void
   clearLogs: () => void
@@ -943,6 +946,28 @@ export function useBuilder(host: BuilderHost): BuilderState {
     notify([describePlan(outcome.added, outcome.skipped), ...plan.notes].join(' '))
   }, [notify])
 
+  /**
+   * Builds a screen for one table and drops it on the canvas.
+   *
+   * The same path a recipe takes -- `instantiate`, the active screen, one
+   * undo step -- because that is what it is. The generated blocks are
+   * selected afterwards so the first thing the user sees is what arrived
+   * and where it went.
+   */
+  const scaffoldTable = useCallback((index: number) => {
+    const table = schema.tables[index]
+    if (!table) return
+    const recipe = scaffoldFor(table)
+    const result = instantiate(recipe, graph, registry)
+    apply(onActiveScreen(result.graph, result.added))
+    setSelection(result.added.slice(0, 1))
+    notify(
+      result.rejected.length
+        ? `${recipe.name} added, but ${result.rejected.length} link was refused`
+        : `Added ${recipe.outcome}`,
+    )
+  }, [apply, graph, notify, onActiveScreen, registry, schema.tables])
+
   const renameTable = useCallback((index: number, name: string) => {
     setSchema((current) => ({
       tables: current.tables.map((table, position) => (position === index ? { ...table, name } : table)),
@@ -1147,6 +1172,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     removeVariable,
     addTable,
     draftSchema,
+    scaffoldTable,
     renameTable,
     removeTable,
     addColumn,

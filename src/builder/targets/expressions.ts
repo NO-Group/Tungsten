@@ -156,3 +156,23 @@ export function objectIn(language: 'kotlin' | 'swift' | 'dart' | 'js', entries: 
   if (language === 'swift') return `[${pairs.join(', ')}]`
   return `{ ${pairs.join(', ')} }`
 }
+
+/**
+ * The named fields of a Row Fields block, in canvas order.
+ *
+ * The names are inspector properties and so always literals; the values
+ * are whatever is wired in, rendered by the caller's own expression
+ * mapper. A field with no name was never filled in and is skipped --
+ * which is what makes an unused slot free.
+ */
+export function rowFields(call: IrCall, render: (value: IrValue | undefined) => string): ObjectEntry[] {
+  const entries: ObjectEntry[] = []
+  for (let index = 1; index <= 4; index += 1) {
+    const name = call.inputs[`name${index}`]
+    if (!name || name.kind !== 'literal') continue
+    const key = String(name.value ?? '').trim()
+    if (!key) continue
+    entries.push({ key, value: render(call.inputs[`value${index}`]) })
+  }
+  return entries
+}

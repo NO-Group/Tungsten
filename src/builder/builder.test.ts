@@ -1011,16 +1011,27 @@ describe('reading a typed-in object', () => {
     expect(objectIn('dart', [])).toBe('<String, dynamic>{}')
   })
 
-  it('survives the round trip through generated code', () => {
+  it('comes back from generated code as a Row Fields block', () => {
     const { graph, ids } = build([['event.start'], ['data.insert']], [['0', 'exec', '1', 'exec']])
     let next = setNodeValue(graph, ids[1], 'table', 'notes')
     next = setNodeValue(next, ids[1], 'row', '{ title: "Hello" }')
     const code = generateProgram(next, registry).code
     expect(code).toContain('db.insert("notes", { title: "Hello" })')
+
+    // Typed into a port it is text; read back off the code it becomes the
+    // block that means the same thing, which is the direction the parser
+    // is supposed to pull in.
     const back = parseProgram(code, registry)
     expect(back.ok).toBe(true)
     if (!back.ok) return
+    const row = back.graph.nodes.find((node) => node.type === 'data.row')
+    expect(row?.values.name1).toBe('title')
+    expect(row?.values.value1).toBe('Hello')
     const insert = back.graph.nodes.find((node) => node.type === 'data.insert')
-    expect(insert?.values.row).toBe('{ title: "Hello" }')
+    expect(back.graph.connections.some((link) => (
+      link.from.node === row?.id && link.to.node === insert?.id && link.to.port === 'row'
+    ))).toBe(true)
+    // And it generates the same line it was read from.
+    expect(generateProgram(back.graph, registry).code).toContain('db.insert("notes", { "title": "Hello" })')
   })
 })

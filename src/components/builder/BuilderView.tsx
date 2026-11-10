@@ -490,6 +490,7 @@ export function BuilderView(props: BuilderViewProps) {
                 schema={builder.schema}
                 onAddTable={builder.addTable}
                 onDraft={builder.draftSchema}
+                onScaffold={builder.scaffoldTable}
                 onRenameTable={builder.renameTable}
                 onRemoveTable={builder.removeTable}
                 onAddColumn={builder.addColumn}
