@@ -413,12 +413,12 @@ platforms it can be carried to are a list you choose:
 ```
 [ Organization ]
         └── [ Project ]
-                ├── Android App Target          Kotlin, Jetpack Compose
-                ├── iOS App Target              Swift, SwiftUI
-                ├── Cross-Platform Mobile Target  Dart, Flutter
-                ├── Windows Desktop Target      Electron → NSIS, portable .exe
-                ├── macOS Desktop Target        Electron → universal .dmg, .zip
-                └── Linux Desktop Target        Electron → AppImage, .deb
+                ├── Android App Target (Flutter)   or Kotlin, Jetpack Compose
+                ├── iOS App Target (Flutter)       or Swift, SwiftUI
+                ├── Cross-Platform Mobile Target (Flutter)
+                ├── Windows Desktop Target (Tauri) or Electron
+                ├── macOS Desktop Target (Tauri)   or Electron
+                └── Linux Desktop Target (Tauri)   or Electron
 ```
 
 The **Targets** tab at the bottom of the builder is where this lives. Tick a
@@ -427,6 +427,70 @@ platform to add it, press Build on its row to write its source tree, or run
 write all of them at once. Each target gets its own directory —
 `targets/<project>/android`, `targets/<project>/ios`, and so on — so no two
 builds can overwrite each other.
+
+### The toolchain is a second choice
+
+A target says where the app runs. A **toolchain** says what it is made of,
+and the two are not the same decision, so the Targets tab asks both. Each
+row has a dropdown next to it wherever there is a real choice:
+
+| Target | Default | The alternative |
+| --- | --- | --- |
+| Android | Flutter | Kotlin and Jetpack Compose |
+| iOS | Flutter | Swift and SwiftUI |
+| Cross-Platform Mobile | Flutter | — it is Flutter by definition |
+| Windows, macOS, Linux | Tauri | Electron |
+| Web | the DOM | — |
+
+Flutter leads on the phones because one source tree covering both is less
+to keep in step than two. Tauri leads on the desktop because a Rust shell
+around the system webview ships a fraction of the bytes Electron does —
+`src-tauri/` with a `Cargo.toml`, a `tauri.conf.json` and a `main.rs` that
+registers no commands, so the generated page has no more privilege than a
+web page. Neither default deletes the other option: Kotlin, Swift and
+Electron are each one dropdown away, from the same graph, and both halves
+of every choice are covered by tests.
+
+The choice is stored per project and only when it differs from the default,
+so changing a default later does not leave every saved workspace
+disagreeing with it. The output directory does not change with the
+toolchain — `targets/<project>/android` is the Android tree whatever wrote
+it — so each generated README names the toolchain that produced the folder
+and tells you to delete it before switching.
+
+### The backend Tungsten writes for you
+
+**Builder: Build the Backend Service**, or the Build button beside
+*Backend Service* in the Targets tab, writes `targets/<project>/server`:
+
+```
+server/main.js       one Node service, zero dependencies
+server/schema.sql    the tables you drew, plus users, sessions, files
+server/package.json  "start": "node main.js"
+```
+
+`node main.js` and it is up on `http://localhost:8787`. It needs Node 22.5
+or newer, because `node:sqlite` is built in from there, and nothing else at
+all — no install step, no package to be yanked out from under it.
+
+| Route | What it does |
+| --- | --- |
+| `/auth/sign-up`, `/auth/sign-in` | accounts, scrypt-hashed, returns a session token |
+| `/auth/session`, `/auth/sign-out` | who the bearer token is, and forgetting it |
+| `/auth/oauth` + `/auth/callback/:provider` | GitHub and Google, when you set the client id and secret |
+| `/data/<table>` | GET, POST, PATCH, DELETE for every table in the schema editor |
+| `/storage/<bucket>` | files in, files out |
+
+The tables are the boxes you drew in the **Data** tab. Nothing outside that
+schema reaches SQL: table and column names are looked up in a generated
+map and every value is a bound parameter, so a field that is not a column
+is dropped rather than interpolated. Uploads are stored under a generated
+name, never the one the caller sent.
+
+It is written to be read before it is run. The README it ships with has a
+*Before it leaves your machine* section: `TUNGSTEN_REQUIRE_AUTH=1` to make
+writes need a signed-in user, `TUNGSTEN_ORIGIN` instead of the `*` it
+answers with on your laptop, and TLS in front of it.
 
 The organization exists for one practical reason: every mobile and desktop
 platform identifies an application by a reverse-DNS string, and the only
@@ -466,12 +530,16 @@ three desktop targets share one emitter and render with the web output,
 which is a deliberate difference rather than a shortcut — a window is a
 window, and Tungsten itself ships exactly this way.
 
-Backend calls (`select`, `insert`, `request`, `signUp`, `upload`) are
-generated against a small `Runtime` file of stubs in each language. The
-builder knows the shape of the call your blocks make but not which backend
-you intend to use, and guessing would produce an app that pretends to work.
-Replace the bodies, keep the signatures, and the generated handlers keep
-compiling.
+Backend calls (`select`, `insert`, `request`, `signUp`, `upload`) used to be
+stubs that printed what they would have done. They are now real: each
+target ships a `Runtime` file that speaks HTTP to the generated backend —
+`HttpURLConnection` and `org.json` on Android, `URLSession` on iOS,
+`dart:io` in Flutter, `fetch` on the web and the desktop. All five agree on
+the same routes and send the session as a bearer token, and the Android and
+Flutter runtimes know that an emulator reaches your machine at `10.0.2.2`
+rather than localhost. The in-IDE preview is the one place that stays
+simulated, deliberately: a preview that wrote to your database would be a
+preview that could ruin your afternoon.
 
 Each tree comes with a README saying exactly which commands turn it into an
 artifact and which machine can run them.

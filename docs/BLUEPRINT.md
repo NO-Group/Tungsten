@@ -462,13 +462,13 @@ function with a table of differences, not three generators that drift
 apart. Writing a second native renderer for three platforms that all have
 the same one would be work with no user at the end of it.
 
-**The backend calls are stubs, loudly.** Every target emits a `Runtime`
-file whose `select`, `insert`, `request`, `signUp` and `upload` print what
-they were asked to do and return nothing. The builder knows the *shape* of
-the call a block makes; it does not know which backend is meant, and an app
-that pretends to work is worse than one that admits it is not wired up yet.
-The signatures are the contract: replace the bodies and the generated
-handlers keep compiling.
+**The backend calls were stubs, loudly.** Every target emitted a `Runtime`
+file whose `select`, `insert`, `request`, `signUp` and `upload` printed
+what they were asked to do and returned nothing — honest, because the
+builder knew the *shape* of the call a block makes and not which backend
+was meant. That is no longer true of either half: Tungsten now writes the
+backend as well, and the runtimes call it. See *The backend, written for
+you*, below.
 
 One more consequence, which is the real test of whether the IR was worth
 having: adding six targets required no change to the canvas, the parser,
@@ -520,14 +520,121 @@ changed. The canvas, the parser, the generator, the integrity checker and
 the preview are all untouched by this. The thing that was missing was
 missing in exactly one place.
 
+## The toolchain is a second dimension
+
+The Targets tab asked one question — *where does this run?* — and answered
+a second one by implication: Android meant Kotlin, the desktop meant
+Electron. That is two decisions wearing one hat, and they are not the same
+decision. A team that wants one Dart tree for both phones and a team that
+wants Compose are both right; which one you are is not a property of
+Android.
+
+So a target now has a toolchain:
+
+```ts
+TOOLCHAINS_FOR = {
+  android: ['flutter', 'kotlin'],
+  ios:     ['flutter', 'swift'],
+  mobile:  ['flutter'],
+  windows: ['tauri', 'electron'],
+  macos:   ['tauri', 'electron'],
+  linux:   ['tauri', 'electron'],
+  web:     ['web'],
+}
+```
+
+First entry is the default. Flutter leads on the phones because one source
+tree covering both is less to keep in step than two; Tauri leads on the
+desktop because a Rust shell around the system webview ships a fraction of
+the bytes Electron does.
+
+Four things follow from the shape of that table rather than from taste.
+
+**`TargetInfo` lost its `language`, `framework` and `toolchain` fields.**
+They were never facts about the platform; they were facts about how it
+happened to be built. They live on `ToolchainInfo` now, and `TargetInfo`
+keeps only what is true of the platform whichever way you build it — the
+label, the group, the directory, the artifact.
+
+**A project stores only what differs from the default.** `toolchains` is a
+sparse map, and `setToolchain` back to the default deletes the entry.
+Two ways to say the same thing in a saved file is two things that can
+disagree after a default changes. The reader drops any toolchain a
+platform cannot use, because a saved file naming Electron for iOS is a
+mistake to correct silently, not a preference to honour.
+
+**The directory does not move.** `targets/<project>/android` is the Android
+tree whether Flutter or Kotlin wrote it. A second path scheme keyed on the
+toolchain would double every path in the docs and the tests to save one
+`rm -rf`, so instead each generated README names the toolchain that wrote
+the folder and says to delete it before switching.
+
+**Both halves stay tested.** The emitter suite's fixtures ask for the
+non-default toolchain explicitly, so Kotlin, Swift and Electron are
+exercised on every run alongside Flutter and Tauri. A second option nobody
+tests is not an option; it is code waiting to rot.
+
+## The backend, written for you
+
+The honest stub was the right answer right up until Tungsten could do
+better. It now writes the other end of those calls: **Build the Backend
+Service** produces `targets/<project>/server`, which is one Node file, a
+`schema.sql`, and nothing to install.
+
+`node main.js`. That is the whole setup, and it is a design constraint
+rather than a boast. Node 22.5 ships an HTTP server, scrypt and SQLite;
+a generated backend whose first instruction is `npm install` is a
+generated backend that breaks the week some package three levels down is
+yanked.
+
+What it is:
+
+- **Accounts.** Sign-up, sign-in, session, sign-out, with scrypt-hashed
+  passwords compared in constant time, and an OAuth round trip for GitHub
+  and Google that keeps no provider tokens — it ends in an account and a
+  session of this service's own.
+- **The tables you drew.** GET, POST, PATCH and DELETE for every box in
+  the Data tab. Table and column names are looked up in a map generated
+  from the schema and every value is a bound parameter, so the injection
+  surface is not defended, it is absent: a field that is not a column is
+  dropped before any SQL is built.
+- **Files.** Bytes in, a URL out, stored under a generated name because an
+  upload must not get to choose where on disk it lands.
+
+Two decisions worth defending.
+
+**One service for all six targets, not one per target.** The question "does
+the Android build agree with the iOS build" should be answered by
+construction, not by discipline. The Kotlin, Swift, Flutter, web and
+desktop runtimes now speak the same routes and send the same bearer token;
+the test suite asserts they agree with each other rather than checking each
+in isolation.
+
+**SQLite, and its own dialect.** `createMigration` emits Postgres —
+`bigserial`, `timestamptz`, `jsonb` — all of which are syntax errors in
+SQLite. Rather than one dialect that is wrong in both places there are two
+emitters, and the generated `schema.sql` is applied at every boot: every
+statement is `if not exists`, so restarting never costs a row.
+
+The in-IDE preview is the one place that stays simulated. A preview that
+wrote to your database would be a preview that could ruin your afternoon,
+so the runtime takes its address from `API_BASE` — empty in the IDE, the
+service's URL in a build — and `window.TUNGSTEN_API` overrides it, so a
+deployed page can be pointed at staging without a rebuild.
+
 ## The three deliberate deviations
 
-**Tauri and Rust → Electron.** Tungsten already had a working Electron shell
-with PTYs, language servers, debug adapters, Git, SSH remotes and signed
-installers for three platforms. Rewriting that shell in Rust would have
-replaced a large amount of working, tested code with new untested code, and
-bought nothing the builder needed. The saving Tauri offers is binary size and
-idle memory; the cost was the entire desktop integration surface.
+**Tauri and Rust → Electron, for Tungsten's own shell only.** Tungsten
+already had a working Electron shell with PTYs, language servers, debug
+adapters, Git, SSH remotes and signed installers for three platforms.
+Rewriting *that* in Rust would have replaced a large amount of working,
+tested code with new untested code and bought nothing: the saving Tauri
+offers is binary size and idle memory, and the cost was the entire desktop
+integration surface. That reasoning never applied to the apps Tungsten
+generates, which have no such surface — a generated desktop app is a
+window around a document. So Tauri is the default there, Electron is the
+alternative, and this deviation is now about one application rather than
+seven.
 
 **Zustand → the existing store.** A second state library alongside the one the
 workbench already uses would mean two ways to do everything and two places to
