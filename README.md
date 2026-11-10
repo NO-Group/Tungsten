@@ -645,6 +645,50 @@ a single statement runs.
 The whole design, including where the backends genuinely differ and what
 is built next, is in [docs/BACKENDS.md](docs/BACKENDS.md).
 
+## What the AI costs, enforced in code
+
+Tungsten AI is two layers. A **plan** buys capability and capacity —
+seats, hosted projects, a custom domain, the right to call the
+expensive engines. **Credits** buy tokens. Bundling them means either
+the light users subsidise the heavy ones until the heavy ones leave, or
+nobody's bill is predictable.
+
+| Plan | Price | Credits | Daily fallback | Engines |
+| --- | --- | --- | --- | --- |
+| Spark | free | 250 / month | 10 per rolling 24h | Flash, Balanced |
+| Core | $19 | 2,500 | — | + Precise |
+| Forge | $49 | 9,000 | — | + Agent |
+| Titan | $149 | 30,000 | — | all four |
+
+A credit is a unit of **tokens, not prompts**:
+
+```
+credits = ceil( (uncachedIn x wIn + cachedIn x wIn / 10 + out x wOut) / 1e6 )
+```
+
+in integer arithmetic, because floating point has no business in a
+ledger. Cached input bills at a tenth, so `composePrompt` always orders
+a prompt system → block library → project schema → history → question
+and keeps the cacheable prefix byte-identical between calls.
+
+Every call runs the same way: gate on the plan, work out how long a
+reply the remaining balance can pay for and send *that* as the hard
+output limit, reserve the ceiling against an idempotency key, call,
+then settle against the usage the gateway reports. Failures release the
+hold in full — they are free. An abandoned stream is billed for what
+actually arrived. Retries with the same key charge once.
+
+Two claims pricing pages usually make without evidence are tests here:
+an allowance spent entirely on the dearest engine a plan may call still
+leaves 25% of the price (Titan's worst possible month is $94 of
+inference against $149 of revenue), and a session token carries
+identity only — `sub`, `sid`, `iat`, `exp` — so an upgrade or a
+cancellation takes effect in milliseconds instead of whenever a JWT
+happens to expire.
+
+The engine, the arithmetic and the invariants are in `src/ai/`, and the
+full design is in [docs/CREDITS.md](docs/CREDITS.md).
+
 ## Extending Tungsten
 
 Four extension points, all read from the workspace you have open:
