@@ -10,8 +10,8 @@
  * a thrown error finds its way to the block that threw it.
  */
 
-import { useEffect, useRef } from 'react'
-import { Eraser, TriangleAlert } from 'lucide-react'
+import { useEffect, useRef, useState } from 'react'
+import { Eraser, Server, TriangleAlert } from 'lucide-react'
 
 import { PREVIEW_CHANNEL, type PreviewMessage } from '../../builder/previewRuntime'
 import type { Traceback } from '../../builder/traceback'
@@ -26,12 +26,19 @@ export type BuilderPreviewProps = {
   onClear: () => void
   /** Reveals the block a failure was traced to. */
   onReveal: (nodeId: string) => void
+  /** The backend the preview talks to. Empty means the simulation. */
+  backend: string
+  onBackend: (url: string) => void
+  /** Suggested when the switch is first turned on. */
+  defaultBackend: string
 }
 
 export function BuilderPreview(props: BuilderPreviewProps) {
   const { document: html, logs, failure, onLog, onFailure, onClear, onReveal } = props
+  const { backend, onBackend, defaultBackend } = props
   const frame = useRef<HTMLIFrameElement | null>(null)
   const tail = useRef<HTMLDivElement | null>(null)
+  const [draft, setDraft] = useState(backend)
 
   useEffect(() => {
     const receive = (event: MessageEvent) => {
@@ -71,6 +78,43 @@ export function BuilderPreview(props: BuilderPreviewProps) {
           {failure.line !== undefined && <em>line {failure.line}</em>}
         </button>
       )}
+
+      {/*
+        Simulated by default, live only when asked.
+
+        The data, auth and storage blocks fake themselves in the preview
+        and say so in the console. Typing an address here points the same
+        blocks at a real service -- the one the Backend Service target
+        writes -- which is a different and much less reversible thing, so
+        it is a switch rather than a default.
+      */}
+      <div className="builder-backend">
+        <label>
+          <input
+            type="checkbox"
+            aria-label="Use a real backend"
+            checked={Boolean(backend)}
+            onChange={(event) => {
+              if (!event.target.checked) { setDraft(''); onBackend(''); return }
+              const next = draft || defaultBackend
+              setDraft(next)
+              onBackend(next)
+            }}
+          />
+          <Server size={12} />
+          <span>{backend ? 'Live backend' : 'Simulated backend'}</span>
+        </label>
+        <input
+          className="builder-backend-url"
+          aria-label="Backend address"
+          placeholder={defaultBackend}
+          value={draft}
+          disabled={!backend}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={() => onBackend(draft)}
+          onKeyDown={(event) => { if (event.key === 'Enter') onBackend(draft) }}
+        />
+      </div>
 
       <div className="builder-console">
         <header>

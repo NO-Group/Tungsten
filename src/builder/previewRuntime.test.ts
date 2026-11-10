@@ -705,3 +705,138 @@ describe('the backend blocks in the preview', () => {
     expect(messages.some((message) => message.kind === 'error')).toBe(false)
   })
 })
+
+/**
+ * The preview, pointed at a real backend.
+ *
+ * The same blocks that simulate themselves above make real requests once
+ * an address is configured. `fetch` is stubbed in the sandbox window
+ * rather than mocked at module level, because what matters is the request
+ * the generated runtime actually builds: the URL, the method, the body
+ * and the bearer token it starts sending after a sign-in.
+ */
+describe('the preview against a live backend', () => {
+  type Call = { url: string; method: string; headers: Record<string, string>; body: string }
+
+  /** Runs a graph with a stubbed network, and reports what it asked for. */
+  async function live(graph: BlockGraph, reply: (call: Call) => unknown) {
+    const code = generateProgram(graph, registry).code
+    const html = previewHtml({
+      document: schemaFromGraph(graph, registry, {}),
+      code,
+      api: 'https://api.example.com',
+    })
+    const calls: Call[] = []
+    const dom = new JSDOM(html, {
+      runScripts: 'dangerously',
+      pretendToBeVisual: true,
+      beforeParse(window) {
+        // jsdom has no fetch of its own, which is convenient: anything the
+        // runtime calls is unambiguously ours.
+        ;(window as unknown as { fetch: unknown }).fetch = (url: string, options?: {
+          method?: string
+          headers?: Record<string, string>
+          body?: string
+        }) => {
+          const call: Call = {
+            url: String(url),
+            method: options?.method ?? 'GET',
+            headers: options?.headers ?? {},
+            body: options?.body ?? '',
+          }
+          calls.push(call)
+          const payload = JSON.stringify(reply(call) ?? {})
+          return Promise.resolve({ ok: true, status: 200, text: () => Promise.resolve(payload) })
+        }
+      },
+    })
+    const messages: PreviewMessage[] = []
+    dom.window.addEventListener('message', (event: MessageEvent) => {
+      const data = event.data as PreviewMessage & { channel?: string }
+      if (data?.channel === PREVIEW_CHANNEL) messages.push(data)
+    })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    return { calls, messages, dom }
+  }
+
+  it('reads a table over HTTP instead of handing back seeds', async () => {
+    const { graph, ids } = build([['event.start'], ['data.query'], ['logic.log']],
+      [[0, 'exec', 1, 'exec'], [1, 'exec', 2, 'exec']])
+    let next = setNodeValue(graph, ids[1], 'table', 'notes')
+    const rows = connect(next, registry, { node: ids[1], port: 'rows' }, { node: ids[2], port: 'value' })
+    if (rows.rejected) throw new Error(rows.rejected)
+    next = rows.graph
+
+    const { calls, messages } = await live(next, () => ({ rows: [{ id: 1, title: 'From the server' }] }))
+    expect(calls[0].url).toBe('https://api.example.com/data/notes')
+    expect(calls[0].method).toBe('GET')
+    expect(messages.some((message) => message.kind === 'log' && message.text.includes('From the server'))).toBe(true)
+  })
+
+  it('writes a row, changes it and deletes it with the right methods', async () => {
+    const { graph, ids } = build(
+      [['event.start'], ['data.insert'], ['data.update'], ['data.remove']],
+      [[0, 'exec', 1, 'exec'], [1, 'exec', 2, 'exec'], [2, 'exec', 3, 'exec']],
+    )
+    let next = setNodeValue(graph, ids[1], 'table', 'notes')
+    next = setNodeValue(next, ids[1], 'row', '{ title: "Hello" }')
+    next = setNodeValue(next, ids[2], 'table', 'notes')
+    next = setNodeValue(next, ids[2], 'id', '7')
+    next = setNodeValue(next, ids[2], 'changes', '{ done: true }')
+    next = setNodeValue(next, ids[3], 'table', 'notes')
+    next = setNodeValue(next, ids[3], 'id', '7')
+
+    const { calls } = await live(next, () => ({ row: { id: 7 } }))
+    expect(calls.map((call) => `${call.method} ${call.url.replace('https://api.example.com', '')}`)).toEqual([
+      'POST /data/notes',
+      'PATCH /data/notes/7',
+      'DELETE /data/notes/7',
+    ])
+    expect(JSON.parse(calls[0].body)).toEqual({ title: 'Hello' })
+    expect(JSON.parse(calls[1].body)).toEqual({ done: true })
+  })
+
+  it('carries the session token into the calls that follow a sign-in', async () => {
+    const { graph, ids } = build([['event.start'], ['auth.signIn'], ['data.query']],
+      [[0, 'exec', 1, 'exec'], [1, 'exec', 2, 'exec']])
+    let next = setNodeValue(graph, ids[1], 'email', 'ada@example.com')
+    next = setNodeValue(next, ids[1], 'password', 'correct horse')
+    next = setNodeValue(next, ids[2], 'table', 'notes')
+
+    const { calls } = await live(next, (call) => (
+      call.url.endsWith('/auth/sign-in') ? { token: 'tok_123', user: { email: 'ada@example.com' } } : { rows: [] }
+    ))
+    expect(calls[0].url.endsWith('/auth/sign-in')).toBe(true)
+    expect(calls[0].headers.authorization).toBeUndefined()
+    expect(calls[1].headers.authorization).toBe('Bearer tok_123')
+  })
+
+  it('shows the backend\u2019s own error message when a call fails', async () => {
+    const { graph, ids } = build([['event.start'], ['auth.signIn']], [[0, 'exec', 1, 'exec']])
+    let next = setNodeValue(graph, ids[1], 'email', 'ada@example.com')
+    next = setNodeValue(next, ids[1], 'password', 'wrong')
+
+    const code = generateProgram(next, registry).code
+    const html = previewHtml({ document: schemaFromGraph(next, registry, {}), code, api: 'https://api.example.com' })
+    const dom = new JSDOM(html, {
+      runScripts: 'dangerously',
+      pretendToBeVisual: true,
+      beforeParse(window) {
+        ;(window as unknown as { fetch: unknown }).fetch = () => Promise.resolve({
+          ok: false,
+          status: 401,
+          text: () => Promise.resolve('{"error":"That email and password do not match."}'),
+        })
+      },
+    })
+    const messages: PreviewMessage[] = []
+    dom.window.addEventListener('message', (event: MessageEvent) => {
+      const data = event.data as PreviewMessage & { channel?: string }
+      if (data?.channel === PREVIEW_CHANNEL) messages.push(data)
+    })
+    await new Promise((resolve) => setTimeout(resolve, 30))
+    expect(messages.some((message) => (
+      message.kind === 'error' && message.text.includes('That email and password do not match.')
+    ))).toBe(true)
+  })
+})

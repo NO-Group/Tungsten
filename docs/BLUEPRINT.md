@@ -610,6 +610,28 @@ integrity checker. Two of them bind no result, because deleting a row and
 signing out have nothing worth naming, and `const x = await` with an
 unused `x` is a lint error in somebody else's project.
 
+Then the preview had to be able to reach it, because a backend you cannot
+try from the canvas is a backend you find out about at build time. The
+preview now has a switch: simulated by default, and a checked http
+address when you want the real thing. Nothing else changed — the runtime
+already took an `api` base, the sandbox already rebuilt itself whenever
+the document string changed, and the sandbox's opaque origin is exactly
+what the generated service's permissive CORS reply was written for. The
+tests for it stub `fetch` inside the jsdom window rather than mocking a
+module, so what is asserted is the request the generated code actually
+builds: the URL, the method, the body, and the bearer token appearing on
+the call *after* the sign-in.
+
+That immediately exposed an old wart. Every port value is text, and
+`literal()` quoted all of it, so a row typed as `{ title: "Hello" }`
+reached the service as the string `"{ title: \"Hello\" }"` — which has no
+columns, so the row saved empty and nothing anywhere said why. Object
+ports now go through `parseObjectLiteral`, which is deliberately narrow:
+one level, identifier or quoted keys, JSON literal values. It declines
+nesting, arithmetic and calls, and the caller falls back to text. A
+generator that guessed at arbitrary JavaScript and emitted it as Kotlin
+would be worse than one that says no.
+
 Two decisions worth defending.
 
 **One service for all six targets, not one per target.** The question "does

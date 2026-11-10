@@ -6,6 +6,7 @@ import { createRegistry, defineBlock, isAssignable, type BlockGraph } from './bl
 import { generateProgram, lineOfNode, nodeAtLine } from './codeGenerator'
 import { checkIntegrity, diagnosticsByNode } from './integrity'
 import { parseProgram } from './codeParser'
+import { objectIn, parseObjectLiteral } from './targets/expressions'
 import {
   addNode,
   canConnect,
@@ -957,5 +958,69 @@ describe('the blocks the backend can answer', () => {
     const { code } = generateProgram(graph, registry)
     expect(code).not.toMatch(/const \w+ = await db\.remove/)
     expect(code).not.toMatch(/const \w+ = await auth\.signOut/)
+  })
+})
+
+/**
+ * Object literals, read and written.
+ *
+ * The parser behind `parseObjectLiteral` is deliberately narrow, and the
+ * value of a narrow parser is entirely in where it says no.
+ */
+describe('reading a typed-in object', () => {
+  it('reads identifier keys, quoted keys and JSON values', () => {
+    expect(parseObjectLiteral('{ title: "Hello", "count": 3, done: true, note: null }')).toEqual([
+      { key: 'title', value: '"Hello"' },
+      { key: 'count', value: '3' },
+      { key: 'done', value: 'true' },
+      { key: 'note', value: 'null' },
+    ])
+  })
+
+  it('reads the empty object', () => {
+    expect(parseObjectLiteral('{}')).toEqual([])
+    expect(parseObjectLiteral('  {  }  ')).toEqual([])
+  })
+
+  it('keeps a comma inside a string out of the split', () => {
+    expect(parseObjectLiteral('{ title: "Hello, world" }')).toEqual([{ key: 'title', value: '"Hello, world"' }])
+  })
+
+  it('declines anything it cannot spell in four languages', () => {
+    for (const text of [
+      'notAnObject',
+      '{ nested: { a: 1 } }',
+      '{ list: [1, 2] }',
+      '{ computed: 1 + 1 }',
+      '{ called: fetch() }',
+      '{ missingValue }',
+      '{ "unterminated: 1 }',
+    ]) {
+      expect(parseObjectLiteral(text), text).toBeUndefined()
+    }
+  })
+
+  it('spells the fields the way each language does', () => {
+    const entries = parseObjectLiteral('{ title: "Hello", done: true }')!
+    expect(objectIn('js', entries)).toBe('{ title: "Hello", done: true }')
+    expect(objectIn('kotlin', entries)).toBe('mapOf("title" to "Hello", "done" to true)')
+    expect(objectIn('swift', entries)).toBe('["title": "Hello", "done": true]')
+    expect(objectIn('dart', entries)).toBe('<String, dynamic>{"title": "Hello", "done": true}')
+    expect(objectIn('kotlin', [])).toBe('emptyMap<String, Any?>()')
+    expect(objectIn('swift', [])).toBe('[String: Any]()')
+    expect(objectIn('dart', [])).toBe('<String, dynamic>{}')
+  })
+
+  it('survives the round trip through generated code', () => {
+    const { graph, ids } = build([['event.start'], ['data.insert']], [['0', 'exec', '1', 'exec']])
+    let next = setNodeValue(graph, ids[1], 'table', 'notes')
+    next = setNodeValue(next, ids[1], 'row', '{ title: "Hello" }')
+    const code = generateProgram(next, registry).code
+    expect(code).toContain('db.insert("notes", { title: "Hello" })')
+    const back = parseProgram(code, registry)
+    expect(back.ok).toBe(true)
+    if (!back.ok) return
+    const insert = back.graph.nodes.find((node) => node.type === 'data.insert')
+    expect(insert?.values.row).toBe('{ title: "Hello" }')
   })
 })

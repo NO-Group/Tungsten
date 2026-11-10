@@ -11,7 +11,7 @@
 import { headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeSwift } from '../uiTokens'
 import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile'
-import { ARITHMETIC, COMPARISONS, isEquality, isTextual, operatorOf } from './expressions'
+import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral } from './expressions'
 import { appIdFor, slug, type Project } from '../../project/targets'
 import { DEFAULT_API_URL } from './server'
 
@@ -76,6 +76,22 @@ export function swiftStatement(
   // in the runtime file and takes anything, optional or not.
   const text = (id: string) => (isTextual(statement.inputs[id]) ? value(id) : `toText(${value(id)})`)
 
+  /**
+   * The same value where an object is wanted.
+   *
+   * A typed-in `{ title: "Hello" }` is text on the canvas and has to be
+   * a map by the time it reaches the backend; anything this cannot read
+   * as a flat object literal is left exactly as it was.
+   */
+  const object = (id: string): string => {
+    const input = statement.inputs[id]
+    if (input && input.kind === 'literal' && typeof input.value === 'string') {
+      const entries = parseObjectLiteral(input.value)
+      if (entries) return objectIn('swift', entries)
+    }
+    return value(id)
+  }
+
   const name = () => {
     const existing = names.get(statement.node)
     if (existing) return existing
@@ -118,9 +134,9 @@ export function swiftStatement(
     case 'data.query':
       return [`${indent}let ${name()} = try await Api.select(${text('table')})`]
     case 'data.insert':
-      return [`${indent}let ${name()} = try await Api.insert(${text('table')}, ${value('row')})`]
+      return [`${indent}let ${name()} = try await Api.insert(${text('table')}, ${object('row')})`]
     case 'data.update':
-      return [`${indent}let ${name()} = try await Api.update(${text('table')}, id: ${text('id')}, changes: ${value('changes')})`]
+      return [`${indent}let ${name()} = try await Api.update(${text('table')}, id: ${text('id')}, changes: ${object('changes')})`]
     case 'data.remove':
       return [`${indent}try await Api.remove(${text('table')}, id: ${text('id')})`]
     case 'network.fetch':

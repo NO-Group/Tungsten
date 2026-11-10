@@ -847,3 +847,56 @@ describe('the newest backend blocks reach the native targets', () => {
     expect(server).toContain("path === '/auth/sign-out'")
   })
 })
+
+/**
+ * A typed-in object has to be an object everywhere.
+ *
+ * `{ title: "Hello" }` is text in the inspector, and every target has to
+ * turn it into something its language calls a map before it reaches the
+ * backend. The failure this guards against is quiet: a string arrives,
+ * the service finds no known columns in it, and the row saves empty.
+ */
+describe('object ports become objects', () => {
+  function rows(): BlockGraph {
+    const { graph, ids } = build(
+      [['event.start', 0, 0], ['data.insert', 220, 0], ['data.update', 440, 0]],
+      [[0, 'exec', 1, 'exec'], [1, 'exec', 2, 'exec']],
+    )
+    let next = setNodeValue(graph, ids[1], 'table', 'notes')
+    next = setNodeValue(next, ids[1], 'row', '{ title: "Hello", done: false }')
+    next = setNodeValue(next, ids[2], 'table', 'notes')
+    next = setNodeValue(next, ids[2], 'id', '7')
+    next = setNodeValue(next, ids[2], 'changes', '{ done: true }')
+    return next
+  }
+
+  function emitted(target: CompileTarget, suffix: string, toolchains: Toolchains = NATIVE): string {
+    const result = compile({ graph: rows(), registry, target, project: project(toolchains) })
+    if (!result.ok) throw new Error(result.reason)
+    return at(result.files, suffix)
+  }
+
+  it('writes a Kotlin map, a Swift dictionary and a Dart map', () => {
+    expect(emitted('android', 'MainActivity.kt'))
+      .toContain('Api.insert("notes", mapOf("title" to "Hello", "done" to false))')
+    expect(emitted('ios', 'ContentView.swift'))
+      .toContain('Api.insert("notes", ["title": "Hello", "done": false])')
+    expect(emitted('mobile', 'main.dart', {}))
+      .toContain('api.insert("notes", <String, dynamic>{"title": "Hello", "done": false})')
+  })
+
+  it('does the same for the fields of an update', () => {
+    expect(emitted('android', 'MainActivity.kt')).toContain('mapOf("done" to true)')
+    expect(emitted('ios', 'ContentView.swift')).toContain('["done": true]')
+    expect(emitted('mobile', 'main.dart', {})).toContain('<String, dynamic>{"done": true}')
+  })
+
+  it('leaves text that is not an object literal exactly as it was', () => {
+    const { graph, ids } = build([['event.start'], ['data.insert']], [[0, 'exec', 1, 'exec']])
+    let next = setNodeValue(graph, ids[1], 'table', 'notes')
+    next = setNodeValue(next, ids[1], 'row', 'whatever the user typed')
+    const result = compile({ graph: next, registry, target: 'android', project: project(NATIVE) })
+    if (!result.ok) throw new Error(result.reason)
+    expect(at(result.files, 'MainActivity.kt')).toContain('Api.insert("notes", "whatever the user typed")')
+  })
+})

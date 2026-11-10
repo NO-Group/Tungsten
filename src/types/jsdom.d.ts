@@ -10,6 +10,8 @@ declare module 'jsdom' {
       runScripts?: 'dangerously' | 'outside-only'
       pretendToBeVisual?: boolean
       url?: string
+      /** Runs before the document is parsed: the hook the fetch stub uses. */
+      beforeParse?: (window: Window & typeof globalThis) => void
     })
     readonly window: Window & typeof globalThis
     serialize(): string

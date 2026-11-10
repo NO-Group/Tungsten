@@ -19,6 +19,7 @@ import { ScreenBar } from './ScreenBar'
 import { InspectorPanel } from './InspectorPanel'
 import { StatePanel } from './StatePanel'
 import { BuilderPreview } from './BuilderPreview'
+import { DEFAULT_API_URL } from '../../builder/targets/server'
 import { DataSchemaPanel } from './DataSchemaPanel'
 import { diagnosticsByNode } from '../../builder/integrity'
 import { lineOfNode, nodeAtLine } from '../../builder/codeGenerator'
@@ -529,6 +530,9 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
               onFailure={builder.reportFailure}
               onClear={builder.clearLogs}
               onReveal={builder.revealNode}
+              backend={builder.backend}
+              onBackend={builder.setBackend}
+              defaultBackend={DEFAULT_API_URL}
             />
           )}
         </div>

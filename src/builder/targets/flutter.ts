@@ -21,7 +21,7 @@ import {
 import type { CompiledFile, Ir, IrStatement, IrValue } from '../compile'
 import { flattenComponents, headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeDart } from '../uiTokens'
-import { ARITHMETIC, COMPARISONS, isEquality, isTextual, operatorOf } from './expressions'
+import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral } from './expressions'
 import { DEFAULT_API_PORT, DEFAULT_API_URL } from './server'
 
 /** The host machine, as seen from an Android emulator. */
@@ -86,6 +86,22 @@ function dartStatement(statement: IrStatement, indent: string, names: Map<string
     isTextual(statement.inputs[id]) ? value(id) : `toText(${value(id)})`
   )
 
+  /**
+   * The same value where an object is wanted.
+   *
+   * A typed-in `{ title: "Hello" }` is text on the canvas and has to be
+   * a map by the time it reaches the backend; anything this cannot read
+   * as a flat object literal is left exactly as it was.
+   */
+  const object = (id: string): string => {
+    const input = statement.inputs[id]
+    if (input && input.kind === 'literal' && typeof input.value === 'string') {
+      const entries = parseObjectLiteral(input.value)
+      if (entries) return objectIn('dart', entries)
+    }
+    return value(id)
+  }
+
   const name = () => {
     const base = statement.type.split('.').pop() ?? 'value'
     const existing = names.get(statement.node)
@@ -131,9 +147,9 @@ function dartStatement(statement: IrStatement, indent: string, names: Map<string
     case 'data.query':
       return [`${indent}final ${name()} = await api.select(${text('table')});`]
     case 'data.insert':
-      return [`${indent}final ${name()} = await api.insert(${text('table')}, ${value('row')});`]
+      return [`${indent}final ${name()} = await api.insert(${text('table')}, ${object('row')});`]
     case 'data.update':
-      return [`${indent}final ${name()} = await api.update(${text('table')}, ${text('id')}, ${value('changes')});`]
+      return [`${indent}final ${name()} = await api.update(${text('table')}, ${text('id')}, ${object('changes')});`]
     case 'data.remove':
       return [`${indent}await api.remove(${text('table')}, ${text('id')});`]
     case 'network.fetch':

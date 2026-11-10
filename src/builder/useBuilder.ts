@@ -95,6 +95,14 @@ type Stored = {
   screens: Screen[]
   /** Who is shipping this, and to which platforms. */
   organization: Organization
+  /**
+   * A backend for the preview to talk to, or empty for a simulated one.
+   *
+   * Empty by default and on purpose: a preview that writes to a database
+   * the first time a canvas is opened is a preview that can ruin an
+   * afternoon. Typing an address here is the moment of consent.
+   */
+  backend: string
 }
 
 export type BuilderState = {
@@ -252,11 +260,33 @@ export type BuilderState = {
   setToolchain: (kind: TargetKind, toolchain: Toolchain) => void
   /** Compiles for a target, or refuses with a reason. */
   build: (target: CompileTarget) => CompileResult
+  /** Where the preview sends its data, auth and storage calls. Empty = simulated. */
+  backend: string
+  setBackend: (url: string) => void
   /** A line the preview logged. */
   appendLog: (text: string) => void
   clearLogs: () => void
   /** A failure reported by the preview, against a line of generated code. */
   reportFailure: (text: string, line?: number) => void
+}
+
+/**
+ * Is this something the preview may be pointed at?
+ *
+ * http or https, a host, and nothing else -- no credentials, no query, no
+ * fragment. The value is interpolated into the sandbox document, and the
+ * cheapest way to keep that safe is to accept only addresses that cannot
+ * carry anything but an origin and a path.
+ */
+export function isBackendUrl(value: string): boolean {
+  try {
+    const url = new URL(value)
+    if (url.protocol !== 'http:' && url.protocol !== 'https:') return false
+    if (url.username || url.password || url.search || url.hash) return false
+    return Boolean(url.hostname)
+  } catch {
+    return false
+  }
 }
 
 function load(): Stored {
@@ -266,6 +296,7 @@ function load(): Stored {
     state: EMPTY_STATE,
     screens: [...DEFAULT_SCREENS],
     organization: defaultOrganization(),
+    backend: '',
   }
   try {
     const stored = localStorage.getItem(BUILDER_STORAGE_KEY)
@@ -285,7 +316,8 @@ function load(): Stored {
       : [...DEFAULT_SCREENS]
     // A canvas saved before targets existed gets the default organization,
     // which is one project with the six platforms on it.
-    return { graph, schema, state, screens, organization: readOrganization(parsed.organization) }
+    const backend = typeof parsed.backend === 'string' && isBackendUrl(parsed.backend) ? parsed.backend : ''
+    return { graph, schema, state, screens, organization: readOrganization(parsed.organization), backend }
   } catch {
     return empty
   }
@@ -302,6 +334,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [screens, setScreens] = useState<Screen[]>(initial.screens)
   const [activeScreen, setActiveScreen] = useState(() => homeScreen(initial.screens))
   const [organization, setOrganization] = useState<Organization>(initial.organization)
+  const [backend, setBackendUrl] = useState<string>(initial.backend)
   const [projectIndex, setProjectIndex] = useState(0)
   const [code, setCode] = useState(
     () => generateProgram(initial.graph, registry, initial.state, initial.screens).code,
@@ -362,8 +395,8 @@ export function useBuilder(host: BuilderHost): BuilderState {
    * the pane: a preview of half-typed code would be noise.
    */
   const previewDocument = useMemo(
-    () => previewHtml({ document: ui, code: program.code, screen: activeScreen }),
-    [activeScreen, program.code, ui],
+    () => previewHtml({ document: ui, code: program.code, screen: activeScreen, api: backend }),
+    [activeScreen, backend, program.code, ui],
   )
 
   const { notify } = host
@@ -377,8 +410,8 @@ export function useBuilder(host: BuilderHost): BuilderState {
    * bytes would differ and not merely when an object identity changed.
    */
   const persisted = useMemo(
-    () => JSON.stringify({ graph, schema, state, screens, organization }),
-    [graph, organization, schema, screens, state],
+    () => JSON.stringify({ graph, schema, state, screens, organization, backend }),
+    [backend, graph, organization, schema, screens, state],
   )
 
   useEffect(() => {
@@ -995,6 +1028,23 @@ export function useBuilder(host: BuilderHost): BuilderState {
     })
   }, [projectIndex])
 
+  /**
+   * Points the preview at a backend, or back at the simulation.
+   *
+   * Only http and https, and nothing with credentials or a query in it:
+   * the address is interpolated into the sandbox document, so the one
+   * thing it must never be is arbitrary text.
+   */
+  const setBackend = useCallback((url: string) => {
+    const clean = url.trim().replace(/\/+$/, '')
+    if (!clean) return setBackendUrl('')
+    if (!isBackendUrl(clean)) {
+      notify(`${clean} is not an http address. Try http://localhost:8787.`)
+      return
+    }
+    setBackendUrl(clean)
+  }, [notify])
+
   const appendLog = useCallback((text: string) => {
     setLogs((current) => [...current, text].slice(-MAX_PREVIEW_LOGS))
   }, [])
@@ -1087,6 +1137,8 @@ export function useBuilder(host: BuilderHost): BuilderState {
     moveScreen,
     moveSelectionToScreen,
     organization,
+    backend,
+    setBackend,
     project,
     projectIndex,
     openProject,

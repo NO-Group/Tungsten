@@ -544,9 +544,27 @@ target ships a `Runtime` file that speaks HTTP to the generated backend —
 `dart:io` in Flutter, `fetch` on the web and the desktop. All five agree on
 the same routes and send the session as a bearer token, and the Android and
 Flutter runtimes know that an emulator reaches your machine at `10.0.2.2`
-rather than localhost. The in-IDE preview is the one place that stays
-simulated, deliberately: a preview that wrote to your database would be a
-preview that could ruin your afternoon.
+rather than localhost.
+
+The in-IDE preview starts simulated — a preview that wrote to your
+database the first time you opened a canvas would be a preview that could
+ruin your afternoon. Underneath it is a switch:
+
+> ☐ Simulated backend &nbsp; `http://localhost:8787`
+
+Build the Backend Service, run `node main.js`, flick the switch, and the
+same blocks stop narrating and start making requests: `GET /data/notes`,
+`PATCH /data/notes/7`, a bearer token carried from the sign-in onward,
+and the service's own error sentence in the console when something is
+wrong. The address is checked before it is used — http or https, no
+credentials, no query — because it ends up inside the sandbox document.
+
+One related fix: a field box holding `{ title: "Hello", done: false }` is
+now sent as an object everywhere. It becomes `mapOf("title" to "Hello", …)`
+in Kotlin, `["title": "Hello", …]` in Swift, a `<String, dynamic>` map in
+Dart and a plain object literal on the web, instead of one long string
+that arrived at the backend with no columns the schema recognised.
+Anything that is not a flat object literal is left alone as text.
 
 Each tree comes with a README saying exactly which commands turn it into an
 artifact and which machine can run them.

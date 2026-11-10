@@ -354,6 +354,38 @@ describe('the preview, the database and the build', () => {
     expect(container.querySelector('.builder-console-lines')?.textContent).toContain('Nothing logged yet')
   })
 
+  it('previews against the simulation until a backend is asked for', async () => {
+    click(tab('Preview'))
+    const toggle = container.querySelector<HTMLInputElement>('[aria-label="Use a real backend"]')!
+    const address = container.querySelector<HTMLInputElement>('[aria-label="Backend address"]')!
+    expect(toggle.checked).toBe(false)
+    expect(address.disabled).toBe(true)
+    expect(container.querySelector('iframe')?.getAttribute('srcdoc')).toContain('const API_BASE = "";')
+
+    click(toggle)
+    await flushEffects()
+    expect(container.querySelector('iframe')?.getAttribute('srcdoc'))
+      .toContain('const API_BASE = "http://localhost:8787";')
+
+    // And back off again: the switch is the only thing standing between a
+    // preview and somebody's real data.
+    click(container.querySelector('[aria-label="Use a real backend"]'))
+    await flushEffects()
+    expect(container.querySelector('iframe')?.getAttribute('srcdoc')).toContain('const API_BASE = "";')
+  })
+
+  it('refuses an address that is not an http one', async () => {
+    click(tab('Preview'))
+    click(container.querySelector('[aria-label="Use a real backend"]'))
+    const address = container.querySelector<HTMLInputElement>('[aria-label="Backend address"]')!
+    type(address, 'javascript:alert(1)')
+    act(() => { address.dispatchEvent(new FocusEvent('focusout', { bubbles: true })) })
+    await flushEffects()
+    expect(container.querySelector('iframe')?.getAttribute('srcdoc'))
+      .toContain('const API_BASE = "http://localhost:8787";')
+    expect(notify.mock.calls.flat().join(' ')).toContain('is not an http address')
+  })
+
   it('traces a runtime failure back to the block that threw', () => {
     click(palette('On App Start'))
     click(palette('Log'))
