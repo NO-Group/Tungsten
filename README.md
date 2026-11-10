@@ -610,6 +610,41 @@ Anything that is not a flat object literal is left alone as text.
 Each tree comes with a README saying exactly which commands turn it into an
 artifact and which machine can run them.
 
+## Backend sovereignty
+
+Tungsten does not have a backend. It has a contract, and a list of
+backends that satisfy it — so a project can start on Supabase's free
+tier today, move to Vortex when our servers are live, and never touch
+the canvas to do it.
+
+| Backend | Status | What it is |
+| --- | --- | --- |
+| Vortex | preview | Ours: `/v1/sql`, compiled row policies, realtime with replay, R2 storage |
+| Supabase | default | Launch backend: Postgres, GoTrue, Storage, channels, edge functions |
+| Custom / self-hosted | ready | The Node + SQLite service Tungsten itself generates |
+| Firebase, Appwrite, PocketBase | planned | Declared in the dropdown, honest about not being built |
+
+The middle layer is `src/backend/contract.ts`: `TungstenAuth`,
+`TungstenDb`, `TungstenRealtime`, `TungstenStorage`, `TungstenFunctions`
+and `TungstenSchema`. Filters are trees of plain objects, failures are
+sentences with a code attached, capabilities are declared up front so a
+block a backend cannot serve is greyed out rather than broken, and no
+adapter imports a vendor SDK — they speak HTTP and WebSocket through
+injected transports, which is also why every one of them is tested
+without a network.
+
+Schemas travel as a **Tungsten Schema blueprint**: one JSON document of
+tables, columns, references, buckets, functions and row-level security,
+where a policy is one of five words (`public`, `authenticated`, `owner`,
+`admin`, `nobody`) rather than a line of SQL. `parseBlueprint` validates
+whatever an AI hands back and refuses invented types, dangling
+references and unknown policy words; tables are private by default;
+`summariseBlueprint` produces the summary the approval gate shows before
+a single statement runs.
+
+The whole design, including where the backends genuinely differ and what
+is built next, is in [docs/BACKENDS.md](docs/BACKENDS.md).
+
 ## Extending Tungsten
 
 Four extension points, all read from the workspace you have open:
