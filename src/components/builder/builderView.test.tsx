@@ -405,6 +405,34 @@ describe('the preview, the database and the build', () => {
     expect(container.querySelector('.builder-node.selected .builder-node-title')?.textContent).toBe('Log')
   })
 
+  it('drafts tables from a description of the app', async () => {
+    click(tab('Data'))
+    type(container.querySelector('[aria-label="Describe the data"]') as HTMLInputElement, 'a blog with posts and comments')
+    click(container.querySelector('[aria-label="Draft the tables"]'))
+    await flushEffects()
+
+    const drawn = [...container.querySelectorAll<HTMLInputElement>('[aria-label$="name"]')]
+      .filter((input) => input.getAttribute('aria-label')?.startsWith('Table '))
+      .map((input) => input.value)
+    expect(drawn).toEqual(['posts', 'comments'])
+    // The migration is the proof it is a real schema and not a label.
+    expect(container.querySelector('.builder-migration')?.textContent).toContain('create table if not exists posts')
+    expect(container.querySelector('.builder-migration')?.textContent).toContain('post_id')
+    expect(notify.mock.calls.flat().join(' ')).toContain('Drew 2 tables')
+  })
+
+  it('leaves a drafted description out of the box once it has been used', () => {
+    click(tab('Data'))
+    const box = container.querySelector('[aria-label="Describe the data"]') as HTMLInputElement
+    const draft = container.querySelector<HTMLButtonElement>('[aria-label="Draft the tables"]')!
+    expect(draft.disabled).toBe(true)
+    type(box, 'tasks')
+    expect(draft.disabled).toBe(false)
+    click(draft)
+    expect(box.value).toBe('')
+    expect(draft.disabled).toBe(true)
+  })
+
   it('draws a table and shows the migration it will write', () => {
     click(tab('Data'))
     click(container.querySelector('.builder-schema header button'))

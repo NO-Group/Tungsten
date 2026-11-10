@@ -488,6 +488,24 @@ each compile to one of those routes, in every language — a block that
 worked on the web and turned into a comment on Android would be a trap
 rather than a feature.
 
+### Describe it and the tables appear
+
+The Data tab has a box above the tables. Type what the app is about —
+*“a blog with posts and comments”*, *“a shop with products, orders and
+reviews”* — press **Draft**, and the tables are drawn: `posts` with a
+title, a body, a published flag and a published-at, `comments` with a
+body and a `post_id` pointing at them.
+
+It is a vocabulary and one relation rule, run locally: about thirty
+entities people actually build apps around, each with the columns that
+entity almost always has. Same sentence, same tables, every time, with
+no network call and nothing to configure. A word it has never heard of
+still becomes a table — with a name and a notes column, and a remark
+saying it guessed — rather than being dropped. Mention accounts and it
+says so instead of drawing a `users` table, because the service already
+has one. Everything it draws is a draft you edit in the panel right
+underneath, and nothing you already drew is touched.
+
 The tables are the boxes you drew in the **Data** tab. Nothing outside that
 schema reaches SQL: table and column names are looked up in a generated
 map and every value is a bound parameter, so a field that is not a column

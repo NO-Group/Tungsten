@@ -489,6 +489,7 @@ export function BuilderView(props: BuilderViewProps) {
               <DataSchemaPanel
                 schema={builder.schema}
                 onAddTable={builder.addTable}
+                onDraft={builder.draftSchema}
                 onRenameTable={builder.renameTable}
                 onRemoveTable={builder.removeTable}
                 onAddColumn={builder.addColumn}

@@ -6,7 +6,8 @@
  * behind a button: the point of drawing a schema is seeing what you get.
  */
 
-import { Plus, Trash2 } from 'lucide-react'
+import { useState } from 'react'
+import { Plus, Sparkles, Trash2 } from 'lucide-react'
 
 import {
   checkSchema,
@@ -21,6 +22,8 @@ const COLUMN_TYPES: ColumnType[] = ['text', 'number', 'boolean', 'timestamp', 'j
 export type DataSchemaPanelProps = {
   schema: DataSchema
   onAddTable: () => void
+  /** Drafts tables from a description of the app. */
+  onDraft?: (description: string) => void
   onRenameTable: (index: number, name: string) => void
   onRemoveTable: (index: number) => void
   onAddColumn: (table: number) => void
@@ -29,8 +32,16 @@ export type DataSchemaPanelProps = {
 }
 
 export function DataSchemaPanel(props: DataSchemaPanelProps) {
-  const { schema } = props
+  const { schema, onDraft } = props
   const problems = checkSchema(schema)
+  const [description, setDescription] = useState('')
+
+  /** Drafts, then clears: the box is a question, not a document. */
+  function draft() {
+    if (!onDraft || !description.trim()) return
+    onDraft(description)
+    setDescription('')
+  }
 
   return (
     <section className="builder-schema">
@@ -39,6 +50,29 @@ export function DataSchemaPanel(props: DataSchemaPanelProps) {
         {/* Wrapped, not passed: onClick would hand the event in as the name. */}
         <button onClick={() => props.onAddTable()}><Plus size={12} /> Table</button>
       </header>
+
+      {/* The fastest way to a schema is describing the app, so it sits
+          above the tables rather than behind a menu. What it writes is a
+          draft: every table it draws is editable right below it. */}
+      {onDraft && (
+        <div className="builder-schema-draft">
+          <input
+            aria-label="Describe the data"
+            placeholder="A blog with posts and comments…"
+            value={description}
+            onChange={(event) => setDescription(event.target.value)}
+            onKeyDown={(event) => { if (event.key === 'Enter') draft() }}
+          />
+          <button
+            aria-label="Draft the tables"
+            title="Draft tables from that description"
+            onClick={() => draft()}
+            disabled={!description.trim()}
+          >
+            <Sparkles size={12} /> Draft
+          </button>
+        </div>
+      )}
 
       {!schema.tables.length && (
         <p className="builder-clean">

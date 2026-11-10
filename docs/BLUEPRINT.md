@@ -622,6 +622,21 @@ module, so what is asserted is the request the generated code actually
 builds: the URL, the method, the body, and the bearer token appearing on
 the call *after* the sign-in.
 
+The last gap was the first step. “The AI builds the backend” means
+nothing if the user still has to draw ten tables by hand before there is
+a backend to build, so `schemaPlanner.ts` turns a sentence into a
+schema. It is a vocabulary of about thirty entities and one relation
+rule, not a model: deterministic, local, instant, and testable in a way
+that “ask a model and hope” is not. The interesting decisions are the
+refusals — no invented join tables, no column inferred from an
+adjective, a verb list because English does not mark them, and a
+three-letter word accepted only when the description said it in the
+plural (“cars” is a thing being stored, “crm” is what they called the
+app). Unknown nouns still get a table and an admission rather than
+silence, and `applyPlan` never rewrites a table that already exists: a
+draft that clobbered ten minutes of work would be the last time anyone
+pressed the button.
+
 Then the three steps became one command. Build, start, point the preview
 at it: each is small, and remembering all three in order is exactly the
 kind of friction that stops people trying the thing. `builder.runServer`

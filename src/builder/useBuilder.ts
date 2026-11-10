@@ -48,6 +48,7 @@ import {
   type Toolchain,
 } from '../project/targets'
 import { EMPTY_SCHEMA, type Column, type DataSchema, type Table } from './dataSchema'
+import { applyPlan, describePlan, planSchema } from './schemaPlanner'
 import { previewHtml } from './previewRuntime'
 import { schemaFromGraph, type UiDocument } from './uiSchema'
 import { explainFailure, type Traceback } from './traceback'
@@ -263,6 +264,8 @@ export type BuilderState = {
   /** Where the preview sends its data, auth and storage calls. Empty = simulated. */
   backend: string
   setBackend: (url: string) => void
+  /** Drafts tables from a plain-English description of the app. */
+  draftSchema: (description: string) => void
   /** A line the preview logged. */
   appendLog: (text: string) => void
   clearLogs: () => void
@@ -920,6 +923,26 @@ export function useBuilder(host: BuilderHost): BuilderState {
     })
   }, [])
 
+  /**
+   * Drafts tables from a description and merges them in.
+   *
+   * The planner is deterministic and local, so this is a text box rather
+   * than a request: the user types what the app is about, the tables
+   * appear, and everything they already drew is left exactly as it was.
+   */
+  const draftSchema = useCallback((description: string) => {
+    const plan = planSchema(description)
+    let outcome = { added: [] as string[], skipped: [] as string[] }
+    setSchema((current) => {
+      const result = applyPlan(current, plan)
+      outcome = { added: result.added, skipped: result.skipped }
+      return result.schema
+    })
+    // The notes are the interesting half: what it assumed, and which
+    // words it had never heard of.
+    notify([describePlan(outcome.added, outcome.skipped), ...plan.notes].join(' '))
+  }, [notify])
+
   const renameTable = useCallback((index: number, name: string) => {
     setSchema((current) => ({
       tables: current.tables.map((table, position) => (position === index ? { ...table, name } : table)),
@@ -1123,6 +1146,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     setVariableInitial,
     removeVariable,
     addTable,
+    draftSchema,
     renameTable,
     removeTable,
     addColumn,

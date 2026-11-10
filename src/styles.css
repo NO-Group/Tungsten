@@ -1352,6 +1352,17 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .builder-preview-failure span { flex: 1; }
 .builder-preview-failure em { font-family: var(--mono); font-style: normal; font-size: 10px; color: var(--muted); }
 
+.builder-schema-draft { display: flex; gap: 6px; margin-bottom: 8px; }
+.builder-schema-draft input {
+  flex: 1; min-width: 0; padding: 3px 8px; font-size: 11px; color: var(--text);
+  background: var(--chrome-raised); border: 1px solid var(--border); border-radius: 4px;
+}
+.builder-schema-draft input::placeholder { color: var(--faint); }
+.builder-schema-draft button {
+  display: flex; align-items: center; gap: 4px; padding: 2px 8px; font-size: 10.5px;
+  color: var(--inverse); background: var(--accent); border: 0; border-radius: 4px; cursor: pointer;
+}
+.builder-schema-draft button:disabled { color: var(--muted); background: var(--chrome-raised); cursor: default; }
 .targets-actions { display: flex; gap: 4px; justify-content: flex-end; }
 .builder-backend {
   display: flex; align-items: center; gap: 8px; padding: 4px 10px;

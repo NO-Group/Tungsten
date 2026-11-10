@@ -179,7 +179,9 @@ export function performLocalAction(action: LocalAction, request: AiRequest): AiP
       answer: [
         'Tungsten writes the backend itself — ask the builder, not me, and you get working code instead of a sketch.',
         '',
-        'Run **Builder: Build the Backend Service** (or the Build button beside “Backend Service” in the Targets tab). It writes `server/` next to your other targets:',
+        'Do not have the tables yet? Type what the app is about into the box at the top of the Data tab — “a blog with posts and comments” — and press Draft. It draws the tables, and nothing you already drew is touched.',
+        '',
+        'Then run **Builder: Run the Backend Service**, which builds it, starts `node main.js` in a terminal and points the preview at it. **Build the Backend Service** does the first step alone, and writes `server/` next to your other targets:',
         '',
         '- `main.js` — one Node service, no dependencies, SQLite on disk. `node main.js`.',
         '- `schema.sql` — the tables you drew in the Data tab, plus users, sessions and files.',
