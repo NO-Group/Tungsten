@@ -39,6 +39,7 @@ import { iosFiles } from './targets/ios'
 import { desktopFiles, isDesktopKind } from './targets/desktop'
 import { flutterFiles } from './targets/flutter'
 import { tauriFiles } from './targets/tauri'
+import { DEFAULT_API_URL, serverFiles } from './targets/server'
 
 export const IR_VERSION = 1
 
@@ -212,7 +213,14 @@ export function buildIr(
  * platform at all: `node`, the local runner, which exists so a build can
  * be looked at without deploying it anywhere.
  */
-export type CompileTarget = TargetKind | 'node'
+/**
+ * What can be built.
+ *
+ * The seven platforms, plus two things that are not platforms: the local
+ * runner, which serves a built bundle, and the backend service every one
+ * of the platforms talks to.
+ */
+export type CompileTarget = TargetKind | 'node' | 'server'
 
 /**
  * The project a build is for, when the caller has not said.
@@ -230,7 +238,9 @@ export const DEFAULT_PROJECT: Project = defaultOrganization().projects[0]
  * overwrite another's `README.md`.
  */
 export function targetRoot(project: Project, target: CompileTarget): string {
-  const directory = target === 'node' ? 'runner' : targetInfo(target).directory
+  if (target === 'node') return `targets/${slug(project.name) || 'app'}/runner`
+  if (target === 'server') return `targets/${slug(project.name) || 'app'}/server`
+  const directory = targetInfo(target).directory
   return `targets/${slug(project.name) || 'app'}/${directory}`
 }
 
@@ -288,7 +298,7 @@ function webFiles(root: string, ir: Ir, ui: UiDocument, code: string, schema: Da
   const files: CompiledFile[] = [
     {
       path: `${root}/index.html`,
-      contents: previewHtml({ document: ui, code, screen: ir.home }),
+      contents: previewHtml({ document: ui, code, screen: ir.home, api: DEFAULT_API_URL }),
     },
     {
       path: `${root}/app.ts`,
@@ -411,7 +421,9 @@ export function compile({
     target,
     files,
     summary: `${files.length} file${files.length === 1 ? '' : 's'} for ${
-      target === 'node' ? 'the local runner' : targetInfo(target).label
+      target === 'node' ? 'the local runner'
+        : target === 'server' ? 'the backend service'
+        : targetInfo(target).label
     }${screens.length > 1 ? ` (${screens.length} screens)` : ''}: ${
       files.map((file) => file.path.split('/').pop()).join(', ')
     }`,
@@ -442,6 +454,7 @@ function filesFor({ target, root, ir, ui, code, schema, project }: EmitInput): C
   // Which emitter runs is the target *and* the toolchain chosen for it:
   // an Android build is Flutter or Kotlin depending on what the project
   // asked for, and both are first-class.
+  if (target === 'server') return at(serverFiles({ schema, project }))
   const toolchain = target === 'node' ? 'web' : toolchainFor(project, target)
 
   if (target === 'android') {
@@ -452,7 +465,7 @@ function filesFor({ target, root, ir, ui, code, schema, project }: EmitInput): C
   }
   if (isDesktopKind(target)) {
     const shell = {
-      html: previewHtml({ document: ui, code, screen: ir.home }),
+      html: previewHtml({ document: ui, code, screen: ir.home, api: DEFAULT_API_URL }),
       code,
       schema: uiSchemaJson(ir),
       project,

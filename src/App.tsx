@@ -47,6 +47,7 @@ import {
   Sparkles,
   Plus,
   Rocket,
+  Server,
   RefreshCw,
   RotateCcw,
   Search,
@@ -820,7 +821,10 @@ export default function App({ onReady }: AppProps = {}) {
       return
     }
     const written: Array<{ path: string; contents: string }> = []
-    for (const kind of targets) {
+    // The backend comes too. Every target's runtime calls it, so a build
+    // of "everything" that left it out would produce six apps pointing at
+    // a service that does not exist.
+    for (const kind of [...targets, 'server' as const]) {
       const result = builder.build(kind)
       if (!result.ok) {
         notify(result.reason)
@@ -1195,6 +1199,7 @@ export default function App({ onReady }: AppProps = {}) {
       { id: 'builder.buildMacos', label: 'Builder: Build the macOS Desktop Target', detail: 'An Electron shell and a universal .dmg config', icon: Hammer, action: () => buildBuilderTarget('macos') },
       { id: 'builder.buildLinux', label: 'Builder: Build the Linux Desktop Target', detail: 'An Electron shell, AppImage and .deb', icon: Hammer, action: () => buildBuilderTarget('linux') },
       { id: 'builder.buildAll', label: 'Builder: Build Every Target in the Project', detail: builder.project.targets.length ? `${builder.project.name}: ${describeTargets(builder.project)}` : 'This project has no targets yet', icon: Hammer, action: () => buildEveryTarget() },
+      { id: 'builder.buildServer', label: 'Builder: Build the Backend Service', detail: 'Node and SQLite: accounts, the tables you drew, file storage', icon: Server, action: () => buildBuilderTarget('server') },
       { id: 'builder.buildRunner', label: 'Builder: Build the Local Runner', detail: 'A dependency-free server for the built bundle', icon: Rocket, action: () => buildBuilderTarget('node') },
       { id: 'ai.ask', label: 'Assistant: Ask About the Selection', detail: ai.open ? 'The assistant panel is open' : 'Opens the assistant panel', icon: Sparkles, when: 'editorIsOpen', action: () => { ai.setOpen(true) } },
       { id: 'ai.advisor', label: 'Assistant: Advisor Mode', detail: 'Answers only — never edits a buffer', icon: Sparkles, action: () => { ai.setMode('advisor'); ai.setOpen(true) } },

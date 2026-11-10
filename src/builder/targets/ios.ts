@@ -13,6 +13,7 @@ import { uiThemeSwift } from '../uiTokens'
 import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile'
 import { ARITHMETIC, COMPARISONS, isEquality, isTextual, operatorOf } from './expressions'
 import { appIdFor, slug, type Project } from '../../project/targets'
+import { DEFAULT_API_URL } from './server'
 
 function handlerName(nodeId: string): string {
   return `handle_${nodeId.replace(/[^A-Za-z0-9_]/g, '_')}`
@@ -434,6 +435,9 @@ ${handlers.join('\n\n') || '// No handlers yet.'}
 export function iosFiles(ir: Ir, project: Project): CompiledFile[] {
   const identifier = appIdFor(project, 'ios')
   const name = slug(project.name) || 'app'
+  // The simulator shares the Mac's loopback, so the backend is simply
+  // localhost here -- unlike Android, which needs 10.0.2.2.
+  const baseUrl = DEFAULT_API_URL
 
   return [
     {
@@ -458,9 +462,11 @@ struct GeneratedApp: App {
       path: 'Sources/Runtime.swift',
       contents: `// The services a generated app talks to.
 //
-// Stubs on purpose: the builder knows the shape of the calls your blocks
-// make, not which backend you mean to use. Replace the bodies and keep the
-// signatures.
+// Not stubs: these call the backend the builder writes alongside this app.
+// Build the Backend Service target, run \`node main.js\` in it, and sign-up,
+// the drawn tables and file uploads all work from here. Foundation has
+// everything needed -- URLSession and JSONSerialization -- so there is no
+// package to add.
 
 import Foundation
 
@@ -483,41 +489,141 @@ func toNumber(_ value: Any?) -> Double {
     }
 }
 
+/// Where the backend lives.
+///
+/// The simulator shares the Mac's loopback, so localhost is the machine
+/// running \`node main.js\`. On a device, put the Mac's address here.
+enum Backend {
+    nonisolated(unsafe) static var baseUrl = "${baseUrl}"
+    /// Set by the sign-in blocks; sent on every later request.
+    nonisolated(unsafe) static var token: String?
+}
+
+struct BackendError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+/// One HTTP call, as JSON in and JSON out.
+private func call(
+    _ path: String,
+    method: String = "GET",
+    body: [String: Any]? = nil,
+    bytes: Data? = nil,
+    headers: [String: String] = [:]
+) async throws -> [String: Any] {
+    guard let url = URL(string: Backend.baseUrl + path) else {
+        throw BackendError(message: "Bad backend URL: " + Backend.baseUrl + path)
+    }
+    var request = URLRequest(url: url)
+    request.httpMethod = method
+    request.timeoutInterval = 30
+    request.setValue("application/json", forHTTPHeaderField: "accept")
+    if let token = Backend.token { request.setValue("Bearer " + token, forHTTPHeaderField: "authorization") }
+    for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+
+    if let bytes {
+        request.httpBody = bytes
+        request.setValue("application/octet-stream", forHTTPHeaderField: "content-type")
+    } else if let body {
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+    }
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+    let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
+    if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+        // The service answers errors as {"error": "..."}, so what the user
+        // sees is the sentence the backend chose, not a status code.
+        throw BackendError(message: parsed["error"] as? String ?? "Request failed: \\(http.statusCode)")
+    }
+    return parsed
+}
+
 enum Api {
-    static func select(_ table: String) async throws -> [[String: Any]] {
-        print("select from \\(table)")
-        return []
+    /// Rows of a table you drew in the schema editor.
+    static func select(_ table: String, where filters: [String: Any] = [:]) async throws -> [[String: Any]] {
+        var path = "/data/" + table
+        if !filters.isEmpty {
+            let pairs = filters.map { key, value in
+                let encoded = toText(value).addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+                return key + "=" + encoded
+            }
+            path += "?" + pairs.joined(separator: "&")
+        }
+        return try await call(path)["rows"] as? [[String: Any]] ?? []
     }
 
     static func insert(_ table: String, _ row: Any?) async throws -> [String: Any] {
-        print("insert into \\(table): \\(String(describing: row))")
-        return [:]
+        let body = row as? [String: Any] ?? ["value": toText(row)]
+        return try await call("/data/" + table, method: "POST", body: body)["row"] as? [String: Any] ?? [:]
     }
 
+    /// Anything else, including URLs that are not this backend.
     static func request(_ url: String, method: String) async throws -> String {
-        print("\\(method) \\(url)")
-        return ""
+        if url.hasPrefix("/") {
+            let reply = try await call(url, method: method)
+            let data = try JSONSerialization.data(withJSONObject: reply)
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+        guard let target = URL(string: url) else { return "" }
+        var request = URLRequest(url: target)
+        request.httpMethod = method
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return String(data: data, encoding: .utf8) ?? ""
     }
 }
 
 enum Auth {
     static func signUp(email: String, password: String) async throws -> [String: Any] {
-        print("sign up \\(email) (\\(password.count) characters)")
-        return ["email": email]
+        let reply = try await call("/auth/sign-up", method: "POST", body: ["email": email, "password": password])
+        if let token = reply["token"] as? String { Backend.token = token }
+        return reply["user"] as? [String: Any] ?? reply
     }
 
+    static func signIn(email: String, password: String) async throws -> [String: Any] {
+        let reply = try await call("/auth/sign-in", method: "POST", body: ["email": email, "password": password])
+        if let token = reply["token"] as? String { Backend.token = token }
+        return reply["user"] as? [String: Any] ?? reply
+    }
+
+    /// Starts a provider round trip. The reply carries the URL to open --
+    /// opening it is the app's call, not the runtime's.
     static func oauth(_ provider: String) async throws -> [String: Any] {
-        print("oauth with \\(provider)")
-        return ["provider": provider]
+        try await call("/auth/oauth", method: "POST", body: ["provider": provider])
     }
 
-    static func session() async throws -> [String: Any]? { nil }
+    static func session() async throws -> [String: Any]? {
+        guard Backend.token != nil else { return nil }
+        return try await call("/auth/session")["user"] as? [String: Any]
+    }
+
+    static func signOut() async throws {
+        if Backend.token != nil { _ = try await call("/auth/sign-out", method: "POST") }
+        Backend.token = nil
+    }
 }
 
 enum Storage {
+    /// Bytes in, a URL out. Give it Data, a file URL, or text.
     static func upload(bucket: String, file: Any?) async throws -> String {
-        print("upload to \\(bucket): \\(String(describing: file))")
-        return ""
+        var bytes = Data()
+        var name = "upload"
+        switch file {
+        case let data as Data: bytes = data
+        case let url as URL:
+            bytes = (try? Data(contentsOf: url)) ?? Data()
+            name = url.lastPathComponent
+        case .none: break
+        default: bytes = Data(toText(file).utf8)
+        }
+        let reply = try await call(
+            "/storage/" + bucket,
+            method: "POST",
+            bytes: bytes,
+            headers: ["x-file-name": name]
+        )
+        return reply["url"] as? String ?? ""
     }
 }
 `,
@@ -540,6 +646,15 @@ enum Storage {
     <dict/>
     <key>UIUserInterfaceStyle</key>
     <string>Dark</string>
+    <!-- The generated backend runs on plain HTTP while it is on your
+         machine, and App Transport Security blocks that by default. This
+         exception covers local addresses only; delete it once the backend
+         is on a real host with TLS. -->
+    <key>NSAppTransportSecurity</key>
+    <dict>
+        <key>NSAllowsLocalNetworking</key>
+        <true/>
+    </dict>
 </dict>
 </plist>
 `,
@@ -585,7 +700,9 @@ open ${name}.xcodeproj
 
 - \`Sources/ContentView.swift\` is the interface and the handlers your blocks
   became.
-- \`Sources/Runtime.swift\` holds the backend stubs.
+- \`Sources/Runtime.swift\` calls the generated backend. Build the Backend
+  Service target, run \`node main.js\` in it, and the auth, table and upload
+  blocks work against it.
 
 Bundle identifier \`${identifier}\`, version ${project.version}, both from the
 project in the Targets panel. Xcode is required, and so is macOS; that is

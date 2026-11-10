@@ -426,38 +426,130 @@ function bindClick(screen, target, handler) {
   })
 }
 
+/**
+ * Where the backend is, if there is one.
+ *
+ * The same four services answer twice over. Inside the IDE there is no
+ * server and must not be one -- a preview that wrote to a database would
+ * be a preview that could ruin your afternoon -- so the calls are
+ * simulated and say so in the log. In a build, API_BASE points at the
+ * generated backend and exactly the same blocks do the real thing.
+ *
+ * window.TUNGSTEN_API wins over the baked-in address, so a built app can
+ * be pointed at staging by one line in the page rather than a rebuild.
+ */
+const BACKEND = (typeof window !== 'undefined' && window.TUNGSTEN_API) || API_BASE || ''
+
+let AUTH_TOKEN = null
+
+async function backend(path, options) {
+  const settings = options || {}
+  const headers = { accept: 'application/json' }
+  if (AUTH_TOKEN) headers.authorization = 'Bearer ' + AUTH_TOKEN
+  if (settings.json !== undefined) headers['content-type'] = 'application/json'
+  Object.assign(headers, settings.headers || {})
+
+  const response = await fetch(BACKEND + path, {
+    method: settings.method || 'GET',
+    headers,
+    body: settings.json !== undefined ? JSON.stringify(settings.json) : settings.body,
+  })
+  const text = await response.text()
+  let parsed = {}
+  try { parsed = text ? JSON.parse(text) : {} } catch { parsed = { body: text } }
+  if (!response.ok) {
+    // The service answers errors as {error}, so what reaches the user is
+    // the sentence it chose rather than a status code.
+    throw new Error(parsed.error || ('Request failed: ' + response.status))
+  }
+  return parsed
+}
+
 // Seeded, obviously fake, and honest about it: a preview must not imply that
 // it reached a real database.
 const seeds = { users: [{ id: 1, email: 'ada@example.com' }, { id: 2, email: 'grace@example.com' }] }
 
 const db = {
   select: async (table, where) => {
-    log('db.select("' + table + '") — preview data' + (where ? ' with a filter' : ''))
-    return seeds[table] ? seeds[table].slice() : []
+    if (!BACKEND) {
+      log('db.select("' + table + '") — preview data' + (where ? ' with a filter' : ''))
+      return seeds[table] ? seeds[table].slice() : []
+    }
+    const query = where ? '?' + new URLSearchParams(where).toString() : ''
+    return (await backend('/data/' + table + query)).rows || []
   },
   insert: async (table, row) => {
-    log('db.insert("' + table + '") — preview only, nothing was written')
-    return { id: Math.floor(Math.random() * 1000), ...row }
+    if (!BACKEND) {
+      log('db.insert("' + table + '") — preview only, nothing was written')
+      return { id: Math.floor(Math.random() * 1000), ...row }
+    }
+    return (await backend('/data/' + table, { method: 'POST', json: row || {} })).row || {}
   },
 }
 
 const http = {
   request: async ({ url, method }) => {
-    log((method || 'GET') + ' ' + url + ' — stubbed in the preview, no request left the sandbox')
-    return { ok: true, url, status: 200, body: null }
+    if (!BACKEND) {
+      log((method || 'GET') + ' ' + url + ' — stubbed in the preview, no request left the sandbox')
+      return { ok: true, url, status: 200, body: null }
+    }
+    const response = await fetch(url, { method: method || 'GET' })
+    const body = await response.text()
+    return { ok: response.ok, url, status: response.status, body }
   },
 }
 
 const auth = {
-  signUp: async (email) => { log('auth.signUp("' + email + '") — preview account'); return { id: 'preview-user', email } },
-  oauth: async (provider) => { log('auth.oauth("' + provider + '") — preview sign-in'); return { id: 'preview-user', provider } },
-  session: async () => ({ id: 'preview-user', email: 'ada@example.com' }),
+  signUp: async (email, password) => {
+    if (!BACKEND) {
+      log('auth.signUp("' + email + '") — preview account')
+      return { id: 'preview-user', email }
+    }
+    const reply = await backend('/auth/sign-up', { method: 'POST', json: { email, password } })
+    if (reply.token) AUTH_TOKEN = reply.token
+    return reply.user || reply
+  },
+  signIn: async (email, password) => {
+    if (!BACKEND) {
+      log('auth.signIn("' + email + '") — preview account')
+      return { id: 'preview-user', email }
+    }
+    const reply = await backend('/auth/sign-in', { method: 'POST', json: { email, password } })
+    if (reply.token) AUTH_TOKEN = reply.token
+    return reply.user || reply
+  },
+  oauth: async (provider) => {
+    if (!BACKEND) {
+      log('auth.oauth("' + provider + '") — preview sign-in')
+      return { id: 'preview-user', provider }
+    }
+    // The backend hands back the provider's authorize URL; going there is
+    // the app's business, not the runtime's.
+    return backend('/auth/oauth', { method: 'POST', json: { provider } })
+  },
+  session: async () => {
+    if (!BACKEND) return { id: 'preview-user', email: 'ada@example.com' }
+    if (!AUTH_TOKEN) return {}
+    return (await backend('/auth/session')).user || {}
+  },
+  signOut: async () => {
+    if (BACKEND && AUTH_TOKEN) await backend('/auth/sign-out', { method: 'POST' })
+    AUTH_TOKEN = null
+  },
 }
 
 const storage = {
-  upload: async (bucket) => {
-    log('storage.upload("' + bucket + '") — preview only')
-    return 'https://preview.local/' + bucket + '/file'
+  upload: async (bucket, file) => {
+    if (!BACKEND) {
+      log('storage.upload("' + bucket + '") — preview only')
+      return 'https://preview.local/' + bucket + '/file'
+    }
+    const reply = await backend('/storage/' + bucket, {
+      method: 'POST',
+      body: file instanceof Blob ? file : new Blob([String(file == null ? '' : file)]),
+      headers: { 'x-file-name': (file && file.name) || 'upload' },
+    })
+    return reply.url || ''
   },
 }
 
@@ -510,6 +602,16 @@ export type PreviewOptions = {
    * render would disagree about what is on the page.
    */
   screen?: string
+  /**
+   * The backend this document should talk to.
+   *
+   * Empty inside the IDE, where there is no server and must not be one:
+   * the data, auth and storage blocks simulate themselves and say so in
+   * the log. A built target passes the generated service's address, and
+   * the same blocks make real requests. `window.TUNGSTEN_API`, if the
+   * page sets one, wins over whatever is baked in here.
+   */
+  api?: string
 }
 
 /**
@@ -519,7 +621,7 @@ export type PreviewOptions = {
  * network and no same-origin access, so there is nothing for it to fetch and
  * nothing it can reach if it tried.
  */
-export function previewHtml({ document: ui, code, screen = 'home' }: PreviewOptions): string {
+export function previewHtml({ document: ui, code, screen = 'home', api = '' }: PreviewOptions): string {
   const body = [...PREAMBLE, ...code.split('\n')].join('\n')
 
   return `<!doctype html>
@@ -537,6 +639,7 @@ export function previewHtml({ document: ui, code, screen = 'home' }: PreviewOpti
     <script>
       const PREAMBLE_LINES = ${PREVIEW_PREAMBLE_LINES};
       const INITIAL_SCREEN = ${JSON.stringify(screen)};
+      const API_BASE = ${JSON.stringify(api)};
       ${RUNTIME}
       try {
         const program = new Function(

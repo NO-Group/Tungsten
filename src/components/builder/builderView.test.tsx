@@ -413,8 +413,9 @@ describe('the preview, the database and the build', () => {
     const build = [...container.querySelectorAll('.builder-toolbar button')]
       .find((button) => button.textContent?.includes('Build')) as HTMLButtonElement
     expect(build.disabled).toBe(false)
-    // The project's own targets, then the two that are not platforms: the
-    // web bundle every project can produce, and the local runner.
+    // The project's own targets, then the three that are not platforms:
+    // the web bundle every project can produce, the backend service they
+    // all call, and the local runner.
     expect([...container.querySelectorAll('[aria-label="Compile target"] option')].map((option) => option.textContent))
       .toEqual([
         'Android App Target',
@@ -424,6 +425,7 @@ describe('the preview, the database and the build', () => {
         'macOS Desktop Target',
         'Linux Desktop Target',
         'Web Target',
+        'Backend service',
         'Local runner',
       ])
   })

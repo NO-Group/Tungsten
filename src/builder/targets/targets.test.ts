@@ -686,3 +686,68 @@ describe('toolchains, compiled', () => {
     expect(at(run('android'), 'README.md')).toContain('delete')
   })
 })
+
+/**
+ * The stubs are gone.
+ *
+ * Every target used to ship an `Api`/`Auth`/`Storage` that printed what it
+ * would have done. They now call the backend the Backend Service target
+ * writes, which is only worth anything if all five runtimes agree on the
+ * same URLs -- so this checks them against each other, not one at a time.
+ */
+describe('the generated runtimes call the generated backend', () => {
+  const kotlin = () => at(run('android', NATIVE), 'Runtime.kt')
+  const swift = () => at(run('ios', NATIVE), 'Runtime.swift')
+  const dart = () => at(run('mobile'), 'runtime.dart')
+  const web = () => at(run('web'), 'index.html')
+
+  it('no longer prints instead of asking', () => {
+    expect(kotlin()).not.toContain('println("select from "')
+    expect(swift()).not.toContain('print("select from')
+    expect(dart()).not.toContain("debugPrint('select")
+  })
+
+  it('agrees on every route', () => {
+    for (const source of [kotlin(), swift(), dart(), web()]) {
+      expect(source).toContain('/auth/sign-up')
+      expect(source).toContain('/auth/session')
+      expect(source).toContain('/auth/oauth')
+      expect(source).toContain('/data/')
+      expect(source).toContain('/storage/')
+    }
+  })
+
+  it('sends the session as a bearer token once there is one', () => {
+    expect(kotlin()).toContain('"Bearer " + it')
+    expect(swift()).toContain('"Bearer " + token')
+    expect(dart()).toContain("'Bearer ' + token")
+    expect(web()).toContain("'Bearer ' + AUTH_TOKEN")
+  })
+
+  it('knows that an emulator cannot see localhost', () => {
+    // 10.0.2.2 is the host machine from inside the Android emulator, and
+    // getting this wrong is the most common first-run failure there.
+    expect(kotlin()).toContain('http://10.0.2.2:8787')
+    expect(dart()).toContain('http://10.0.2.2:8787')
+    expect(swift()).toContain('http://localhost:8787')
+  })
+
+  it('asks for the permissions plain HTTP to a local service needs', () => {
+    expect(at(run('android', NATIVE), 'AndroidManifest.xml')).toContain('android:usesCleartextTraffic="true"')
+    expect(at(run('ios', NATIVE), 'Info.plist')).toContain('NSAllowsLocalNetworking')
+  })
+
+  it('leaves the in-IDE preview talking to nobody', async () => {
+    const { previewHtml } = await import('../previewRuntime')
+    const preview = previewHtml({ document: { components: [] }, code: '' })
+    expect(preview).toContain('const API_BASE = "";')
+    expect(web()).toContain('const API_BASE = "http://localhost:8787";')
+  })
+
+  it('surfaces the backend\u2019s own words when a call fails', () => {
+    for (const source of [kotlin(), swift(), dart(), web()]) {
+      expect(source).toContain('error')
+      expect(source).toMatch(/Request failed/)
+    }
+  })
+})

@@ -52,15 +52,17 @@ export type BuilderViewProps = {
  * What the toolbar's quick-build menu offers.
  *
  * The project's own targets come first -- those are what this app ships
- * to -- followed by the two that are not platforms: the web bundle, which
- * every project can produce, and the local runner for looking at a build
- * without deploying it. The full list, with identifiers and per-target
- * build buttons, is in the Targets tab.
+ * to -- followed by the three that are not platforms: the web bundle,
+ * which every project can produce, the backend service all of them call,
+ * and the local runner for looking at a build without deploying it. The
+ * full list, with identifiers and per-target build buttons, is in the
+ * Targets tab.
  */
 function quickTargets(project: Project): Array<{ id: CompileTarget; label: string }> {
   return [
     ...project.targets.map((kind) => ({ id: kind as CompileTarget, label: targetInfo(kind).label })),
     ...(project.targets.includes('web') ? [] : [{ id: 'web' as CompileTarget, label: 'Web Target' }]),
+    { id: 'server' as CompileTarget, label: 'Backend service' },
     { id: 'node' as CompileTarget, label: 'Local runner' },
   ]
 }

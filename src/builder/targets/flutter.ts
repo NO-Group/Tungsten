@@ -22,6 +22,10 @@ import type { CompiledFile, Ir, IrStatement, IrValue } from '../compile'
 import { flattenComponents, headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeDart } from '../uiTokens'
 import { ARITHMETIC, COMPARISONS, isEquality, isTextual, operatorOf } from './expressions'
+import { DEFAULT_API_PORT, DEFAULT_API_URL } from './server'
+
+/** The host machine, as seen from an Android emulator. */
+const androidUrl = `http://10.0.2.2:${DEFAULT_API_PORT}`
 
 /** The platforms Flutter can be chosen for. */
 export type FlutterKind = Extract<TargetKind, 'android' | 'ios' | 'mobile'>
@@ -414,8 +418,15 @@ ${handlers.join('\n\n')}
 `,
   }, {
     path: `${root}/lib/runtime.dart`,
-    contents: `// The three services the generated handlers call. Point them at your
-// backend; nothing above this line needs to change when you do.
+    contents: `// The services a generated app talks to.
+//
+// Not stubs: these call the backend the builder writes alongside this app.
+// Build the Backend Service target, run \`node main.js\` in it, and sign-up,
+// the drawn tables and file uploads all work from here. Only dart:io and
+// dart:convert are used, so the pubspec stays empty.
+
+import 'dart:convert';
+import 'dart:io';
 
 /// Values out of a field map have no static type, so the two conversions
 /// every generated comparison needs live here. Equality compares text and
@@ -429,26 +440,155 @@ double toNumber(Object? value) {
   return double.tryParse(value?.toString() ?? '') ?? 0;
 }
 
+/// Where the backend lives.
+///
+/// 10.0.2.2 is the host machine as seen from an Android emulator; an iOS
+/// simulator shares the Mac's loopback and wants localhost. One line to
+/// change when you deploy -- the address appears nowhere else.
+class Backend {
+  static String baseUrl = Platform.isAndroid
+      ? '${androidUrl}'
+      : '${DEFAULT_API_URL}';
+
+  /// Set by the sign-in blocks; sent on every later request.
+  static String? token;
+}
+
+class BackendException implements Exception {
+  BackendException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+final _client = HttpClient();
+
+/// One HTTP call, as JSON in and JSON out.
+Future<Map<String, dynamic>> _call(
+  String path, {
+  String method = 'GET',
+  Object? body,
+  List<int>? bytes,
+  Map<String, String> headers = const {},
+}) async {
+  final request = await _client.openUrl(method, Uri.parse(Backend.baseUrl + path));
+  request.headers.set('accept', 'application/json');
+  final token = Backend.token;
+  if (token != null) request.headers.set('authorization', 'Bearer ' + token);
+  headers.forEach(request.headers.set);
+
+  if (bytes != null) {
+    request.headers.contentType = ContentType('application', 'octet-stream');
+    request.add(bytes);
+  } else if (body != null) {
+    request.headers.contentType = ContentType('application', 'json', charset: 'utf-8');
+    request.add(utf8.encode(jsonEncode(body)));
+  }
+
+  final response = await request.close();
+  final text = await response.transform(utf8.decoder).join();
+  final parsed = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
+  final map = parsed is Map<String, dynamic> ? parsed : <String, dynamic>{};
+  if (response.statusCode >= 400) {
+    // The service answers errors as {"error": "..."}, so the user sees the
+    // sentence the backend chose rather than a status code.
+    throw BackendException(toText(map['error']).isEmpty
+        ? 'Request failed: ' + response.statusCode.toString()
+        : toText(map['error']));
+  }
+  return map;
+}
+
 class Api {
-  Future<List<Map<String, dynamic>>> select(String table, [Map<String, dynamic>? where]) async => [];
-  Future<Map<String, dynamic>> insert(String table, Object? row) async => {'table': table};
-  Future<Map<String, dynamic>> request(String url, String method) async => {'ok': true};
+  /// Rows of a table you drew in the schema editor.
+  Future<List<Map<String, dynamic>>> select(String table, [Map<String, dynamic>? where]) async {
+    var path = '/data/' + table;
+    if (where != null && where.isNotEmpty) {
+      path += '?' + where.entries
+          .map((entry) => Uri.encodeQueryComponent(entry.key) + '=' + Uri.encodeQueryComponent(toText(entry.value)))
+          .join('&');
+    }
+    final rows = (await _call(path))['rows'];
+    return rows is List ? rows.whereType<Map<String, dynamic>>().toList() : <Map<String, dynamic>>[];
+  }
+
+  Future<Map<String, dynamic>> insert(String table, Object? row) async {
+    final body = row is Map ? Map<String, dynamic>.from(row) : {'value': toText(row)};
+    final reply = await _call('/data/' + table, method: 'POST', body: body);
+    final inserted = reply['row'];
+    return inserted is Map<String, dynamic> ? inserted : <String, dynamic>{};
+  }
+
+  /// Anything else, including URLs that are not this backend.
+  Future<Map<String, dynamic>> request(String url, String method) async {
+    if (url.startsWith('/')) return _call(url, method: method);
+    final outgoing = await _client.openUrl(method, Uri.parse(url));
+    final response = await outgoing.close();
+    final text = await response.transform(utf8.decoder).join();
+    final parsed = text.isEmpty ? null : jsonDecode(text);
+    return parsed is Map<String, dynamic> ? parsed : {'body': text};
+  }
 }
 
 class Auth {
-  Future<Map<String, dynamic>> signUp(String email, String password) async => {'email': email};
-  Future<Map<String, dynamic>> oauth(String provider) async => {'provider': provider};
-  Future<Map<String, dynamic>> session() async => {};
+  Future<Map<String, dynamic>> signUp(String email, String password) async {
+    final reply = await _call('/auth/sign-up', method: 'POST', body: {'email': email, 'password': password});
+    if (reply['token'] is String) Backend.token = reply['token'] as String;
+    final user = reply['user'];
+    return user is Map<String, dynamic> ? user : reply;
+  }
+
+  Future<Map<String, dynamic>> signIn(String email, String password) async {
+    final reply = await _call('/auth/sign-in', method: 'POST', body: {'email': email, 'password': password});
+    if (reply['token'] is String) Backend.token = reply['token'] as String;
+    final user = reply['user'];
+    return user is Map<String, dynamic> ? user : reply;
+  }
+
+  /// Starts a provider round trip. The reply carries the URL to open; the
+  /// app decides whether that is a tab, a web view or something else.
+  Future<Map<String, dynamic>> oauth(String provider) =>
+      _call('/auth/oauth', method: 'POST', body: {'provider': provider});
+
+  Future<Map<String, dynamic>> session() async {
+    if (Backend.token == null) return {};
+    final user = (await _call('/auth/session'))['user'];
+    return user is Map<String, dynamic> ? user : {};
+  }
+
+  Future<void> signOut() async {
+    if (Backend.token != null) await _call('/auth/sign-out', method: 'POST');
+    Backend.token = null;
+  }
 }
 
 class Storage {
-  Future<String> upload(String bucket, Object? file) async => 'https://example.com/' + bucket;
+  /// Bytes in, a URL out. Give it a File, a list of bytes, or text.
+  Future<String> upload(String bucket, Object? file) async {
+    var name = 'upload';
+    List<int> bytes;
+    if (file is File) {
+      name = file.uri.pathSegments.last;
+      bytes = await file.readAsBytes();
+    } else if (file is List<int>) {
+      bytes = file;
+    } else {
+      bytes = utf8.encode(toText(file));
+    }
+    final reply = await _call(
+      '/storage/' + bucket,
+      method: 'POST',
+      bytes: bytes,
+      headers: {'x-file-name': name},
+    );
+    return toText(reply['url']);
+  }
 }
 
 /// Opening a link.
 ///
-/// A stub like the services above. Add url_launcher to the pubspec and the
-/// body becomes launchUrl(Uri.parse(url)) -- not done for you,
+/// Still a stub, and the only one left. Add url_launcher to the pubspec
+/// and the body becomes launchUrl(Uri.parse(url)) -- not done for you,
 /// because that package needs per-platform set-up this generator cannot
 /// perform, and a link that silently did nothing would be worse than one
 /// that says what it would have opened.

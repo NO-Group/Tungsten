@@ -17,6 +17,16 @@ import { uiThemeKotlin } from '../uiTokens'
 import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile'
 import { ARITHMETIC, COMPARISONS, isEquality, isTextual, operatorOf } from './expressions'
 import { appIdFor, type Project } from '../../project/targets'
+import { DEFAULT_API_PORT } from './server'
+
+/**
+ * The backend, as seen from an Android emulator.
+ *
+ * 10.0.2.2 is the loopback of the machine running the emulator; the
+ * phone's own localhost has nothing listening on it. Getting this wrong
+ * is the single most common reason a first run shows an empty list.
+ */
+const ANDROID_API_URL = `http://10.0.2.2:${DEFAULT_API_PORT}`
 
 /** `com.acme.timer` → `com/acme/timer`, where Gradle expects the sources. */
 export function packagePath(identifier: string): string {
@@ -251,6 +261,15 @@ function mainActivity(ir: Ir, project: Project, identifier: string): string {
 
 package ${identifier}
 
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
@@ -446,14 +465,15 @@ ${handlers.join('\n\n') || '// No handlers yet.'}
 }
 
 /** The stubs the handlers call, kept apart so they are easy to replace. */
-function runtime(identifier: string): string {
+function runtime(identifier: string, baseUrl: string): string {
   return `// The services a generated app talks to.
 //
-// These are stubs on purpose. The builder knows the *shape* of the calls
-// your blocks make -- select, insert, request, signUp -- but not which
-// backend you intend to use, and guessing would produce an app that
-// pretends to work. Replace the bodies; leave the signatures, and the
-// generated handlers keep compiling.
+// These are not stubs. They call the backend the builder writes alongside
+// this app -- build the Backend Service target, run \`node main.js\` in it,
+// and sign-up, the drawn tables and file uploads all work from here.
+//
+// JSON is handled with org.json, which Android ships: a generated app
+// should not need a dependency to parse its own backend's replies.
 
 package ${identifier}
 
@@ -471,41 +491,161 @@ fun toNumber(value: Any?): Double = when (value) {
     else -> value?.toString()?.toDoubleOrNull() ?: 0.0
 }
 
+/**
+ * Where the backend lives.
+ *
+ * 10.0.2.2 is the host machine as seen from the Android emulator;
+ * localhost there is the phone itself, which is running nothing. Change
+ * this one line when you deploy -- it is the only place the address
+ * appears.
+ */
+object Backend {
+    var baseUrl: String = "${baseUrl}"
+    /** Set by the sign-in blocks; sent on every later request. */
+    var token: String? = null
+}
+
+/** One HTTP call, off the main thread, as JSON in and JSON out. */
+private suspend fun call(
+    path: String,
+    method: String = "GET",
+    body: JSONObject? = null,
+    bytes: ByteArray? = null,
+    contentType: String = "application/json",
+    extraHeaders: Map<String, String> = emptyMap(),
+): String = withContext(Dispatchers.IO) {
+    val connection = URL(Backend.baseUrl + path).openConnection() as HttpURLConnection
+    connection.requestMethod = method
+    connection.connectTimeout = 10_000
+    connection.readTimeout = 30_000
+    connection.setRequestProperty("accept", "application/json")
+    Backend.token?.let { connection.setRequestProperty("authorization", "Bearer " + it) }
+    for ((key, value) in extraHeaders) connection.setRequestProperty(key, value)
+
+    val payload = bytes ?: body?.toString()?.toByteArray()
+    if (payload != null) {
+        connection.doOutput = true
+        connection.setRequestProperty("content-type", contentType)
+        connection.outputStream.use { it.write(payload) }
+    }
+
+    val stream = if (connection.responseCode >= 400) connection.errorStream else connection.inputStream
+    val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+    connection.disconnect()
+    if (connection.responseCode >= 400) {
+        // The service answers errors as {"error": "..."}, so the message a
+        // user sees is the one the backend chose, not a status code.
+        val message = runCatching { JSONObject(text).optString("error") }.getOrNull()
+        throw RuntimeException(if (message.isNullOrBlank()) "Request failed: " + connection.responseCode else message)
+    }
+    text
+}
+
+/** org.json values, as the plain Kotlin the generated handlers expect. */
+private fun unwrap(value: Any?): Any? = when (value) {
+    JSONObject.NULL, null -> null
+    is JSONObject -> value.keys().asSequence().associateWith { unwrap(value.get(it)) }
+    is JSONArray -> (0 until value.length()).map { unwrap(value.get(it)) }
+    else -> value
+}
+
+private fun asMap(text: String): Map<String, Any?> {
+    if (text.isBlank()) return emptyMap()
+    @Suppress("UNCHECKED_CAST")
+    return (unwrap(JSONObject(text)) as? Map<String, Any?>) ?: emptyMap()
+}
+
+private fun encode(value: Any?): String = URLEncoder.encode(toText(value), "UTF-8")
+
 object Api {
-    suspend fun select(table: String): List<Map<String, Any?>> {
-        println("select from " + table)
-        return emptyList()
+    /** Rows of a table you drew in the schema editor. */
+    suspend fun select(table: String, where: Map<String, Any?> = emptyMap()): List<Map<String, Any?>> {
+        val queryString = if (where.isEmpty()) "" else "?" + where.entries.joinToString("&") {
+            encode(it.key) + "=" + encode(it.value)
+        }
+        val rows = asMap(call("/data/" + table + queryString))["rows"]
+        @Suppress("UNCHECKED_CAST")
+        return (rows as? List<Map<String, Any?>>) ?: emptyList()
     }
 
     suspend fun insert(table: String, row: Any?): Map<String, Any?> {
-        println("insert into " + table + ": " + row)
-        return emptyMap()
+        val body = when (row) {
+            is Map<*, *> -> JSONObject(row.entries.associate { toText(it.key) to it.value })
+            is String -> runCatching { JSONObject(row) }.getOrElse { JSONObject().put("value", row) }
+            else -> JSONObject().put("value", row)
+        }
+        @Suppress("UNCHECKED_CAST")
+        return (asMap(call("/data/" + table, "POST", body))["row"] as? Map<String, Any?>) ?: emptyMap()
     }
 
-    suspend fun request(url: String, method: String): String {
-        println(method + " " + url)
-        return ""
+    /** Anything else, including URLs that are not this backend. */
+    suspend fun request(url: String, method: String): String = withContext(Dispatchers.IO) {
+        if (url.startsWith("/")) call(url, method) else {
+            val connection = URL(url).openConnection() as HttpURLConnection
+            connection.requestMethod = method
+            val stream = if (connection.responseCode >= 400) connection.errorStream else connection.inputStream
+            val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
+            connection.disconnect()
+            text
+        }
     }
 }
 
 object Auth {
     suspend fun signUp(email: String, password: String): Map<String, Any?> {
-        println("sign up " + email + " (" + password.length + " characters)")
-        return mapOf("email" to email)
+        val reply = asMap(call("/auth/sign-up", "POST", JSONObject().put("email", email).put("password", password)))
+        (reply["token"] as? String)?.let { Backend.token = it }
+        @Suppress("UNCHECKED_CAST")
+        return (reply["user"] as? Map<String, Any?>) ?: reply
     }
 
-    suspend fun oauth(provider: String): Map<String, Any?> {
-        println("oauth with " + provider)
-        return mapOf("provider" to provider)
+    suspend fun signIn(email: String, password: String): Map<String, Any?> {
+        val reply = asMap(call("/auth/sign-in", "POST", JSONObject().put("email", email).put("password", password)))
+        (reply["token"] as? String)?.let { Backend.token = it }
+        @Suppress("UNCHECKED_CAST")
+        return (reply["user"] as? Map<String, Any?>) ?: reply
     }
 
-    suspend fun session(): Map<String, Any?>? = null
+    /**
+     * Starts a provider round trip.
+     *
+     * The backend hands back the authorize URL; opening it is the app's
+     * job, because only the app knows whether that is a browser tab, a
+     * custom tab or a web view.
+     */
+    suspend fun oauth(provider: String): Map<String, Any?> =
+        asMap(call("/auth/oauth", "POST", JSONObject().put("provider", provider)))
+
+    suspend fun session(): Map<String, Any?>? {
+        if (Backend.token == null) return null
+        @Suppress("UNCHECKED_CAST")
+        return asMap(call("/auth/session"))["user"] as? Map<String, Any?>
+    }
+
+    suspend fun signOut() {
+        if (Backend.token != null) call("/auth/sign-out", "POST")
+        Backend.token = null
+    }
 }
 
 object Storage {
+    /** Bytes in, a URL out. Give it a ByteArray, a File, or text. */
     suspend fun upload(bucket: String, file: Any?): String {
-        println("upload to " + bucket + ": " + file)
-        return ""
+        val bytes = when (file) {
+            is ByteArray -> file
+            is File -> file.readBytes()
+            null -> ByteArray(0)
+            else -> toText(file).toByteArray()
+        }
+        val name = if (file is File) file.name else "upload"
+        val reply = asMap(call(
+            "/storage/" + bucket,
+            "POST",
+            bytes = bytes,
+            contentType = "application/octet-stream",
+            extraHeaders = mapOf("x-file-name" to name),
+        ))
+        return toText(reply["url"])
     }
 }
 `
@@ -522,7 +662,7 @@ export function androidFiles(ir: Ir, project: Project): CompiledFile[] {
     },
     {
       path: `app/src/main/java/${path}/Runtime.kt`,
-      contents: runtime(identifier),
+      contents: runtime(identifier, ANDROID_API_URL),
     },
     {
       path: 'app/src/main/AndroidManifest.xml',
@@ -532,8 +672,12 @@ export function androidFiles(ir: Ir, project: Project): CompiledFile[] {
          not much of an app; remove it if yours never makes a request. -->
     <uses-permission android:name="android.permission.INTERNET" />
 
+    <!-- usesCleartextTraffic is here because the generated backend runs on
+         plain HTTP while it is on your machine. Delete that attribute the
+         moment it is on a real host with TLS. -->
     <application
         android:allowBackup="true"
+        android:usesCleartextTraffic="true"
         android:label="@string/app_name"
         android:supportsRtl="true"
         android:theme="@style/Theme.Material3.DayNight.NoActionBar">
@@ -595,6 +739,10 @@ dependencies {
     // Image blocks load their URLs with Coil. Pulled in unconditionally so
     // that adding an Image block to the canvas never means editing Gradle.
     implementation("io.coil-kt:coil-compose:2.7.0")
+    // The generated runtime does its HTTP off the main thread, which needs
+    // a dispatcher. Compose pulls coroutines in transitively; this says so
+    // out loud, because the runtime imports it directly.
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
 }
 `,
     },
