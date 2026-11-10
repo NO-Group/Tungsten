@@ -46,6 +46,8 @@ export type BuilderViewProps = {
   onOpenFile?: (path: string) => void
   /** Writes a compiled target into the workspace. */
   onBuild: (target: CompileTarget) => void
+  /** Builds the backend service and starts it where the user can see it. */
+  onRunServer?: () => void
   onClose: () => void
 }
 
@@ -68,7 +70,8 @@ function quickTargets(project: Project): Array<{ id: CompileTarget; label: strin
   ]
 }
 
-export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFile, onBuild, onClose }: BuilderViewProps) {
+export function BuilderView(props: BuilderViewProps) {
+  const { builder, editorOptions, theme, onExport, onOpenFile, onBuild, onRunServer, onClose } = props
   const { graph, registry, report, program, code, parseError } = builder
   const { screens, activeScreen, visibleGraph } = builder
   const diagnostics = useMemo(() => diagnosticsByNode(report), [report])
@@ -480,6 +483,7 @@ export function BuilderView({ builder, editorOptions, theme, onExport, onOpenFil
                 onToggleTarget={builder.toggleTarget}
                 onChangeToolchain={builder.setToolchain}
                 onBuild={onBuild}
+                onRunServer={onRunServer}
               />
             ) : (
               <DataSchemaPanel

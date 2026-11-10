@@ -105,6 +105,7 @@ import { DICTIONARY_DIRECTORY, EXAMPLE_COMMAND_FILE, loadWorkspaceCommands } fro
 import { createSocketBackend, ipcBackend, probeShellServer } from './terminal/ptyClient'
 import type { ShellInfo } from './terminal/ptyProtocol'
 import type { CompileTarget } from './builder/compile'
+import { DEFAULT_API_URL } from './builder/targets/server'
 import { describeTargets } from './project/targets'
 import { TerminalPanel } from './components/panel/TerminalPanel'
 import {
@@ -807,6 +808,42 @@ export default function App({ onReady }: AppProps = {}) {
   }, [builder, notify, openFile, writeGeneratedFiles])
 
   /**
+   * Builds the backend service, starts it, and points the preview at it.
+   *
+   * The three steps nobody should have to remember separately. The files
+   * land in the workspace, `node main.js` runs in a terminal tab where
+   * its log is visible, and the preview stops simulating -- which is the
+   * only arrangement where a canvas can be tried end to end without
+   * leaving the window.
+   *
+   * In the browser build there is no Node to start, so it builds and says
+   * so rather than pretending: a preview pointed at nothing is worse than
+   * a preview that is honestly simulated.
+   */
+  const runBackendService = useCallback(() => {
+    const result = builder.build('server')
+    if (!result.ok) {
+      notify(result.reason)
+      return
+    }
+    writeGeneratedFiles(result.files)
+    const main = result.files.find((file) => file.path.endsWith('/main.js'))
+    if (!main) {
+      notify('The backend was built without a main.js, which should be impossible.')
+      return
+    }
+    if (!window.tungsten) {
+      openFile(main.path)
+      notify(`Built ${main.path}. Run it with node ${main.path} — the desktop build can start it for you.`)
+      return
+    }
+    setBuilderOpen(false)
+    runIntegratedCommand(`node ${main.path}`)
+    builder.setBackend(DEFAULT_API_URL)
+    notify(`Starting the backend. The preview now calls ${DEFAULT_API_URL}.`)
+  }, [builder, notify, openFile, runIntegratedCommand, writeGeneratedFiles])
+
+  /**
    * Builds every target the project declares, in one go.
    *
    * Six source trees from one canvas is the claim the Targets panel makes;
@@ -1200,6 +1237,7 @@ export default function App({ onReady }: AppProps = {}) {
       { id: 'builder.buildLinux', label: 'Builder: Build the Linux Desktop Target', detail: 'An Electron shell, AppImage and .deb', icon: Hammer, action: () => buildBuilderTarget('linux') },
       { id: 'builder.buildAll', label: 'Builder: Build Every Target in the Project', detail: builder.project.targets.length ? `${builder.project.name}: ${describeTargets(builder.project)}` : 'This project has no targets yet', icon: Hammer, action: () => buildEveryTarget() },
       { id: 'builder.buildServer', label: 'Builder: Build the Backend Service', detail: 'Node and SQLite: accounts, the tables you drew, file storage', icon: Server, action: () => buildBuilderTarget('server') },
+      { id: 'builder.runServer', label: 'Builder: Run the Backend Service', detail: 'Build it, start it in a terminal, and point the preview at it', icon: Play, action: () => runBackendService() },
       { id: 'builder.buildRunner', label: 'Builder: Build the Local Runner', detail: 'A dependency-free server for the built bundle', icon: Rocket, action: () => buildBuilderTarget('node') },
       { id: 'ai.ask', label: 'Assistant: Ask About the Selection', detail: ai.open ? 'The assistant panel is open' : 'Opens the assistant panel', icon: Sparkles, when: 'editorIsOpen', action: () => { ai.setOpen(true) } },
       { id: 'ai.advisor', label: 'Assistant: Advisor Mode', detail: 'Answers only — never edits a buffer', icon: Sparkles, action: () => { ai.setMode('advisor'); ai.setOpen(true) } },
@@ -2077,6 +2115,7 @@ export default function App({ onReady }: AppProps = {}) {
                 onExport={exportBuilderCode}
             onOpenFile={openFile}
                 onBuild={buildBuilderTarget}
+                onRunServer={runBackendService}
                 onClose={() => setBuilderOpen(false)}
               />
             ) : (

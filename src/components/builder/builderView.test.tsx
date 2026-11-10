@@ -37,6 +37,8 @@ let root: Root
 const notify = vi.fn()
 /** Targets the view asked to build, in order. */
 const built: string[] = []
+/** Backends the view asked to start. */
+const ran: string[] = []
 
 const plugins = loadPluginBlocks([{ path: 'plugins/notify.block.json', content: EXAMPLE_PLUGIN }])
 
@@ -58,6 +60,7 @@ function Harness() {
         theme="tungsten"
         onExport={() => undefined}
         onBuild={(target) => built.push(target)}
+        onRunServer={() => ran.push('server')}
         onClose={() => undefined}
       />
     </>
@@ -1430,6 +1433,7 @@ describe('targets', () => {
   beforeEach(() => {
     localStorage.clear()
     built.length = 0
+    ran.length = 0
     render()
     openTargets()
   })
@@ -1567,6 +1571,17 @@ describe('targets', () => {
     expect(build).not.toBeNull()
     click(build)
     expect(built).toContain('server')
+  })
+
+  it('offers to run the backend as well as build it', () => {
+    const run = container.querySelector<HTMLButtonElement>('[aria-label="Run the Backend Service"]')!
+    expect(run).not.toBeNull()
+    expect(run.textContent).toContain('Run')
+    click(run)
+    expect(ran).toContain('server')
+    // Running is building plus two more steps, so it has to be refused
+    // for the same reason building is.
+    expect(run.disabled).toBe(false)
   })
 
   it('survives a reload', () => {

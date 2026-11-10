@@ -552,6 +552,13 @@ ruin your afternoon. Underneath it is a switch:
 
 > ☐ Simulated backend &nbsp; `http://localhost:8787`
 
+**Builder: Run the Backend Service** does all of it in one command:
+builds the service into the workspace, starts `node main.js` in a
+terminal tab where you can watch its log, and flicks the preview's switch
+for you. The Targets tab has the same thing as a **Run** button beside
+**Build**. In the browser build there is no Node to start, so it builds
+the files and says so rather than pointing the preview at nothing.
+
 Build the Backend Service, run `node main.js`, flick the switch, and the
 same blocks stop narrating and start making requests: `GET /data/notes`,
 `PATCH /data/notes/7`, a bearer token carried from the sign-in onward,

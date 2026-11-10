@@ -622,6 +622,15 @@ module, so what is asserted is the request the generated code actually
 builds: the URL, the method, the body, and the bearer token appearing on
 the call *after* the sign-in.
 
+Then the three steps became one command. Build, start, point the preview
+at it: each is small, and remembering all three in order is exactly the
+kind of friction that stops people trying the thing. `builder.runServer`
+writes the files, hands `node <path>/main.js` to `terminal.runTask` --
+which opens its own tab, so a long-running service does not take over the
+shell somebody is typing in -- and then calls `setBackend`. The browser
+build refuses the last two steps honestly instead of leaving a preview
+aimed at a port with nothing behind it.
+
 That immediately exposed an old wart. Every port value is text, and
 `literal()` quoted all of it, so a row typed as `{ title: "Hello" }`
 reached the service as the string `"{ title: \"Hello\" }"` — which has no

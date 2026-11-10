@@ -1,4 +1,4 @@
-import { Hammer, Plus, Server, Trash2 } from 'lucide-react'
+import { Hammer, Play, Plus, Server, Trash2 } from 'lucide-react'
 
 import {
   TARGETS,
@@ -31,6 +31,8 @@ export type TargetsPanelProps = {
   onChangeToolchain: (kind: TargetKind, toolchain: Toolchain) => void
   /** `server` is the backend every target calls; the rest are platforms. */
   onBuild: (kind: TargetKind | 'server') => void
+  /** Builds the backend and starts it, if this build of Tungsten can. */
+  onRunServer?: () => void
 }
 
 /**
@@ -59,6 +61,7 @@ export function TargetsPanel({
   onToggleTarget,
   onChangeToolchain,
   onBuild,
+  onRunServer,
 }: TargetsPanelProps) {
   const identifierValid = isValidIdentifier(project.identifier)
 
@@ -209,16 +212,30 @@ export function TargetsPanel({
             <span className="targets-meta">Node</span>
             <span className="targets-meta">JavaScript · SQLite</span>
             <code>{`${outputRoot(project, 'web').replace(/\/web$/, '')}/server`}</code>
-            <button
-              aria-label="Build the Backend Service"
-              title={blocked
-                ? 'Fix the integrity errors first'
-                : 'Accounts, the tables you drew, and file storage. Run it with node main.js.'}
-              onClick={() => onBuild('server')}
-              disabled={blocked}
-            >
-              <Hammer size={12} /> Build
-            </button>
+            <span className="targets-actions">
+              <button
+                aria-label="Build the Backend Service"
+                title={blocked
+                  ? 'Fix the integrity errors first'
+                  : 'Accounts, the tables you drew, and file storage. Run it with node main.js.'}
+                onClick={() => onBuild('server')}
+                disabled={blocked}
+              >
+                <Hammer size={12} /> Build
+              </button>
+              {onRunServer && (
+                <button
+                  aria-label="Run the Backend Service"
+                  title={blocked
+                    ? 'Fix the integrity errors first'
+                    : 'Build it, start it in a terminal, and point the preview at it.'}
+                  onClick={onRunServer}
+                  disabled={blocked}
+                >
+                  <Play size={12} /> Run
+                </button>
+              )}
+            </span>
           </li>
         </ul>
 

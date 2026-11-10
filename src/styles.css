@@ -1352,6 +1352,7 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .builder-preview-failure span { flex: 1; }
 .builder-preview-failure em { font-family: var(--mono); font-style: normal; font-size: 10px; color: var(--muted); }
 
+.targets-actions { display: flex; gap: 4px; justify-content: flex-end; }
 .builder-backend {
   display: flex; align-items: center; gap: 8px; padding: 4px 10px;
   border-top: 1px solid var(--border); background: var(--chrome); font-size: 10.5px; color: var(--muted);
