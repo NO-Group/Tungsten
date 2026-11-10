@@ -26,6 +26,9 @@ import { lineOfNode, nodeAtLine } from '../../builder/codeGenerator'
 import type { CompileTarget } from '../../builder/compile'
 import { targetInfo, type Project } from '../../project/targets'
 import { TargetsPanel } from './TargetsPanel'
+import { AiUsagePanel } from './AiUsagePanel'
+import { useAiWallet } from '../../ai/useAiWallet'
+import { formatCredits, type EngineId } from '../../ai'
 import type { BuilderState } from '../../builder/useBuilder'
 import { BUILDER_SYNC_PATH } from '../../builder/fileSync'
 import { TOOLS, toolForKey, type ToolId } from '../../builder/tools'
@@ -79,7 +82,13 @@ export function BuilderView(props: BuilderViewProps) {
   const [tool, setTool] = useState<ToolId>('pick')
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [rightPane, setRightPane] = useState<'code' | 'preview'>('code')
-  const [bottomPane, setBottomPane] = useState<'integrity' | 'data' | 'state' | 'targets'>('integrity')
+  const [bottomPane, setBottomPane] = useState<'integrity' | 'data' | 'state' | 'targets' | 'ai'>('integrity')
+  // The wallet the assistant spends from, and the engine it will use
+  // next. Both live here rather than in `useBuilder` because neither
+  // belongs in a saved project file: one is an account, one is a
+  // preference.
+  const aiWallet = useAiWallet()
+  const [engine, setEngine] = useState<EngineId>('balanced')
   const [target, setTarget] = useState<CompileTarget>('web')
   const targets = quickTargets(builder.project)
 
@@ -432,6 +441,10 @@ export function BuilderView(props: BuilderViewProps) {
                 Targets
                 <span className="builder-problem-counts">{builder.project.targets.length}</span>
               </button>
+              <button className={bottomPane === 'ai' ? 'active' : ''} onClick={() => setBottomPane('ai')}>
+                AI
+                <span className="builder-problem-counts">{formatCredits(aiWallet.balance.total)} credits</span>
+              </button>
             </header>
 
             {bottomPane === 'integrity' ? (
@@ -468,6 +481,14 @@ export function BuilderView(props: BuilderViewProps) {
                 onType={builder.setVariableType}
                 onInitial={builder.setVariableInitial}
                 onRemove={builder.removeVariable}
+              />
+            ) : bottomPane === 'ai' ? (
+              <AiUsagePanel
+                wallet={aiWallet}
+                engine={engine}
+                onChooseEngine={setEngine}
+                onChoosePlan={aiWallet.choosePlan}
+                onBuyTopUp={aiWallet.buyTopUp}
               />
             ) : bottomPane === 'targets' ? (
               <TargetsPanel
