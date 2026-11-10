@@ -94,9 +94,15 @@ describe('where targets are written', () => {
   })
 
   it('never lets two targets write the same file', () => {
-    const kinds: CompileTarget[] = ['android', 'ios', 'mobile', 'windows', 'macos', 'linux', 'web', 'node']
-    const paths = kinds.flatMap((kind) => run(kind).map((file) => file.path))
-    expect(new Set(paths).size).toBe(paths.length)
+    const kinds: CompileTarget[] = ['android', 'ios', 'mobile', 'windows', 'macos', 'linux', 'web', 'node', 'server']
+    // Checked for each set of toolchains in turn. Two toolchains of the
+    // same platform share a directory on purpose -- that is why the
+    // generated README says to delete it before switching -- but no two
+    // *targets* may ever collide, whichever way they are built.
+    for (const toolchains of [{}, NATIVE]) {
+      const paths = kinds.flatMap((kind) => run(kind, toolchains).map((file) => file.path))
+      expect(new Set(paths).size).toBe(paths.length)
+    }
   })
 
   it('falls back to a default project when the caller has none', () => {
@@ -266,7 +272,7 @@ describe('the desktop targets, built with Electron', () => {
 })
 
 describe('every target', () => {
-  const kinds: CompileTarget[] = ['android', 'ios', 'mobile', 'windows', 'macos', 'linux', 'web', 'node']
+  const kinds: CompileTarget[] = ['android', 'ios', 'mobile', 'windows', 'macos', 'linux', 'web', 'node', 'server']
 
   it('explains itself in a README', () => {
     for (const kind of kinds) {
