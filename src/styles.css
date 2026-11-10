@@ -2162,10 +2162,21 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 }
 .targets-list { margin: 0; padding: 0; list-style: none; }
 .targets-list li {
-  display: grid; grid-template-columns: minmax(180px, 1.4fr) minmax(120px, 1fr) minmax(140px, 1.2fr) auto;
+  display: grid;
+  grid-template-columns: minmax(170px, 1.3fr) minmax(86px, auto) minmax(110px, .9fr) minmax(130px, 1.1fr) auto;
   align-items: center; gap: 8px; padding: 4px 0; border-bottom: 1px solid var(--border);
   font-size: 11px; color: var(--faint);
 }
+/* The toolchain is a choice, so it looks like one: a real select where a
+   platform has two, and plain text where it has one. */
+.targets-toolchain {
+  padding: 2px 6px; font-size: 10.5px; font-family: inherit;
+  color: var(--text); background: var(--chrome-raised);
+  border: 1px solid var(--border); border-radius: 4px; cursor: pointer;
+}
+.targets-toolchain:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
+.targets-list li.enabled .targets-toolchain { color: var(--strong); border-color: var(--border-bright); }
+.targets-backend { display: flex; align-items: center; gap: 7px; color: var(--cyan); }
 .targets-list li.enabled { color: var(--text); }
 .targets-list label { display: flex; align-items: center; gap: 7px; cursor: pointer; }
 .targets-list code { font-family: var(--mono); font-size: 10px; color: var(--faint); }

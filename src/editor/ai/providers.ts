@@ -43,7 +43,7 @@ export type RemoteConfig = {
 // ---------------------------------------------------------------- local
 
 /** The jobs the local assistant knows how to do. */
-export type LocalAction = 'try' | 'document' | 'log' | 'todo' | 'arrow' | 'explain'
+export type LocalAction = 'try' | 'document' | 'log' | 'todo' | 'arrow' | 'backend' | 'explain'
 
 
 /** Reads a request and decides which job it is. */
@@ -54,6 +54,10 @@ export function actionFor(prompt: string): LocalAction {
   if (/log|print|console/.test(text)) return 'log'
   if (/todo|fixme|remind/.test(text)) return 'todo'
   if (/arrow|const function|convert .*function/.test(text)) return 'arrow'
+  // "build me a backend" is a real request with a real answer in this
+  // product, and answering it with a line count would be a worse reply
+  // than admitting ignorance.
+  if (/\bbackend\b|\bserver\b|\bapi\b|\bdatabase\b|\bauth(entication)?\b|sign[- ]?up/.test(text)) return 'backend'
   return 'explain'
 }
 
@@ -165,6 +169,24 @@ export function performLocalAction(action: LocalAction, request: AiRequest): AiP
       answer: `Converted \`${name}\` to a const arrow function.`,
       summary: `Convert ${name} to an arrow function`,
       replacement: `${lead}const ${name} = (${params}) => {\n${rest}`,
+    }
+  }
+
+  if (action === 'backend') {
+    // Nothing is written here. The builder writes the backend, and this
+    // says so plainly rather than inventing an endpoint in the open file.
+    return {
+      answer: [
+        'Tungsten writes the backend itself — ask the builder, not me, and you get working code instead of a sketch.',
+        '',
+        'Run **Builder: Build the Backend Service** (or the Build button beside “Backend Service” in the Targets tab). It writes `server/` next to your other targets:',
+        '',
+        '- `main.js` — one Node service, no dependencies, SQLite on disk. `node main.js`.',
+        '- `schema.sql` — the tables you drew in the Data tab, plus users, sessions and files.',
+        '- Routes: `/auth/sign-up`, `/auth/sign-in`, `/auth/session`, `/auth/oauth`, `/data/<table>` for each table you drew, and `/storage/<bucket>`.',
+        '',
+        'Every target already calls it: the Kotlin, Swift, Flutter and web runtimes send the session as a bearer token and speak those exact routes. Set `TUNGSTEN_REQUIRE_AUTH=1` before it leaves your machine.',
+      ].join('\n'),
     }
   }
 

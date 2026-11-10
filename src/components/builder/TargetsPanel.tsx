@@ -1,4 +1,4 @@
-import { Hammer, Plus, Trash2 } from 'lucide-react'
+import { Hammer, Plus, Server, Trash2 } from 'lucide-react'
 
 import {
   TARGETS,
@@ -29,7 +29,8 @@ export type TargetsPanelProps = {
   onChangeProject: (index: number, change: Partial<Project>) => void
   onToggleTarget: (kind: TargetKind) => void
   onChangeToolchain: (kind: TargetKind, toolchain: Toolchain) => void
-  onBuild: (kind: TargetKind) => void
+  /** `server` is the backend every target calls; the rest are platforms. */
+  onBuild: (kind: TargetKind | 'server') => void
 }
 
 /**
@@ -197,11 +198,33 @@ export function TargetsPanel({
               </li>
             )
           })}
+
+          {/* Not a platform, and not optional either: every target's
+              runtime calls this, so it sits with them rather than in a
+              menu somewhere. */}
+          <li className="enabled">
+            <span className="targets-label targets-backend">
+              <Server size={12} /> Backend Service
+            </span>
+            <span className="targets-meta">Node</span>
+            <span className="targets-meta">JavaScript · SQLite</span>
+            <code>{`${outputRoot(project, 'web').replace(/\/web$/, '')}/server`}</code>
+            <button
+              aria-label="Build the Backend Service"
+              title={blocked
+                ? 'Fix the integrity errors first'
+                : 'Accounts, the tables you drew, and file storage. Run it with node main.js.'}
+              onClick={() => onBuild('server')}
+              disabled={blocked}
+            >
+              <Hammer size={12} /> Build
+            </button>
+          </li>
         </ul>
 
         <p className="targets-summary">
           {project.name} ships to {describeTargets(project)}. One canvas, one
-          program, one source tree each.
+          program, one source tree each — and one backend they all call.
         </p>
       </div>
     </div>

@@ -213,3 +213,23 @@ describe('a TODO carries the note, not the instruction', () => {
     expect(proposal.replacement).toContain('// TODO: revisit this')
   })
 })
+
+describe('asking the assistant for a backend', () => {
+  it('recognises the request however it is phrased', () => {
+    expect(actionFor('build me a backend')).toBe('backend')
+    expect(actionFor('I need a server with sign-up')).toBe('backend')
+    expect(actionFor('can you add a database?')).toBe('backend')
+  })
+
+  it('points at the builder instead of inventing an endpoint', () => {
+    const proposal = performLocalAction('backend', {
+      prompt: 'build the backend',
+      context: { path: 'app.ts', language: 'typescript', selection: '', buffer: 'const x = 1', startLine: 1, endLine: 1 },
+    })
+    expect(proposal.answer).toContain('Build the Backend Service')
+    expect(proposal.answer).toContain('/auth/sign-up')
+    expect(proposal.answer).toContain('TUNGSTEN_REQUIRE_AUTH=1')
+    // It proposes no edit: the buffer is not where a backend goes.
+    expect(proposal.replacement).toBeUndefined()
+  })
+})

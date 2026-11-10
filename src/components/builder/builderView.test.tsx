@@ -1500,6 +1500,43 @@ describe('targets', () => {
     expect(tab?.textContent).toContain('6')
   })
 
+  it('offers the second toolchain where there is one, and only there', () => {
+    const android = container.querySelector<HTMLSelectElement>('[aria-label="Toolchain for the Android App Target"]')!
+    expect([...android.options].map((option) => option.textContent)).toEqual(['Flutter', 'Kotlin'])
+    expect(android.value).toBe('flutter')
+
+    const desktop = container.querySelector<HTMLSelectElement>('[aria-label="Toolchain for the macOS Desktop Target"]')!
+    expect([...desktop.options].map((option) => option.textContent)).toEqual(['Tauri', 'Electron'])
+
+    // One toolchain is not a choice, so it is not a dropdown.
+    expect(container.querySelector('[aria-label="Toolchain for the Cross-Platform Mobile Target"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Toolchain for the Web Target"]')).toBeNull()
+  })
+
+  it('remembers the toolchain, in the tree and across a reload', () => {
+    const android = container.querySelector<HTMLSelectElement>('[aria-label="Toolchain for the Android App Target"]')!
+    act(() => {
+      android.value = 'kotlin'
+      android.dispatchEvent(new Event('change', { bubbles: true }))
+    })
+    expect(tree()).toContain('Android App Target (Kotlin)')
+    expect(tree()).toContain('iOS App Target (Flutter)')
+
+    act(() => root.unmount())
+    container.remove()
+    render()
+    openTargets()
+    expect(container.querySelector<HTMLSelectElement>('[aria-label="Toolchain for the Android App Target"]')!.value)
+      .toBe('kotlin')
+  })
+
+  it('offers the backend beside the platforms that call it', () => {
+    const build = container.querySelector<HTMLButtonElement>('[aria-label="Build the Backend Service"]')!
+    expect(build).not.toBeNull()
+    click(build)
+    expect(built).toContain('server')
+  })
+
   it('survives a reload', () => {
     commit(field('Organization name'), 'Acme')
     act(() => root.unmount())
