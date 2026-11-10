@@ -10,6 +10,7 @@ are assertions that fail the build when they stop being true.
 
 | File | What lives there |
 | --- | --- |
+| `costs.ts` | The wholesale price table: every provider model we route to, with the date it was read, the long-context cliffs and the published future rises. |
 | `engines.ts` | The four engines, their token weights, their wholesale cost, and the provider fallback chains. |
 | `pricing.ts` | Integer credit arithmetic, estimates, reservations, and the affordability clamp. |
 | `plans.ts` | Spark / Core / Forge / Titan, their entitlements, refusals that name the right upgrade, and the margin invariant. |
@@ -39,23 +40,47 @@ The per-prompt alternative prices a 200,000-token refactor the same as
 "rename this variable". The test that pins this down:
 
 ```
-short = 500 in, 200 out  on Balanced →   2 credits
-long  = 200k in, 4k out  on Balanced → 220 credits
+short = 500 in, 200 out  on Balanced →   1 credit
+long  = 200k in, 4k out  on Balanced → 132 credits
 ```
 
 Both are "one prompt". One of them costs us 110 times more.
 
 ### The engines
 
-| Engine | Min. plan | Credits / 1k in | Credits / 1k out | Wholesale in | Wholesale out | Markup |
-| --- | --- | --- | --- | --- | --- | --- |
-| Flash | Spark | 0.05 | 0.20 | $0.10 /M | $0.40 /M | 5.0× |
-| Balanced | Spark | 1.00 | 5.00 | $3 /M | $15 /M | 3.3× |
-| Precise | Core | 4.80 | 24.00 | $15 /M | $75 /M | 3.2× |
-| Agent | Forge | 1.80 | 9.00 | $5 /M | $25 /M | 3.6× |
+An engine is a **price band with a fallback chain inside it**. The
+retail weight is set against the *dearest* route in the chain, so
+failing over from Claude to GPT to Gemini changes the flavour of the
+answer and never changes the bill.
 
-The engines are **not** named after the plans. "I'm on Forge using
-Forge" is a sentence that makes every support conversation worse.
+| Engine | Min. plan | Credits / 1k in | Credits / 1k out | Routes, in preference order | Dearest route | Markup |
+| --- | --- | --- | --- | --- | --- | --- |
+| Flash | Spark | 0.10 | 0.40 | Gemini 2.5 Flash-Lite → Claude Haiku 5.5 → GPT-5.4 Nano → DeepSeek V4 | $0.30 / $1.25 per M | 3.2× |
+| Balanced | Spark | 0.60 | 3.00 | Claude Sonnet 5.5 → GPT-5 → Gemini 3.8 Flash | $2 / $10 per M | 3.0× |
+| Precise | Core | 1.40 | 8.40 | Claude Opus 5.5 → GPT-5.5 → Gemini 3.1 Pro | $5 / $30 per M | 2.8× |
+| Agent | Forge | 0.75 | 4.50 | Claude Sonnet 5.5 → GPT-5.4 → DeepSeek V4 | $2.50 / $15 per M | 3.0× |
+
+Wholesale rates were read from published provider pricing in **November
+2026** and live in `costs.ts` with that date attached. Three details
+that pricing pages bury, and that a margin calculation gets wrong if it
+ignores them:
+
+- **Long-context cliffs.** Claude Haiku 5.5 reprices the whole request
+  five-fold above 100k tokens; Gemini 3.1 Pro doubles above 200k. Each
+  engine therefore carries a `contextCap` that keeps it below its
+  chain's cliffs, and `worstRates` only counts a cliff we are willing
+  to cross.
+- **Announced rises.** Google has published that Gemini 3.8 Flash goes
+  from $0.75/$3.75 to $1.50/$7.50 on 1 January 2027. A price rise we
+  already know about is part of today's worst case.
+- **Cache reads are not all 10%.** Anthropic's flagships read cache at
+  5% of input, Haiku at 10%, Gemini Flash at about 4%. We bill cached
+  input at a flat 10% of our input weight, and a test asserts that is
+  still a 2.75× markup on every chain.
+
+Precise runs at 2.8× rather than 3× on purpose: at the top of the
+market people buy capability, and a thinner slice of a bigger number is
+still a bigger number.
 
 Cached input bills at a tenth, which is roughly what providers charge
 for a cache hit — a discount passed on rather than pocketed. It only
@@ -72,25 +97,55 @@ of being offered and then refused.
 
 ## Plans
 
-| Plan | Price | Included credits | Daily fallback | Engines | Seats | Max media | Hosted projects |
-| --- | --- | --- | --- | --- | --- | --- | --- |
-| Spark | free | 250 / month | 10 per rolling 24h | Flash, Balanced | 1 | 25 MB | 1 (sleeps) |
-| Core | $19 | 2,500 | — | + Precise | 1 | 100 MB | 5 |
-| Forge | $49 | 9,000 | — | + Agent | 5 | 500 MB | 25 |
-| Titan | $149 | 30,000 | — | all | 25 | 2 GB | 200 |
+| Plan | Price | Annual | Included credits | List value | Daily fallback | Engines | Seats | Max media | Hosted projects |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| Spark | free | — | 250 / month | — | 10 per rolling 24h | Flash, Balanced | 1 | 25 MB | 1 (sleeps) |
+| Core | $20 | $200 | 3,000 | $30 | — | + Precise | 1 | 100 MB | 5 |
+| Forge | $60 | $600 | 9,000 | $90 | — | + Agent | 5 | 500 MB | 25 |
+| Titan | $200 | $2,000 | 25,000 | $250 | — | all | 25 | 2 GB | 200 |
 
-Top-ups never expire: 1,000 for $10, 5,000 for $45, 20,000 for $160.
-Credits are spent perishable-first — this period's allowance, then
-today's free grant, then purchased packs.
+Annual billing charges ten months for twelve. Top-ups never expire:
+1,000 for $10, 5,000 for $45, 20,000 for $160 — all comfortably above
+the $0.0036 a credit can cost us at worst.
+
+The market this is priced into, as of late 2026: Cursor Pro $20, Replit
+Core $20–25, Lovable Pro $25 (100 credits), Bolt Pro $25–29, Lovable
+Business $50, Cursor Pro+ $60, Cursor Ultra and Bolt Pro 200 at $200.
+Core sits at the bottom of the entry band and includes roughly 500
+Balanced turns a month rather than 100 messages.
+
+### Where the money goes
+
+Worst case means *every* included credit spent on the dearest engine
+the plan allows, at the dearest route that engine may fall back to,
+with cliffs and announced rises counted — plus hosting and the card
+network's 2.9% + 30¢.
+
+| Plan | Price | Inference (worst) | Hosting | Card fees | Total | Margin (worst) | Margin at 35% use |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Spark | $0 | $1.83 | $0.40 | — | $2.23 | — | ≈ $0.77 |
+| Core | $20 | $10.71 | $2.00 | $0.88 | $13.59 | 32% | 67% |
+| Forge | $60 | $32.14 | $7.00 | $2.04 | $41.18 | 31% | 67% |
+| Titan | $200 | $89.29 | $30.00 | $6.10 | $125.39 | 37% | 74% |
+
+Those worst-case rows are what makes the hard stop meaningful: there is
+no month, no prompt and no fallback chain in which a plan costs more
+than it charges. `economicsOf(plan)` returns the whole breakdown, and
+`metering.test.ts` fails the build below a 30% worst-case margin.
+
+Note what the top tier does *not* get: the deepest discount. Core and
+Forge include 1.5× their price in credits; Titan includes 1.25×. The
+biggest allowance is the most farmable one, so the top plan is sold on
+seats, audit log and support instead of on the cheapest token.
 
 Three rules the tests enforce:
 
 1. **An allowance cannot be spent into a loss.** Spend a plan's entire
-   allowance on the most expensive engine that plan may call and the
-   worst-case provider bill must still leave 25% of the price. Titan's
-   worst possible month is about $94 of inference against $149 of
-   revenue. The free plan's worst month, monthly allowance plus thirty
-   daily grants, is $1.65.
+   allowance on the dearest engine it may call, at the dearest route
+   that engine may fall back to, and 30% of the price must still
+   survive hosting and card fees. The free plan's worst month —
+   monthly allowance plus thirty daily grants, plus hosting — is
+   $2.23, which is the number an abuse model needs.
 2. **The free ladder is coherent.** The daily fallback is in the same
    order of magnitude as the monthly allowance ÷ 30. A tier that gives
    50 a month and 5 a day is really a 150-a-month tier for anyone who
@@ -167,7 +222,8 @@ keeps purchased top-ups: those were bought, not rented.
 ## The free tier, and the people who farm it
 
 A Spark wallet spent entirely on the dearest engine it may call costs
-about $1.65 a month. That is affordable per real person and expensive
+about $2.23 a month including hosting, and about $0.77 at realistic
+use. That is affordable per real person and expensive
 per thousand scripted signups, so `freeGrantRefusal` withholds the
 *grant*, not the account, when the email is disposable or unverified or
 the device has already collected several allowances. Somebody caught by

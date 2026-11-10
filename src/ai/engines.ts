@@ -8,36 +8,35 @@
  * a vocabulary where "I'm on Forge using Forge" is a sentence makes
  * every support conversation worse.
  *
- * Three facts live on every engine and all three are load-bearing:
+ * Each engine is a **price band with a fallback chain inside it**, and
+ * that is the important idea. A route is a model we are willing to
+ * serve the band with; the band's retail weight is set against the
+ * *dearest* route in the chain, so failing over from Sonnet to GPT-5
+ * to Gemini changes the answer's flavour and never changes the bill.
+ * Model ids are configuration -- providers rename and retire them --
+ * so `resolveEngine` picks the first route the gateway actually has
+ * and a stale name costs a fallback, not an outage.
  *
- * 1. **Retail weights** (`creditsIn` / `creditsOut`), in milli-credits
- *    per thousand tokens. Billing is per token because cost is per
- *    token. A 200k-context call is thirty times the work of a short
- *    one, and pricing per prompt means the thirty-times call is sold at
- *    the price of the short one.
- * 2. **Wholesale cost** (`costIn` / `costOut`), in micro-dollars per
- *    thousand tokens, written down next to the retail price so the
- *    margin is a number anybody can check -- and so a test can check it
- *    on every commit. This is the difference between "the loophole is
- *    sealed" as a claim and as an assertion.
- * 3. **A fallback chain.** A model id is configuration, not a constant
- *    of nature: providers rename and retire them. Each engine lists
- *    routes in preference order, the gateway reports which models it
- *    actually has, and `resolveEngine` picks the first route that is
- *    really there. A stale name costs a fallback, not an outage.
+ * `contextCap` is a pricing instrument, not a limitation: several
+ * models reprice the whole request past a threshold (Claude Haiku 5.5
+ * above 100k, Gemini Pro above 200k), so a band that stays below its
+ * cliffs has a worst case we can actually quote.
+ *
+ * Wholesale rates live in `costs.ts` with the date they were read.
+ * Markups are asserted, not assumed: `metering.test.ts` fails if any
+ * route in any chain brings an engine below `MINIMUM_MARKUP`.
  */
 
+import { PRICES, priceFor, worstRates, type ProviderId, type Rates } from './costs'
 import type { PlanId } from './plans'
 
 export type EngineId = 'flash' | 'balanced' | 'precise' | 'agent'
-
-export type ProviderId = 'openai' | 'anthropic' | 'google' | 'deepseek' | 'local'
 
 /** One candidate model for an engine. Preference order is array order. */
 export type ModelRoute = {
   provider: ProviderId
   model: string
-  /** Rough context window, for the "this prompt will not fit" message. */
+  /** What we will send it, which can be less than the model can take. */
   contextTokens: number
 }
 
@@ -53,10 +52,8 @@ export type Engine = {
   creditsIn: number
   /** Milli-credits per 1,000 output tokens. */
   creditsOut: number
-  /** Micro-dollars per 1,000 input tokens, at list provider pricing. */
-  costIn: number
-  /** Micro-dollars per 1,000 output tokens, at list provider pricing. */
-  costOut: number
+  /** The most context this band will send, so its cost has a ceiling. */
+  contextCap: number
   routes: ModelRoute[]
 }
 
@@ -73,11 +70,16 @@ export const CACHED_INPUT_DIVISOR = 10
 export const CREDIT_VALUE_MICRO_DOLLARS = 10_000
 
 /**
- * The floor on retail-over-wholesale for every engine. Below this the
- * gateway is a charity; `engines.test.ts` fails rather than let a
- * weight be edited down by accident.
+ * The floor on retail-over-wholesale for every engine, measured
+ * against the dearest route it may fall back to. Below this the
+ * gateway is a charity; the tests fail rather than let a weight be
+ * edited down by accident.
+ *
+ * Flash and Balanced and Agent run at 3x. Precise runs at 2.8x on
+ * purpose: at the top of the market people are buying capability, and
+ * a thinner slice of a bigger number is still a bigger number.
  */
-export const MINIMUM_MARKUP = 3
+export const MINIMUM_MARKUP = 2.75
 
 export const FLASH: Engine = {
   id: 'flash',
@@ -85,14 +87,16 @@ export const FLASH: Engine = {
   summary: 'Fast and cheap. Renames, small edits, explanations, autocomplete-shaped work.',
   minimumPlan: 'spark',
   maxOutputTokens: 8_192,
-  creditsIn: 50,
-  creditsOut: 200,
-  costIn: 100,
-  costOut: 400,
+  creditsIn: 100,
+  creditsOut: 400,
+  // Deliberately below Claude Haiku 5.5's 100k repricing cliff, which
+  // would otherwise make this band five times dearer than it looks.
+  contextCap: 100_000,
   routes: [
-    { provider: 'google', model: 'gemini-2.0-flash', contextTokens: 1_000_000 },
-    { provider: 'openai', model: 'gpt-4o-mini', contextTokens: 128_000 },
-    { provider: 'anthropic', model: 'claude-3-5-haiku', contextTokens: 200_000 },
+    { provider: 'google', model: 'gemini-2.5-flash-lite', contextTokens: 100_000 },
+    { provider: 'anthropic', model: 'claude-haiku-5.5', contextTokens: 100_000 },
+    { provider: 'openai', model: 'gpt-5.4-nano', contextTokens: 100_000 },
+    { provider: 'deepseek', model: 'deepseek-v4', contextTokens: 100_000 },
   ],
 }
 
@@ -102,14 +106,13 @@ export const BALANCED: Engine = {
   summary: 'The everyday engine. Writes features, reads a project, answers properly.',
   minimumPlan: 'spark',
   maxOutputTokens: 16_384,
-  creditsIn: 1_000,
-  creditsOut: 5_000,
-  costIn: 3_000,
-  costOut: 15_000,
+  creditsIn: 600,
+  creditsOut: 3_000,
+  contextCap: 400_000,
   routes: [
-    { provider: 'anthropic', model: 'claude-sonnet-4', contextTokens: 200_000 },
-    { provider: 'openai', model: 'gpt-4.1', contextTokens: 1_000_000 },
-    { provider: 'google', model: 'gemini-2.5-pro', contextTokens: 1_000_000 },
+    { provider: 'anthropic', model: 'claude-sonnet-5.5', contextTokens: 400_000 },
+    { provider: 'openai', model: 'gpt-5', contextTokens: 400_000 },
+    { provider: 'google', model: 'gemini-3.8-flash', contextTokens: 400_000 },
   ],
 }
 
@@ -119,14 +122,15 @@ export const PRECISE: Engine = {
   summary: 'Slow, expensive, and right more often. Architecture, migrations, nasty bugs.',
   minimumPlan: 'core',
   maxOutputTokens: 32_768,
-  creditsIn: 4_800,
-  creditsOut: 24_000,
-  costIn: 15_000,
-  costOut: 75_000,
+  creditsIn: 1_400,
+  creditsOut: 8_400,
+  // Gemini 3.1 Pro doubles above 200k; staying under it keeps the
+  // fallback honest instead of quietly doubling the worst case.
+  contextCap: 200_000,
   routes: [
-    { provider: 'anthropic', model: 'claude-opus-4', contextTokens: 200_000 },
-    { provider: 'openai', model: 'o3', contextTokens: 200_000 },
-    { provider: 'google', model: 'gemini-2.5-pro-thinking', contextTokens: 1_000_000 },
+    { provider: 'anthropic', model: 'claude-opus-5.5', contextTokens: 200_000 },
+    { provider: 'openai', model: 'gpt-5.5', contextTokens: 200_000 },
+    { provider: 'google', model: 'gemini-3.1-pro', contextTokens: 200_000 },
   ],
 }
 
@@ -136,14 +140,13 @@ export const AGENT: Engine = {
   summary: 'Runs tools in a loop: reads files, edits, builds, reads the error, tries again.',
   minimumPlan: 'forge',
   maxOutputTokens: 16_384,
-  creditsIn: 1_800,
-  creditsOut: 9_000,
-  costIn: 5_000,
-  costOut: 25_000,
+  creditsIn: 750,
+  creditsOut: 4_500,
+  contextCap: 400_000,
   routes: [
-    { provider: 'anthropic', model: 'claude-sonnet-4', contextTokens: 200_000 },
-    { provider: 'openai', model: 'gpt-4.1', contextTokens: 1_000_000 },
-    { provider: 'deepseek', model: 'deepseek-v3', contextTokens: 128_000 },
+    { provider: 'anthropic', model: 'claude-sonnet-5.5', contextTokens: 400_000 },
+    { provider: 'openai', model: 'gpt-5.4', contextTokens: 400_000 },
+    { provider: 'deepseek', model: 'deepseek-v4', contextTokens: 400_000 },
   ],
 }
 
@@ -206,8 +209,35 @@ export function validateRoutes(available: readonly string[], catalogue: readonly
   })
 }
 
+/**
+ * The dearest rates any route in this engine's chain can charge,
+ * cliffs and published increases included. Every margin figure in the
+ * product is computed from this rather than from the preferred route,
+ * because a fallback must never turn a sale into a loss.
+ */
+export function worstRatesFor(engine: Engine): Rates {
+  const rates = engine.routes
+    .map((route) => priceFor(route.provider, route.model))
+    .filter((entry): entry is NonNullable<typeof entry> => Boolean(entry))
+    .map((entry) => worstRates(entry, engine.contextCap))
+  if (rates.length === 0) return { inputPerK: 0, outputPerK: 0, cachedInputPerK: 0 }
+  return {
+    inputPerK: Math.max(...rates.map((rate) => rate.inputPerK)),
+    outputPerK: Math.max(...rates.map((rate) => rate.outputPerK)),
+    cachedInputPerK: Math.max(...rates.map((rate) => rate.cachedInputPerK)),
+  }
+}
+
+/** Every route in the catalogue has a price, or the margin maths is fiction. */
+export function unpricedRoutes(catalogue: readonly Engine[] = ENGINES): string[] {
+  return catalogue
+    .flatMap((engine) => engine.routes)
+    .filter((route) => !PRICES.some((entry) => entry.provider === route.provider && entry.model === route.model))
+    .map(routeKey)
+}
+
 /** The widest context any live route for this engine can take. */
 export function contextLimit(engine: Engine, available: readonly string[] = []): number {
   const route = resolveEngine(engine, available)
-  return route?.contextTokens ?? engine.routes[0]?.contextTokens ?? 0
+  return Math.min(engine.contextCap, route?.contextTokens ?? engine.routes[0]?.contextTokens ?? 0)
 }

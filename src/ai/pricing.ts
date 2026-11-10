@@ -21,7 +21,7 @@
  * reservation exact and the hard stop real.
  */
 
-import { CACHED_INPUT_DIVISOR, CREDIT_VALUE_MICRO_DOLLARS, type Engine } from './engines'
+import { CACHED_INPUT_DIVISOR, CREDIT_VALUE_MICRO_DOLLARS, worstRatesFor, type Engine } from './engines'
 
 /** Micro-credits in one credit. Everything internal is micro-credits. */
 export const MICRO = 1_000_000
@@ -165,18 +165,25 @@ export function affordableOutputTokens(
 
 /* ------------------------------------------------------------ the margin */
 
-/** What a call cost Tungsten at list provider pricing, in micro-dollars. */
+/**
+ * What a call cost us at the dearest route its engine may use, in
+ * micro-dollars. The dearest rather than the actual, because a margin
+ * that only holds while the preferred provider is up is not a margin.
+ */
 export function wholesaleMicroDollars(engine: Engine, usage: Usage): number {
-  const uncached = (whole(usage.inputTokens) * engine.costIn) / 1000
-  const cached = (whole(usage.cachedInputTokens ?? 0) * engine.costIn) / 1000 / CACHED_INPUT_DIVISOR
-  const output = (whole(usage.outputTokens) * engine.costOut) / 1000
-  return Math.round(uncached + cached + output)
+  const rates = worstRatesFor(engine)
+  return Math.round(
+    (whole(usage.inputTokens) * rates.inputPerK) / 1000 +
+      (whole(usage.cachedInputTokens ?? 0) * rates.cachedInputPerK) / 1000 +
+      (whole(usage.outputTokens) * rates.outputPerK) / 1000,
+  )
 }
 
 /** Retail over wholesale for an engine, as a ratio. The margin, in one number. */
 export function markupOf(engine: Engine): number {
-  const onInput = (engine.creditsIn * CREDIT_VALUE_MICRO_DOLLARS) / 1000 / engine.costIn
-  const onOutput = (engine.creditsOut * CREDIT_VALUE_MICRO_DOLLARS) / 1000 / engine.costOut
+  const rates = worstRatesFor(engine)
+  const onInput = (engine.creditsIn * CREDIT_VALUE_MICRO_DOLLARS) / 1000 / rates.inputPerK
+  const onOutput = (engine.creditsOut * CREDIT_VALUE_MICRO_DOLLARS) / 1000 / rates.outputPerK
   return Math.min(onInput, onOutput)
 }
 
@@ -187,7 +194,8 @@ export function markupOf(engine: Engine): number {
  * or the plan is a loss-leader by accident rather than on purpose.
  */
 export function wholesalePerCredit(engine: Engine): number {
-  return Math.max((1000 * engine.costIn) / engine.creditsIn, (1000 * engine.costOut) / engine.creditsOut)
+  const rates = worstRatesFor(engine)
+  return Math.max((1000 * rates.inputPerK) / engine.creditsIn, (1000 * rates.outputPerK) / engine.creditsOut)
 }
 
 /* -------------------------------------------------------------- for eyes */

@@ -7,6 +7,7 @@
  * calls this; this never knows the panel exists.
  */
 
+export * from './costs'
 export * from './engines'
 export * from './pricing'
 export * from './plans'

@@ -69,6 +69,13 @@ export type Plan = {
   /** Largest single media file, in bytes. */
   mediaBytes: number
   seats: number
+  /**
+   * Everything that is not inference: hosting the included projects,
+   * storage, egress, support. An estimate, and the honest place to
+   * put it is next to the price rather than in a spreadsheet nobody
+   * opens.
+   */
+  infraCents: number
   features: PlanFeatures
 }
 
@@ -84,6 +91,7 @@ export const SPARK: Plan = {
   engines: ['flash', 'balanced'],
   mediaBytes: 25 * MB,
   seats: 1,
+  infraCents: 40,
   features: {
     exportCode: true,
     ownBackend: true,
@@ -101,12 +109,13 @@ export const CORE: Plan = {
   id: 'core',
   label: 'Core',
   summary: 'For one person shipping. Precise engine, always-on hosting, your domain.',
-  priceCents: 1_900,
-  monthlyCredits: 2_500,
+  priceCents: 2_000,
+  monthlyCredits: 3_000,
   dailyCredits: 0,
   engines: ['flash', 'balanced', 'precise'],
   mediaBytes: 100 * MB,
   seats: 1,
+  infraCents: 200,
   features: {
     exportCode: true,
     ownBackend: true,
@@ -124,12 +133,13 @@ export const FORGE: Plan = {
   id: 'forge',
   label: 'Forge',
   summary: 'For a small team. The Agent engine, shared projects, your own provider keys.',
-  priceCents: 4_900,
+  priceCents: 6_000,
   monthlyCredits: 9_000,
   dailyCredits: 0,
   engines: ['flash', 'balanced', 'precise', 'agent'],
   mediaBytes: 500 * MB,
   seats: 5,
+  infraCents: 700,
   features: {
     exportCode: true,
     ownBackend: true,
@@ -147,12 +157,13 @@ export const TITAN: Plan = {
   id: 'titan',
   label: 'Titan',
   summary: 'For a company. Every engine, 25 seats, audit log, someone who answers.',
-  priceCents: 14_900,
-  monthlyCredits: 30_000,
+  priceCents: 20_000,
+  monthlyCredits: 25_000,
   dailyCredits: 0,
   engines: ['flash', 'balanced', 'precise', 'agent'],
   mediaBytes: 2048 * MB,
   seats: 25,
+  infraCents: 3_000,
   features: {
     exportCode: true,
     ownBackend: true,
@@ -172,7 +183,7 @@ export const PLANS: Plan[] = [SPARK, CORE, FORGE, TITAN]
 export const DEFAULT_PLAN: PlanId = 'spark'
 
 /** The fraction of a plan's price that must survive a worst-case month. */
-export const MINIMUM_PLAN_MARGIN = 0.25
+export const MINIMUM_PLAN_MARGIN = 0.3
 
 export function planById(id: string): Plan | undefined {
   return PLANS.find((plan) => plan.id === id)
@@ -272,40 +283,82 @@ export function featureRefusal(plan: Plan, feature: keyof PlanFeatures, what: st
 
 /* ---------------------------------------------------------- the invariant */
 
+/** What the payment processor takes: 2.9% plus 30 cents, the usual shape. */
+export const PROCESSING_RATE = 0.029
+export const PROCESSING_FIXED_CENTS = 30
+
+export function processingCents(priceCents: number): number {
+  return priceCents === 0 ? 0 : priceCents * PROCESSING_RATE + PROCESSING_FIXED_CENTS
+}
+
 export type PlanEconomics = {
   plan: PlanId
   priceCents: number
-  /** Worst-case provider bill if the whole allowance goes to the dearest engine. */
-  worstCaseCents: number
+  /** Provider bill for the credits assumed spent. */
+  inferenceCents: number
+  infraCents: number
+  processingCents: number
+  /** Everything above, added up. */
+  totalCostCents: number
   /** Fraction of the price left over. Negative means the plan loses money. */
   margin: number
   dearestEngine: EngineId
+  /** What fraction of the allowance this figure assumes was used. */
+  utilisation: number
 }
 
 /**
- * What a plan costs us in its worst month.
+ * What a plan costs us, and what is left.
  *
- * The free plan is measured at monthly plus thirty daily top-ups --
- * the number an abuse model needs, and the number that says whether
- * requiring a verified email is enough.
+ * The default is the **worst** month: every included credit spent on
+ * the dearest engine the plan may call, at the dearest route that
+ * engine may fall back to, with the long-context cliffs and published
+ * price rises counted in. Hosting and the payment processor's cut are
+ * added, because a margin that ignores them is a margin that is not
+ * there.
+ *
+ * Pass a `utilisation` below 1 for the realistic case. Both numbers
+ * are worth knowing and only one of them is worth betting the company
+ * on.
  */
-export function economicsOf(plan: Plan): PlanEconomics {
+export function economicsOf(plan: Plan, options: { utilisation?: number } = {}): PlanEconomics {
+  const utilisation = options.utilisation ?? 1
   const allowed = ENGINES.filter((engine) => plan.engines.includes(engine.id))
   const dearest = allowed.reduce(
     (worst, engine) => (wholesalePerCredit(engine) > wholesalePerCredit(worst) ? engine : worst),
     allowed[0] ?? ENGINES[0],
   )
-  const credits = plan.monthlyCredits + plan.dailyCredits * 30
-  const worstCaseMicroDollars = credits * wholesalePerCredit(dearest)
-  const worstCaseCents = worstCaseMicroDollars / 10_000
+  const credits = (plan.monthlyCredits + plan.dailyCredits * 30) * utilisation
+  const inferenceCents = (credits * wholesalePerCredit(dearest)) / 10_000
+  const processing = processingCents(plan.priceCents)
+  const totalCostCents = inferenceCents + plan.infraCents + processing
   return {
     plan: plan.id,
     priceCents: plan.priceCents,
-    worstCaseCents,
-    margin: plan.priceCents === 0 ? 0 : (plan.priceCents - worstCaseCents) / plan.priceCents,
+    inferenceCents,
+    infraCents: plan.infraCents,
+    processingCents: processing,
+    totalCostCents,
+    margin: plan.priceCents === 0 ? 0 : (plan.priceCents - totalCostCents) / plan.priceCents,
     dearestEngine: dearest.id,
+    utilisation,
   }
 }
+
+/**
+ * How much more AI a plan includes than the same credits bought
+ * outright. Core and Forge include half as much again; Titan
+ * deliberately includes less of a discount, because the biggest
+ * allowance is also the one worth farming, and the top tier is sold on
+ * seats, audit and support rather than on the cheapest token.
+ */
+export function includedValueRatio(plan: Plan): number {
+  if (plan.priceCents === 0) return Number.POSITIVE_INFINITY
+  return (plan.monthlyCredits * LIST_CENTS_PER_CREDIT) / plan.priceCents
+}
+
+/** One credit, bought on its own, costs a cent. Everything hangs off this. */
+export const LIST_CENTS_PER_CREDIT = 1
 
 /* ------------------------------------------------------------- top-ups */
 
@@ -325,6 +378,13 @@ export const TOP_UPS: TopUp[] = [
   { id: 'pack-5k', credits: 5_000, priceCents: 4_500 },
   { id: 'pack-20k', credits: 20_000, priceCents: 16_000 },
 ]
+
+/** Annual billing: pay for ten months, get twelve. */
+export const ANNUAL_MONTHS_CHARGED = 10
+
+export function annualCents(plan: Plan): number {
+  return plan.priceCents * ANNUAL_MONTHS_CHARGED
+}
 
 export function topUpById(id: string): TopUp | undefined {
   return TOP_UPS.find((pack) => pack.id === id)

@@ -93,7 +93,7 @@ describe('the metered gateway', () => {
       if (!result.ok) return
       expect(result.text).toBe('Done.')
       expect(result.credits).toBe(creditsFor(BALANCED, usage))
-      expect(kit.left()).toBe(2_500 - result.credits)
+      expect(kit.left()).toBe(3_000 - result.credits)
       expect(kit.store.read().holds).toHaveLength(0)
     })
   })
@@ -103,8 +103,8 @@ describe('the metered gateway', () => {
     // twelve thousand and wrote eight. The gateway's numbers win.
     const kit = harness({ replies: [answer('x', { inputTokens: 12_000, outputTokens: 8_000 })] })
     const result = await kit.gateway.complete({ engine: 'balanced', prompt: { ...PROMPT, question: 'hi' }, key: 'call-2' })
-    expect(result.ok && result.credits).toBe(52)
-    expect(kit.left()).toBe(2_448)
+    expect(result.ok && result.credits).toBe(32)
+    expect(kit.left()).toBe(2_968)
   })
 
   it('eats the difference rather than charging past the hold', async () => {
@@ -114,16 +114,16 @@ describe('the metered gateway', () => {
     const result = await kit.gateway.complete({ engine: 'balanced', prompt: PROMPT, key: 'call-2b' })
     expect(result.ok).toBe(true)
     if (!result.ok) return
-    expect(creditsFor(BALANCED, result.usage)).toBe(480)
-    expect(result.credits).toBeLessThan(480)
-    expect(kit.left()).toBe(2_500 - result.credits)
+    expect(creditsFor(BALANCED, result.usage)).toBe(288)
+    expect(result.credits).toBeLessThan(288)
+    expect(kit.left()).toBe(3_000 - result.credits)
   })
 
   it('passes the cache discount on', async () => {
     const kit = harness({ replies: [answer('ok', { inputTokens: 1_000, cachedInputTokens: 40_000, outputTokens: 500 })] })
     const result = await kit.gateway.complete({ engine: 'balanced', prompt: PROMPT, key: 'call-3' })
-    // 1k fresh + 40k cached bills as 1 + 4 credits, not 41.
-    expect(result.ok && result.credits).toBe(8)
+    // 40k of cached context bills as 2.4 credits, not 24.
+    expect(result.ok && result.credits).toBe(5)
   })
 
   it('refuses an engine the plan does not include, without calling anybody', async () => {
@@ -151,7 +151,7 @@ describe('the metered gateway', () => {
   })
 
   it('stops hard when there is not enough left to be worth starting', async () => {
-    const empty: Wallet = { ...newWallet('core', T0), included: 1 }
+    const empty: Wallet = { ...newWallet('core', T0), included: 0 }
     const kit = harness({ wallet: empty })
     const result = await kit.gateway.complete({ engine: 'balanced', prompt: PROMPT, key: 'call-6' })
     expect(result.ok).toBe(false)
@@ -166,7 +166,7 @@ describe('the metered gateway', () => {
     await expect(
       kit.gateway.complete({ engine: 'balanced', prompt: PROMPT, key: 'call-7' }),
     ).rejects.toBeInstanceOf(BackendError)
-    expect(kit.left()).toBe(2_500)
+    expect(kit.left()).toBe(3_000)
     expect(kit.store.read().holds).toHaveLength(0)
   })
 
@@ -184,7 +184,7 @@ describe('the metered gateway', () => {
     const kit = harness({ replies: [answer('a', usage), answer('a', usage)] })
     await kit.gateway.complete({ engine: 'balanced', prompt: PROMPT, key: 'same-key' })
     await kit.gateway.complete({ engine: 'balanced', prompt: PROMPT, key: 'same-key' })
-    expect(kit.left()).toBe(2_491)
+    expect(kit.left()).toBe(2_994)
   })
 
   it('carries identity and the idempotency key, and nothing about the plan', async () => {
@@ -223,7 +223,7 @@ describe('the metered gateway', () => {
     const estimate = kit.gateway.estimate({ engine: 'balanced', prompt: PROMPT })
     expect(estimate.credits).toBeGreaterThan(0)
     expect(estimate.ceiling).toBeGreaterThanOrEqual(estimate.credits)
-    expect(kit.left()).toBe(2_500)
+    expect(kit.left()).toBe(3_000)
   })
 })
 
@@ -266,8 +266,8 @@ describe('streaming', () => {
       onChunk: (text) => kit.chunks.push(text),
     })
     expect(kit.chunks.join('')).toBe('Hello world')
-    expect(result.ok && result.credits).toBe(9)
-    expect(balance(kit.store.read(), T0).total).toBe(2_491)
+    expect(result.ok && result.credits).toBe(6)
+    expect(balance(kit.store.read(), T0).total).toBe(2_994)
   })
 
   it('bills an answer the user stopped for what had already arrived', async () => {
@@ -311,7 +311,7 @@ describe('streaming', () => {
     await expect(
       gateway.complete({ engine: 'balanced', prompt: PROMPT, key: 'stream-3', onChunk: () => {} }),
     ).rejects.toBeInstanceOf(BackendError)
-    expect(balance(store.read(), T0).total).toBe(2_500)
+    expect(balance(store.read(), T0).total).toBe(3_000)
   })
 })
 
@@ -329,7 +329,7 @@ describe('wallet stores', () => {
     expect(data.has(WALLET_KEY)).toBe(true)
 
     const second = browserStore(storage, { plan: 'core', now: T0 })
-    expect(balance(second.read(), T0).total).toBe(2_900)
+    expect(balance(second.read(), T0).total).toBe(3_400)
   })
 
   it('starts fresh rather than throwing on nonsense', () => {

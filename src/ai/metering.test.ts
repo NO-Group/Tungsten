@@ -9,8 +9,11 @@ import {
   engineById,
   resolveEngine,
   routeKey,
+  unpricedRoutes,
   validateRoutes,
+  worstRatesFor,
 } from './engines'
+import { PRICES_READ_ON, costOf, priceFor, ratesFor, worstRates } from './costs'
 import {
   MINIMUM_OUTPUT_TOKENS,
   affordableOutputTokens,
@@ -24,10 +27,15 @@ import {
 } from './pricing'
 import {
   MINIMUM_PLAN_MARGIN,
+  CORE,
+  FORGE,
   PLANS,
   SPARK,
+  TITAN,
   TOP_UPS,
+  annualCents,
   economicsOf,
+  includedValueRatio,
   engineRefusal,
   featureRefusal,
   mediaRefusal,
@@ -104,14 +112,59 @@ describe('the engine catalogue', () => {
   })
 })
 
+/* ----------------------------------------------------------- wholesale */
+
+describe('what inference costs us', () => {
+  it('has a price for every route an engine can fall back to', () => {
+    expect(unpricedRoutes()).toEqual([])
+    expect(PRICES_READ_ON).toMatch(/^\d{4}-\d{2}-\d{2}$/)
+  })
+
+  it('counts the long-context cliff when we are willing to cross it', () => {
+    const haiku = priceFor('anthropic', 'claude-haiku-5.5')!
+    // Past 100k, the whole request reprices five-fold.
+    expect(ratesFor(haiku, 50_000).outputPerK).toBe(500)
+    expect(ratesFor(haiku, 150_000).outputPerK).toBe(2_500)
+    // Flash caps its context below the cliff, so the cliff is not in
+    // Flash's worst case -- which is the only reason the band is cheap.
+    expect(worstRates(haiku, 100_000).outputPerK).toBe(500)
+    expect(worstRates(haiku).outputPerK).toBe(2_500)
+    expect(worstRatesFor(FLASH).outputPerK).toBeLessThan(2_500)
+  })
+
+  it('counts a price rise a provider has already announced', () => {
+    const gemini = priceFor('google', 'gemini-3.8-flash')!
+    expect(gemini.scheduled?.from).toBe('2027-01-01')
+    expect(worstRates(gemini).outputPerK).toBe(gemini.scheduled!.outputPerK)
+    expect(worstRates(gemini).outputPerK).toBeGreaterThan(gemini.outputPerK)
+  })
+
+  it('adds a call up the way the invoice will', () => {
+    const sonnet = priceFor('anthropic', 'claude-sonnet-5.5')!
+    // 10k fresh input at $2/M is $0.020, 50k cached at $0.10/M is
+    // $0.005, 2k output at $10/M is $0.020: four and a half cents.
+    expect(costOf(sonnet, { inputTokens: 10_000, cachedInputTokens: 50_000, outputTokens: 2_000 })).toBe(45_000)
+  })
+
+  it('never bills cached input below what a cache read costs us', () => {
+    for (const engine of ENGINES) {
+      // We charge a tenth of the input weight for cached tokens.
+      const retailPerK = engine.creditsIn
+      expect(retailPerK / worstRatesFor(engine).cachedInputPerK, `${engine.label} cache markup`).toBeGreaterThanOrEqual(
+        MINIMUM_MARKUP,
+      )
+    }
+  })
+})
+
 /* ------------------------------------------------------------- pricing */
 
 describe('credit arithmetic', () => {
   it('bills per token, not per prompt', () => {
     const short = creditsFor(BALANCED, { inputTokens: 500, outputTokens: 200 })
     const long = creditsFor(BALANCED, { inputTokens: 200_000, outputTokens: 4_000 })
-    expect(short).toBe(2)
-    expect(long).toBe(220)
+    expect(short).toBe(1)
+    expect(long).toBe(132)
     // The thing the per-prompt model gets wrong, in one assertion.
     expect(long / short).toBeGreaterThan(30)
   })
@@ -119,7 +172,7 @@ describe('credit arithmetic', () => {
   it('charges a tenth for cached input', () => {
     const fresh = creditsFor(BALANCED, { inputTokens: 10_000, outputTokens: 0 })
     const cached = creditsFor(BALANCED, { inputTokens: 0, cachedInputTokens: 10_000, outputTokens: 0 })
-    expect(fresh).toBe(10)
+    expect(fresh).toBe(6)
     expect(cached).toBe(1)
   })
 
@@ -144,14 +197,14 @@ describe('credit arithmetic', () => {
   it('works out how long a reply the balance can pay for', () => {
     // 100 credits, 4k of input: 96 credits of output left at 5 per 1k.
     expect(affordableOutputTokens(BALANCED, 100, { inputTokens: 4_000 })).toBe(16_384)
-    expect(affordableOutputTokens(BALANCED, 10, { inputTokens: 4_000 })).toBe(1_200)
+    expect(affordableOutputTokens(BALANCED, 10, { inputTokens: 4_000 })).toBe(2_533)
     expect(affordableOutputTokens(BALANCED, 2, { inputTokens: 4_000 })).toBe(0)
   })
 
   it('reads a spend back in English', () => {
     const usage = { inputTokens: 200_000, cachedInputTokens: 0, outputTokens: 16_000 }
     expect(describeSpend(PRECISE, usage, creditsFor(PRECISE, usage))).toBe(
-      '1,344 credits — 200k in, 16k out on Precise',
+      '415 credits — 200k in, 16k out on Precise',
     )
   })
 })
@@ -168,8 +221,42 @@ describe('plans', () => {
 
   it('keeps the free plan cheap enough to give away', () => {
     const economics = economicsOf(SPARK)
-    // Worst case, in dollars, for one farmed free account for a month.
-    expect(economics.worstCaseCents / 100).toBeLessThan(2)
+    // Worst case, in dollars, for one farmed free account for a month:
+    // every credit and every daily top-up spent on Balanced, plus the
+    // hosting its one sleeping project uses.
+    expect(economics.totalCostCents / 100).toBeLessThan(2.5)
+    // What it realistically costs, which is the number that scales.
+    expect(economicsOf(SPARK, { utilisation: 0.2 }).totalCostCents / 100).toBeLessThan(1)
+  })
+
+  it('still clears the margin once hosting and card fees are counted', () => {
+    for (const plan of PLANS.filter((candidate) => candidate.priceCents > 0)) {
+      const economics = economicsOf(plan)
+      expect(economics.processingCents).toBeGreaterThan(0)
+      expect(economics.infraCents).toBeGreaterThan(0)
+      expect(economics.totalCostCents).toBeGreaterThan(economics.inferenceCents)
+      // And the realistic month is a very different business.
+      expect(economicsOf(plan, { utilisation: 0.35 }).margin).toBeGreaterThan(0.6)
+    }
+  })
+
+  it('does not hand the biggest allowance the biggest discount', () => {
+    // The deepest included discount is the most farmable one, so it
+    // does not live on the plan with the most credits.
+    expect(includedValueRatio(CORE)).toBeCloseTo(1.5, 2)
+    expect(includedValueRatio(FORGE)).toBeCloseTo(1.5, 2)
+    expect(includedValueRatio(TITAN)).toBeLessThan(includedValueRatio(CORE))
+    expect(includedValueRatio(TITAN)).toBeGreaterThan(1)
+  })
+
+  it('prices against the market it is sold into', () => {
+    // Cursor Pro $20, Replit Core $20-25, Lovable Pro $25, Bolt Pro
+    // $25-29 at entry; Lovable Business $50, Cursor Pro+ $60 in the
+    // middle; Cursor Ultra and Bolt Pro 200 at $200 on top.
+    expect(CORE.priceCents).toBeLessThanOrEqual(2_500)
+    expect(FORGE.priceCents).toBeLessThanOrEqual(6_500)
+    expect(TITAN.priceCents).toBeLessThanOrEqual(20_000)
+    expect(annualCents(CORE)).toBe(CORE.priceCents * 10)
   })
 
   it('has a coherent free ladder', () => {
@@ -238,9 +325,9 @@ describe('the wallet', () => {
       usage: { inputTokens: 4_000, outputTokens: 1_000 },
       now: T0 + 2_000,
     })
-    expect(done.charged).toBe(9)
-    expect(done.refunded).toBe(81)
-    expect(balance(done.wallet, T0 + 2_000).total).toBe(251)
+    expect(done.charged).toBe(6)
+    expect(done.refunded).toBe(84)
+    expect(balance(done.wallet, T0 + 2_000).total).toBe(254)
     expect(balance(done.wallet, T0 + 2_000).held).toBe(0)
   })
 
@@ -315,7 +402,7 @@ describe('the wallet', () => {
       usage: { inputTokens: 1_000, outputTokens: 600 },
       now: T0 + 1_000,
     })
-    expect(stopped.charged).toBe(4)
+    expect(stopped.charged).toBe(3)
     expect(stopped.entry?.note).toContain('billed for what was delivered')
   })
 
@@ -338,7 +425,7 @@ describe('the wallet', () => {
     // The difference lands at once; the free daily grant goes away,
     // because a paid plan that keeps handing out free credits is a
     // plan nobody tops up.
-    expect(balance(upgraded, T0 + HOUR).total).toBe(2_500)
+    expect(balance(upgraded, T0 + HOUR).total).toBe(3_000)
   })
 
   it('reads its own balance out loud', () => {
@@ -441,9 +528,11 @@ describe('the numbers behind the pitch', () => {
     const titan = planOr('titan')
     const economics = economicsOf(titan)
     expect(economics.dearestEngine).toBe('precise')
-    // $149 in, $90 of inference out, in the worst month that is possible.
-    expect(Math.round(economics.worstCaseCents / 100)).toBe(94)
-    expect(economics.worstCaseCents).toBeLessThan(titan.priceCents)
+    // $200 in; $89 of inference, $30 of hosting and $6 to the card
+    // network out, in the worst month that is physically possible.
+    expect(Math.round(economics.inferenceCents / 100)).toBe(89)
+    expect(Math.round(economics.totalCostCents / 100)).toBe(125)
+    expect(economics.margin).toBeGreaterThan(0.37)
   })
 
   it('agrees with itself: one engine, two ways of pricing the same month', () => {
@@ -451,11 +540,11 @@ describe('the numbers behind the pitch', () => {
     const creditsPerCall = creditsFor(engine, { inputTokens: 200_000, outputTokens: 16_000 })
     const calls = Math.floor(planOr('titan').monthlyCredits / creditsPerCall)
     const wholesaleCents = (calls * creditsPerCall * wholesalePerCredit(engine)) / 10_000
-    expect(calls).toBe(22)
+    expect(calls).toBe(60)
     expect(wholesaleCents).toBeLessThan(planOr('titan').priceCents)
   })
 
   it('refuses to start an answer too small to be worth charging for', () => {
-    expect(affordableOutputTokens(PRECISE, 5, { inputTokens: 1_000 })).toBeLessThan(MINIMUM_OUTPUT_TOKENS)
+    expect(affordableOutputTokens(PRECISE, 2, { inputTokens: 1_000 })).toBeLessThan(MINIMUM_OUTPUT_TOKENS)
   })
 })

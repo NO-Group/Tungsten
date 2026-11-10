@@ -653,12 +653,19 @@ expensive engines. **Credits** buy tokens. Bundling them means either
 the light users subsidise the heavy ones until the heavy ones leave, or
 nobody's bill is predictable.
 
-| Plan | Price | Credits | Daily fallback | Engines |
-| --- | --- | --- | --- | --- |
-| Spark | free | 250 / month | 10 per rolling 24h | Flash, Balanced |
-| Core | $19 | 2,500 | — | + Precise |
-| Forge | $49 | 9,000 | — | + Agent |
-| Titan | $149 | 30,000 | — | all four |
+| Plan | Price | Credits | List value | Daily fallback | Engines |
+| --- | --- | --- | --- | --- | --- |
+| Spark | free | 250 / month | — | 10 per rolling 24h | Flash, Balanced |
+| Core | $20 | 3,000 | $30 | — | + Precise |
+| Forge | $60 | 9,000 | $90 | — | + Agent |
+| Titan | $200 | 25,000 | $250 | — | all four |
+
+Prices were set from the November 2026 provider rate card, which lives
+in `src/ai/costs.ts` with the date attached: Claude Sonnet 5.5 at
+$2/$10 per million, Opus 5.5 at $4/$20, GPT-5 at $1.25/$10, GPT-5.5 at
+$5/$30, Gemini 3.8 Flash at $0.75/$3.75 (doubling on 1 January 2027,
+which is already in the worst case), Haiku 5.5 at $0.10/$0.50 below its
+100k cliff, DeepSeek V4 at $0.30/$0.50.
 
 A credit is a unit of **tokens, not prompts**:
 
@@ -678,13 +685,16 @@ then settle against the usage the gateway reports. Failures release the
 hold in full — they are free. An abandoned stream is billed for what
 actually arrived. Retries with the same key charge once.
 
-Two claims pricing pages usually make without evidence are tests here:
-an allowance spent entirely on the dearest engine a plan may call still
-leaves 25% of the price (Titan's worst possible month is $94 of
-inference against $149 of revenue), and a session token carries
-identity only — `sub`, `sid`, `iat`, `exp` — so an upgrade or a
-cancellation takes effect in milliseconds instead of whenever a JWT
-happens to expire.
+Two claims pricing pages usually make without evidence are tests here.
+First: an allowance spent entirely on the dearest engine a plan may
+call — at the dearest route that engine may fall back to, with
+long-context cliffs and announced price rises counted, plus hosting and
+card fees — still leaves 30% of the price. Titan's worst physically
+possible month is $89 of inference, $30 of hosting and $6 of card fees
+against $200 of revenue; at realistic use the margin is 74%. Second: a
+session token carries identity only — `sub`, `sid`, `iat`, `exp` — so
+an upgrade or a cancellation takes effect in milliseconds instead of
+whenever a JWT happens to expire.
 
 The engine, the arithmetic and the invariants are in `src/ai/`, and the
 full design is in [docs/CREDITS.md](docs/CREDITS.md).
