@@ -56,6 +56,7 @@ import {
   type Table,
 } from './dataSchema'
 import { schemaFromBlueprint, type Blueprint } from '../backend/blueprint'
+import { DEFAULT_BACKEND_SETTINGS, readBackendSettings, type BackendSettings } from '../backend/registry'
 import { applyPlan, describePlan, planSchema } from './schemaPlanner'
 import { scaffoldFor } from './tableScaffold'
 import { previewHtml } from './previewRuntime'
@@ -113,6 +114,8 @@ type Stored = {
    * afternoon. Typing an address here is the moment of consent.
    */
   backend: string
+  /** Which backend adapter the project is configured for, and its credentials. */
+  backendSettings: BackendSettings
 }
 
 export type BuilderState = {
@@ -277,6 +280,9 @@ export type BuilderState = {
   draftSchema: (description: string) => void
   /** Lands an approved blueprint on the canvas schema. Additive only. */
   adoptBlueprint: (blueprint: Blueprint) => void
+  /** Which backend the project is configured for, and what was pasted in. */
+  backendSettings: BackendSettings
+  setBackendSettings: (settings: BackendSettings) => void
   /** Builds a heading, a form and a list for one drawn table. */
   scaffoldTable: (index: number) => void
   /** A line the preview logged. */
@@ -313,6 +319,7 @@ function load(): Stored {
     screens: [...DEFAULT_SCREENS],
     organization: defaultOrganization(),
     backend: '',
+    backendSettings: { ...DEFAULT_BACKEND_SETTINGS },
   }
   try {
     const stored = localStorage.getItem(BUILDER_STORAGE_KEY)
@@ -333,7 +340,18 @@ function load(): Stored {
     // A canvas saved before targets existed gets the default organization,
     // which is one project with the six platforms on it.
     const backend = typeof parsed.backend === 'string' && isBackendUrl(parsed.backend) ? parsed.backend : ''
-    return { graph, schema, state, screens, organization: readOrganization(parsed.organization), backend }
+    return {
+      graph,
+      schema,
+      state,
+      screens,
+      organization: readOrganization(parsed.organization),
+      backend,
+      // A canvas saved before the picker existed gets the default
+      // adapter with no credentials, which is exactly the state the
+      // picker exists to resolve.
+      backendSettings: readBackendSettings(parsed.backendSettings),
+    }
   } catch {
     return empty
   }
@@ -351,6 +369,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
   const [activeScreen, setActiveScreen] = useState(() => homeScreen(initial.screens))
   const [organization, setOrganization] = useState<Organization>(initial.organization)
   const [backend, setBackendUrl] = useState<string>(initial.backend)
+  const [backendSettings, setBackendSettings] = useState<BackendSettings>(initial.backendSettings)
   const [projectIndex, setProjectIndex] = useState(0)
   const [code, setCode] = useState(
     () => generateProgram(initial.graph, registry, initial.state, initial.screens).code,
@@ -426,8 +445,8 @@ export function useBuilder(host: BuilderHost): BuilderState {
    * bytes would differ and not merely when an object identity changed.
    */
   const persisted = useMemo(
-    () => JSON.stringify({ graph, schema, state, screens, organization, backend }),
-    [backend, graph, organization, schema, screens, state],
+    () => JSON.stringify({ graph, schema, state, screens, organization, backend, backendSettings }),
+    [backend, backendSettings, graph, organization, schema, screens, state],
   )
 
   useEffect(() => {
@@ -1203,6 +1222,8 @@ export function useBuilder(host: BuilderHost): BuilderState {
     addTable,
     draftSchema,
     adoptBlueprint,
+    backendSettings,
+    setBackendSettings,
     scaffoldTable,
     renameTable,
     removeTable,

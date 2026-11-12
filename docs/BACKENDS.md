@@ -251,20 +251,49 @@ and gains the new columns on the end. An existing column is not
 retyped. Removal and renaming are discussed in the gate, in words, or
 they do not happen.
 
-## 5. What is next
+## 5. The picker
+
+The **Backend** tab in the builder, `src/components/builder/BackendPanel.tsx`.
+Everything above this line existed with sixty tests and no way to reach
+it from the product; this is the join.
+
+Pick an adapter, paste what it asks for, press **Test connection** —
+which calls `health()` on a real `createBackend(...)` rather than
+validating the URL's shape. `BackendSettings` is saved with the project
+in `tungsten.builder.v1`, so the choice survives a reload, and
+`BuilderView` rebuilds the backend whenever those settings change.
+Incomplete credentials are not an error: they are the normal state of a
+project nobody has configured, so the backend is simply `undefined` and
+the architect reviews without a plan.
+
+Three things the panel refuses to do:
+
+- **Hide what is not built.** Firebase, Appwrite and PocketBase are
+  listed, disabled, with the fields they will need. A dropdown that
+  silently omits Firebase answers "does Tungsten support Firebase?"
+  with nothing at all.
+- **Keep credentials across a change of backend.** Switching adapter
+  clears the config. Carrying a Supabase service key into another
+  vendor's field is useless and a way to paste it somewhere it does not
+  belong.
+- **Show a stale green tick.** Editing any field clears the last health
+  result, because a tick beside an address that was never tested is the
+  most misleading thing this panel could display.
+
+The capability grid is rendered from `info.capabilities`, both halves:
+what the adapter has, and `no replay, no transforms` for what it does
+not. A backend's limits are cheaper to read here than to discover after
+a feature is built on them.
+
+## 6. What is next
 
 In order:
 
-1. **The project backend picker** — the dropdown, the credential fields,
-   a Test Connection button, and `BackendSettings` saved with the
-   project. Until it exists the architect's `plan()` and `apply()` have
-   no adapter to call, so the gate runs without a plan and the draft
-   lands on the canvas only.
-2. **The blocks on the contract** — the canvas's `db.*`, `auth.*` and
+1. **The blocks on the contract** — the canvas's `db.*`, `auth.*` and
    `storage.*` blocks call the active adapter instead of the generated
    service's routes directly. The generated runtimes get the same
    treatment, one language at a time.
-3. **Firebase, Appwrite, PocketBase**, in that order.
-4. **The migration assistant** — `inspect()` on the old backend,
+2. **Firebase, Appwrite, PocketBase**, in that order.
+3. **The migration assistant** — `inspect()` on the old backend,
    `plan()` on the new one, and a diff in between. The shape is already
    there: both ends speak blueprints.

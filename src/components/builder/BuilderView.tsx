@@ -30,7 +30,10 @@ import { AiUsagePanel } from './AiUsagePanel'
 import { useAiWallet, type AiWallet } from '../../ai/useAiWallet'
 import { createArchitect } from '../../backend/architect'
 import type { Gateway } from '../../ai/gateway'
-import type { TungstenSchema } from '../../backend/contract'
+import { BackendError, type TungstenBackend } from '../../backend/contract'
+import { backendChoices, createBackend } from '../../backend/registry'
+import { defaultSend } from '../../backend/adapters/http'
+import { BackendPanel } from './BackendPanel'
 import { blueprintFromSchema } from '../../backend/blueprint'
 import { ArchitectPanel } from './ArchitectPanel'
 import { formatCredits, type EngineId } from '../../ai'
@@ -65,8 +68,6 @@ export type BuilderViewProps = {
   wallet?: AiWallet
   /** The metered gateway, when one is configured. Without it the architect works offline. */
   gateway?: Gateway
-  /** The configured backend's schema surface, for plan and apply. */
-  schema?: TungstenSchema
   /** The engine the whole workbench will spend on, when it is lifted. */
   engine?: EngineId
   onEngineChange?: (engine: EngineId) => void
@@ -92,12 +93,6 @@ function quickTargets(project: Project): Array<{ id: CompileTarget; label: strin
   ]
 }
 
-/**
- * The offline architect. One instance: it holds no state worth keeping
- * apart, and a new one per render would be a new object per keystroke.
- */
-const OFFLINE_ARCHITECT = createArchitect()
-
 export function BuilderView(props: BuilderViewProps) {
   const { builder, editorOptions, theme, onExport, onOpenFile, onBuild, onRunServer, onClose } = props
   const { graph, registry, report, program, code, parseError } = builder
@@ -108,7 +103,7 @@ export function BuilderView(props: BuilderViewProps) {
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [rightPane, setRightPane] = useState<'code' | 'preview'>('code')
   const [bottomPane, setBottomPane] = useState<
-    'integrity' | 'data' | 'state' | 'targets' | 'ai' | 'architect'
+    'integrity' | 'data' | 'state' | 'targets' | 'ai' | 'architect' | 'backend'
   >('integrity')
   // The wallet the assistant spends from, and the engine it will use
   // next. Both live here rather than in `useBuilder` because neither
@@ -125,9 +120,33 @@ export function BuilderView(props: BuilderViewProps) {
   // and it is not the place to save three credits. With no gateway
   // there is nothing to call, so the deterministic planner drafts
   // instead and the tab says `offline` rather than disappearing.
+  /**
+   * The project's backend, built from what the picker holds.
+   *
+   * Incomplete credentials are not an error state here -- they are the
+   * normal state of a project nobody has configured yet -- so this is
+   * undefined until the adapter has everything it needs, and the
+   * architect simply runs without a plan until then.
+   */
+  const backend = useMemo((): TungstenBackend | undefined => {
+    try {
+      return createBackend(builder.backendSettings, { http: defaultSend() })
+    } catch {
+      return undefined
+    }
+  }, [builder.backendSettings])
+
+  /**
+   * One architect, gateway or not.
+   *
+   * Without a gateway it drafts offline from the deterministic
+   * planner; without a backend it reviews but cannot plan. Both are
+   * ordinary states, so there is one object and one code path rather
+   * than a branch per combination.
+   */
   const architect = useMemo(
-    () => (props.gateway ? createArchitect({ gateway: props.gateway, schema: props.schema }) : undefined),
-    [props.gateway, props.schema],
+    () => createArchitect({ gateway: props.gateway, schema: backend?.schema }),
+    [backend?.schema, props.gateway],
   )
   const [ownEngine, setOwnEngine] = useState<EngineId>('balanced')
   const engine = props.engine ?? ownEngine
@@ -484,6 +503,12 @@ export function BuilderView(props: BuilderViewProps) {
                 Targets
                 <span className="builder-problem-counts">{builder.project.targets.length}</span>
               </button>
+              <button className={bottomPane === 'backend' ? 'active' : ''} onClick={() => setBottomPane('backend')}>
+                Backend
+                <span className="builder-problem-counts">
+                  {backend ? backend.info.label : `${builder.backendSettings.adapter} · not configured`}
+                </span>
+              </button>
               <button
                 className={bottomPane === 'architect' ? 'active' : ''}
                 onClick={() => setBottomPane('architect')}
@@ -556,21 +581,38 @@ export function BuilderView(props: BuilderViewProps) {
                 onBuild={onBuild}
                 onRunServer={onRunServer}
               />
+            ) : bottomPane === 'backend' ? (
+              <BackendPanel
+                choices={backendChoices()}
+                settings={builder.backendSettings}
+                onChange={builder.setBackendSettings}
+                onTest={async (settings) => {
+                  try {
+                    return await createBackend(settings, { http: defaultSend() }).health()
+                  } catch (error) {
+                    // A BackendError already carries a sentence written
+                    // for a person; anything else gets one here rather
+                    // than a stack trace in the panel.
+                    if (error instanceof BackendError) return { ok: false, detail: error.message }
+                    throw error
+                  }
+                }}
+              />
             ) : bottomPane === 'architect' ? (
               <ArchitectPanel
                 onDraft={(description) =>
-                  (architect ?? OFFLINE_ARCHITECT).draft({
+                  architect.draft({
                     description,
                     name: builder.project.name,
                     existing: blueprintFromSchema(builder.schema, { name: builder.project.name }),
                   })
                 }
-                onPlan={architect ? (blueprint) => architect.plan(blueprint) : undefined}
+                onPlan={backend ? (blueprint) => backend.schema.plan(blueprint) : undefined}
                 onApply={async (gate) => {
-                  if (architect) await architect.apply(gate.blueprint)
+                  await architect.apply(gate.blueprint)
                   builder.adoptBlueprint(gate.blueprint)
                 }}
-                credits={architect ? aiWallet.balance.total : undefined}
+                credits={props.gateway ? aiWallet.balance.total : undefined}
                 existingTables={builder.schema.tables.map((table) => table.name)}
               />
             ) : (
