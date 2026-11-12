@@ -25,6 +25,9 @@ export type MenuEntry = {
 
 export type Menu = { name: string; entries: MenuEntry[] }
 
+/** Sentinel for "the narrow-window sheet is open", distinct from any menu name. */
+export const MOBILE_MENU = '\u0000mobile'
+
 export type TitleBarProps = {
   title: string
   menus: Menu[]
@@ -41,17 +44,59 @@ export type TitleBarProps = {
   onTogglePanel: () => void
   sidePreview: boolean
   onToggleSidePreview: () => void
+  /** Opens the editor assistant. The button used to be an icon with no handler. */
+  onOpenAssistant: () => void
+  assistantOpen: boolean
 }
 
 export function TitleBar({
   title, menus, openMenu, onOpenMenuChange, onOpenCommandCentre, collaborationActive,
   participantCount, onOpenCollaboration, sidebarVisible, onToggleSidebar, panelOpen,
-  onTogglePanel, sidePreview, onToggleSidePreview,
+  onTogglePanel, sidePreview, onToggleSidePreview, onOpenAssistant, assistantOpen,
 }: TitleBarProps) {
+  // Below 820px the menu bar is hidden by the stylesheet, so the
+  // hamburger cannot just open one menu inside it -- it has to carry
+  // the whole bar. `MOBILE` is that state; it is never one of the real
+  // menu names, so the two cannot collide.
+  const mobileOpen = openMenu === MOBILE_MENU
   return (
     <header className="titlebar">
       <div className="brand-mark" title="Tungsten"><Hammer size={15} strokeWidth={2.4} /></div>
-      <button className="menu-mobile" aria-label="Application menu"><Menu size={15} /></button>
+      {/*
+        The narrow-window menu. It opens the same first menu the wide
+        layout shows, because the alternative -- a button that is only
+        visible below 900px and does nothing when pressed -- is the
+        worst of both.
+      */}
+      <button
+        className="menu-mobile"
+        aria-label="Application menu"
+        aria-expanded={mobileOpen}
+        onClick={() => onOpenMenuChange(mobileOpen ? null : MOBILE_MENU)}
+      ><Menu size={15} /></button>
+
+      {mobileOpen && (
+        <div className="menu-sheet" role="menu" aria-label="Application menu" onClick={(event) => event.stopPropagation()}>
+          {menus.map((menu) => (
+            <section key={menu.name}>
+              <h4>{menu.name}</h4>
+              {menu.entries.map((entry) => (
+                <button
+                  key={entry.id}
+                  role="menuitem"
+                  className={entry.enabled ? '' : 'disabled'}
+                  disabled={!entry.enabled}
+                  title={entry.detail}
+                  onClick={() => { onOpenMenuChange(null); entry.run() }}
+                >
+                  <span>{entry.label}</span>
+                  <kbd>{entry.shortcut}</kbd>
+                </button>
+              ))}
+            </section>
+          ))}
+        </div>
+      )}
 
       <nav className="app-menu" aria-label="Application menu">
         {menus.map((menu) => (
@@ -99,7 +144,11 @@ export function TitleBar({
           active={collaborationActive}
           onClick={onOpenCollaboration}
         ><UsersRound size={15} /></TipButton>
-        <TipButton label="Tungsten Copilot"><Bot size={15} /></TipButton>
+        <TipButton
+          label={assistantOpen ? 'Close the assistant' : 'Tungsten Copilot — ask about the selection'}
+          active={assistantOpen}
+          onClick={onOpenAssistant}
+        ><Bot size={15} /></TipButton>
         <TipButton
           label={sidebarVisible ? 'Hide primary sidebar' : 'Show primary sidebar'}
           active={sidebarVisible}

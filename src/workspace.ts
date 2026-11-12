@@ -162,6 +162,29 @@ const languageByExtension: Record<string, string> = {
   xml: 'xml', yaml: 'yaml', yml: 'yaml', zig: 'plaintext',
 }
 
+/**
+ * The language modes a file can be set to by hand.
+ *
+ * Derived from the extension table rather than typed out again, so the
+ * picker can never offer a mode the editor does not know how to
+ * colour. `plaintext` is first because it is the honest answer for
+ * anything unrecognised.
+ */
+export const languageModes: Array<{ id: string; label: string }> = (() => {
+  const labels: Record<string, string> = {
+    bat: 'Batch', cpp: 'C++', csharp: 'C#', fsharp: 'F#', hcl: 'Terraform', ini: 'INI',
+    javascript: 'JavaScript', json: 'JSON', mdx: 'MDX', 'objective-c': 'Objective-C',
+    php: 'PHP', plaintext: 'Plain Text', powershell: 'PowerShell', scss: 'SCSS',
+    sql: 'SQL', typescript: 'TypeScript', xml: 'XML', yaml: 'YAML', html: 'HTML',
+    css: 'CSS', graphql: 'GraphQL', dockerfile: 'Dockerfile',
+  }
+  const ids = new Set<string>(['plaintext', ...Object.values(languageByExtension), 'diff'])
+  return [...ids].sort().map((id) => ({
+    id,
+    label: labels[id] ?? id.charAt(0).toUpperCase() + id.slice(1),
+  }))
+})()
+
 export const supportedLanguages = [
   'JavaScript', 'TypeScript', 'Python', 'Rust', 'Go', 'Java', 'C', 'C++', 'C#',
   'PHP', 'Ruby', 'Kotlin', 'Swift', 'Dart', 'Lua', 'Shell', 'PowerShell', 'SQL',

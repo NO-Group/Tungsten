@@ -21,7 +21,7 @@ import { ExtensionsView } from './sidebar/ExtensionsView'
 import { DictionaryView } from './sidebar/DictionaryView'
 import { ExplorerView } from './sidebar/ExplorerView'
 import { ActivityBar } from './ActivityBar'
-import { TitleBar, type Menu } from './TitleBar'
+import { MOBILE_MENU, TitleBar, type Menu } from './TitleBar'
 import { StatusBar } from './StatusBar'
 import { PanelHeader } from './panel/PanelHeader'
 import { ProblemsPanel } from './panel/ProblemsPanel'
@@ -214,6 +214,29 @@ describe('extensions view', () => {
     click('Enable extension')
     expect(onToggleEnabled).toHaveBeenCalledWith(extension)
   })
+
+  it('filters both lists from the search box', () => {
+    render(<ExtensionsView extensions={[extension]} languageCount={21} onInstall={noop} onToggleEnabled={noop} onUninstall={noop} onAddBlockPlugin={noop} onDocumentCommand={noop} />)
+    const search = container.querySelector('.search-box-wrap input') as HTMLInputElement
+    const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+
+    act(() => {
+      setter?.call(search, 'git')
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    // The built-in Git tools survive; the installed package does not.
+    expect(container.textContent).toContain('Git Tools')
+    expect(container.textContent).not.toContain('Acme Tools')
+    expect(container.querySelector('.extension-filter-note')?.textContent).toContain('hidden by the filter')
+
+    // Matching happens on what the card shows, including the publisher.
+    act(() => {
+      setter?.call(search, 'acme')
+      search.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    expect(container.textContent).toContain('Acme Tools')
+    expect(container.textContent).not.toContain('Git Tools')
+  })
 })
 
 describe('explorer view', () => {
@@ -337,7 +360,38 @@ describe('title bar', () => {
     onOpenCommandCentre: noop, collaborationActive: false, participantCount: 0, onOpenCollaboration: noop,
     sidebarVisible: true, onToggleSidebar: noop, panelOpen: false, onTogglePanel: noop,
     sidePreview: false, onToggleSidePreview: noop,
+    assistantOpen: false, onOpenAssistant: noop,
   }
+
+  it('carries the whole menu bar in the narrow-window sheet', () => {
+    const onOpenMenuChange = vi.fn()
+    render(<TitleBar {...props} onOpenMenuChange={onOpenMenuChange} />)
+    expect(container.querySelector('.menu-sheet')).toBeNull()
+
+    const hamburger = container.querySelector('.menu-mobile') as HTMLButtonElement
+    act(() => { hamburger.click() })
+    expect(onOpenMenuChange).toHaveBeenCalledWith(MOBILE_MENU)
+
+    // Below 820px the stylesheet hides the menu bar, so the sheet has
+    // to hold every menu rather than opening one inside something
+    // nobody can see.
+    render(<TitleBar {...props} openMenu={MOBILE_MENU} />)
+    const sheet = container.querySelector('.menu-sheet') as HTMLElement
+    expect(sheet.textContent).toContain('File')
+    expect(sheet.textContent).toContain('Help')
+    expect(sheet.textContent).toContain('About')
+    expect((button('Save All') as HTMLButtonElement).disabled).toBe(true)
+  })
+
+  it('opens the assistant from the Copilot button', () => {
+    const onOpenAssistant = vi.fn()
+    render(<TitleBar {...props} onOpenAssistant={onOpenAssistant} />)
+    act(() => { button('Tungsten Copilot — ask about the selection').click() })
+    expect(onOpenAssistant).toHaveBeenCalled()
+
+    render(<TitleBar {...props} assistantOpen />)
+    expect(button('Close the assistant').className).toContain('active')
+  })
 
   it('opens a menu and runs an entry', () => {
     const onOpenMenuChange = vi.fn()
@@ -375,12 +429,21 @@ describe('status bar', () => {
     remoteConnected: false, onOpenRemote: noop,
     branch: 'main', changeCount: 2, onOpenSourceControl: noop, onRefreshGit: noop,
     errorCount: 1, warningCount: 3, onOpenProblems: noop, pendingChord: '',
-    workspaceName: 'tungsten', workspaceRoot: '/src/tungsten', platform: '',
+    workspaceName: 'tungsten', workspaceRoot: '/src/tungsten', onOpenWorkspace: noop, platform: '',
+    onOpenRuntime: noop,
     showEditorStatus: true, cursor: { line: 12, column: 4 }, language: 'typescript',
     gotoLineShortcut: 'Ctrl+G', onGotoLine: noop,
+    indentation: { label: 'Spaces: 2', title: 'Spaces: 2 — detected in this file. Click to change or convert.' },
+    onPickIndentation: noop,
+    encoding: { label: 'UTF-8', title: 'UTF-8, no byte-order mark. Click to add one.' },
+    onPickEncoding: noop,
+    eol: { label: 'LF', title: 'LF line endings throughout. Click to convert.' },
+    onPickEol: noop,
+    onPickLanguage: noop,
     themeLabel: 'Graphene Dark', onPickTheme: noop,
-    lsp: { running: true, language: 'TypeScript', message: 'ready' },
+    lsp: { running: true, language: 'TypeScript', message: 'ready' }, onOpenLsp: noop,
     updateState: 'Up to date', onUpdate: noop,
+    unreadNotifications: 0, notificationsTitle: 'No notifications yet', onOpenNotifications: noop,
   }
 
   it('marks a dirty branch and opens source control', () => {
@@ -422,6 +485,79 @@ describe('status bar', () => {
     expect(container.textContent).toContain('Desktop')
   })
 
+  it('reports the file it is looking at, and every reading opens its picker', () => {
+    const onPickIndentation = vi.fn()
+    const onPickEncoding = vi.fn()
+    const onPickEol = vi.fn()
+    const onPickLanguage = vi.fn()
+    render(
+      <StatusBar
+        {...props}
+        indentation={{ label: 'Tab Size: 4', title: 'tabs here' }}
+        encoding={{ label: 'UTF-8 BOM', title: 'mark here' }}
+        eol={{ label: 'CRLF', title: 'windows here' }}
+        onPickIndentation={onPickIndentation}
+        onPickEncoding={onPickEncoding}
+        onPickEol={onPickEol}
+        onPickLanguage={onPickLanguage}
+      />,
+    )
+
+    // The readings are the file's, not a constant: this file is tabs,
+    // CRLF and carries a byte-order mark, and the bar says so.
+    expect(container.textContent).toContain('Tab Size: 4')
+    expect(container.textContent).toContain('UTF-8 BOM')
+    expect(container.textContent).toContain('CRLF')
+
+    for (const [label, spy] of [
+      ['Tab Size: 4', onPickIndentation],
+      ['UTF-8 BOM', onPickEncoding],
+      ['CRLF', onPickEol],
+      ['typescript', onPickLanguage],
+    ] as const) {
+      act(() => { button(label).click() })
+      expect(spy).toHaveBeenCalled()
+    }
+  })
+
+  it('leads somewhere from the workspace, runtime and language-server slots', () => {
+    const onOpenWorkspace = vi.fn()
+    const onOpenRuntime = vi.fn()
+    const onOpenLsp = vi.fn()
+    render(<StatusBar {...props} onOpenWorkspace={onOpenWorkspace} onOpenRuntime={onOpenRuntime} onOpenLsp={onOpenLsp} />)
+    act(() => { button('tungsten').click() })
+    act(() => { button('Web').click() })
+    act(() => { button('TypeScript LSP').click() })
+    expect(onOpenWorkspace).toHaveBeenCalled()
+    expect(onOpenRuntime).toHaveBeenCalled()
+    expect(onOpenLsp).toHaveBeenCalled()
+  })
+
+  it('counts unread notifications on the bell and opens the history', () => {
+    const onOpenNotifications = vi.fn()
+    render(<StatusBar {...props} />)
+    expect(container.querySelector('.notification-bell')?.className).not.toContain('unread')
+
+    render(
+      <StatusBar
+        {...props}
+        unreadNotifications={3}
+        notificationSeverity="error"
+        notificationsTitle="3 unread notifications"
+        onOpenNotifications={onOpenNotifications}
+      />,
+    )
+    const bell = container.querySelector('.notification-bell') as HTMLButtonElement
+    expect(bell.className).toContain('unread error')
+    expect(bell.textContent).toBe('3')
+    act(() => { bell.click() })
+    expect(onOpenNotifications).toHaveBeenCalled()
+
+    // A three-digit count would widen the bar, so it caps.
+    render(<StatusBar {...props} unreadNotifications={480} notificationsTitle="lots" />)
+    expect(container.querySelector('.notification-bell')?.textContent).toBe('99+')
+  })
+
   it('shows the AI balance where it can be seen without looking for it', () => {
     const onOpenCredits = vi.fn()
     render(<StatusBar {...props} credits={2_940} planLabel="Core" onOpenCredits={onOpenCredits} />)
@@ -446,7 +582,25 @@ describe('status bar', () => {
 })
 
 describe('activity bar', () => {
-  const props = { active: 'explorer' as const, sidebarVisible: true, onSelect: noop, onOpenSettings: noop }
+  const props = {
+    active: 'explorer' as const, sidebarVisible: true, onSelect: noop, onOpenSettings: noop,
+    account: { label: 'Core', detail: 'Core plan · 2,940 credits — open plans and top-ups', present: false },
+    onOpenAccount: noop,
+  }
+
+  it('names the account rather than drawing a silhouette, and leads to it', () => {
+    const onOpenAccount = vi.fn()
+    render(<ActivityBar {...props} onOpenAccount={onOpenAccount} />)
+    const account = button('Account: Core')
+    expect(account.title).toContain('2,940 credits')
+    // The presence dot is the collaboration session, so it is off here.
+    expect(account.querySelector('.presence-dot')).toBeNull()
+    act(() => { account.click() })
+    expect(onOpenAccount).toHaveBeenCalled()
+
+    render(<ActivityBar {...props} account={{ ...props.account, present: true }} />)
+    expect(button('Account: Core').querySelector('.presence-dot')).not.toBeNull()
+  })
 
   it('marks only the active view as pressed, and only while the sidebar shows', () => {
     render(<ActivityBar {...props} active="source" />)

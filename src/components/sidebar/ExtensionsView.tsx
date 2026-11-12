@@ -7,6 +7,7 @@
  * declares.
  */
 
+import { useMemo, useState } from 'react'
 import { BookOpen, CircleStop, PackagePlus, Play, Puzzle, Search, ShieldCheck, Trash2 } from 'lucide-react'
 import { TipButton } from '../TipButton'
 
@@ -31,10 +32,34 @@ export type ExtensionsViewProps = {
   onDocumentCommand: () => void
 }
 
+/** Matches a query against everything a card actually shows. */
+function matches(haystack: Array<string | undefined>, query: string): boolean {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return true
+  return haystack.some((value) => value?.toLowerCase().includes(needle))
+}
+
 export function ExtensionsView({
   extensions, languageCount, onInstall, onToggleEnabled, onUninstall,
   onAddBlockPlugin, onDocumentCommand,
 }: ExtensionsViewProps) {
+  // The box used to have a placeholder and no state, which is the one
+  // search field guaranteed to waste your time. It filters both lists,
+  // because an extension you cannot find is an extension you reinstall.
+  const [query, setQuery] = useState('')
+  const visibleBuiltIns = useMemo(
+    () => builtIns.filter((extension) => matches([extension.id, extension.name, 'description' in extension ? extension.description : ''], query)),
+    [query],
+  )
+  const visibleExtensions = useMemo(
+    () => extensions.filter((extension) => matches(
+      [extension.id, extension.name, extension.description, extension.publisher, extension.scope, ...(extension.permissions ?? [])],
+      query,
+    )),
+    [extensions, query],
+  )
+  const hiddenCount = (builtIns.length - visibleBuiltIns.length) + (extensions.length - visibleExtensions.length)
+
   return (
     <>
       <div className="sidebar-title">
@@ -42,7 +67,20 @@ export function ExtensionsView({
         <TipButton label="Install extension from folder" onClick={onInstall}><PackagePlus size={15} /></TipButton>
       </div>
 
-      <div className="search-box-wrap"><Search size={13} /><input placeholder="Search installed extensions" /></div>
+      <div className="search-box-wrap">
+        <Search size={13} />
+        <input
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+          placeholder="Search installed extensions"
+          aria-label="Search installed extensions"
+        />
+      </div>
+      {Boolean(query.trim()) && (
+        <p className="extension-filter-note">
+          {hiddenCount ? `${hiddenCount} hidden by the filter` : 'Everything matches'}
+        </p>
+      )}
 
       <div className="extension-install-banner">
         <PackagePlus size={17} />
@@ -76,8 +114,8 @@ export function ExtensionsView({
         <button onClick={onDocumentCommand}>Add example</button>
       </div>
 
-      <div className="section-heading"><span>BUILT IN</span><span className="count-pill">{builtIns.length}</span></div>
-      {builtIns.map((extension) => (
+      <div className="section-heading"><span>BUILT IN</span><span className="count-pill">{visibleBuiltIns.length}</span></div>
+      {visibleBuiltIns.map((extension) => (
         <div className="extension-card" key={extension.id}>
           <div className={`extension-icon ext-${extension.icon.toLowerCase()}`}>{extension.icon}</div>
           <div>
@@ -89,8 +127,8 @@ export function ExtensionsView({
         </div>
       ))}
 
-      <div className="section-heading"><span>INSTALLED PACKAGES</span><span className="count-pill">{extensions.length}</span></div>
-      {extensions.map((extension) => {
+      <div className="section-heading"><span>INSTALLED PACKAGES</span><span className="count-pill">{visibleExtensions.length}</span></div>
+      {visibleExtensions.map((extension) => {
         const enabled = extension.enabled !== false
         return (
           <div className={`extension-card managed ${enabled ? '' : 'disabled'}`} key={extension.id}>

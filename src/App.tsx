@@ -64,7 +64,7 @@ import {
   X,
   Zap,
 } from 'lucide-react'
-import { PREVIEW_PATH, defaultFiles, fileName, languageForPath, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
+import { PREVIEW_PATH, defaultFiles, fileName, languageForPath, languageModes, supportedLanguages, symbolsFor, type WorkspaceFile } from './workspace'
 import { EditorGroup } from './components/EditorGroup'
 import { ContextMenu } from './components/ContextMenu'
 import { ActivityBar } from './components/ActivityBar'
@@ -73,6 +73,33 @@ import { TitleBar, type Menu as AppMenu } from './components/TitleBar'
 import { StatusBar } from './components/StatusBar'
 import { CommandPalette, type PaletteEntry, type PaletteMode } from './components/dialogs/CommandPalette'
 import { ThemePicker } from './components/dialogs/ThemePicker'
+import { QuickPick, type QuickPickItem } from './components/dialogs/QuickPick'
+import { NotificationCentre } from './components/dialogs/NotificationCentre'
+import { RuntimeDialog } from './components/dialogs/RuntimeDialog'
+import {
+  convertEol,
+  convertIndentation,
+  describeIndentation,
+  detectEncoding,
+  detectEol,
+  detectIndentation,
+  explainEncoding,
+  explainEol,
+  explainIndentation,
+  setEncoding,
+} from './editor/fileFacts'
+import {
+  EMPTY_NOTIFICATIONS,
+  addNotification,
+  clearNotifications,
+  describeBell,
+  dismissNotification,
+  highestUnread,
+  markAllRead,
+  unreadCount,
+  type NotificationSeverity,
+} from './notifications/notifications'
+import { describeRuntime, readRuntime } from './web/runtimeFacts'
 import { SettingsEditor } from './components/dialogs/SettingsEditor'
 import { SettingsDialog } from './components/dialogs/SettingsDialog'
 import { SnippetsDialog } from './components/dialogs/SnippetsDialog'
@@ -100,6 +127,7 @@ import { useAiAssistant } from './editor/ai/useAiAssistant'
 import { estimateTurn, meteredAssistant } from './editor/ai/meteredProvider'
 import { useAiWallet } from './ai/useAiWallet'
 import { createGateway } from './ai/gateway'
+import { formatCredits } from './ai/pricing'
 import type { EngineId } from './ai/engines'
 import { defaultSend } from './backend/adapters/http'
 import { AiPanel } from './components/editor/AiPanel'
@@ -343,6 +371,12 @@ export default function App({ onReady }: AppProps = {}) {
   const web = useWebRuntime()
   const [editorInstance, setEditorInstance] = useState<any>(null)
   const [toast, setToast] = useState('')
+  const [notifications, setNotifications] = useState(EMPTY_NOTIFICATIONS)
+  /** Epoch ms when the bell was pressed, so the list's times are stable. */
+  const [notificationsOpen, setNotificationsOpen] = useState(0)
+  const [runtimeOpen, setRuntimeOpen] = useState(false)
+  /** Which status-bar picker is open, if any. */
+  const [statusPick, setStatusPick] = useState<'indent' | 'encoding' | 'eol' | 'language' | null>(null)
   const [menuOpen, setMenuOpen] = useState<string | null>(null)
   const terminalEndRef = useRef<HTMLDivElement>(null)
   const newFileInputRef = useRef<HTMLInputElement>(null)
@@ -458,9 +492,12 @@ export default function App({ onReady }: AppProps = {}) {
    * exposes. Keybindings, palette entries and menu items are all filtered
    * through these.
    */
-  const notify = useCallback((message: string) => {
+  const notify = useCallback((message: string, options?: { severity?: NotificationSeverity; source?: string }) => {
     setToast(message)
     window.setTimeout(() => setToast(''), 2200)
+    // The toast is the glance; the history is the record. Two seconds
+    // is not long enough to be the only place a message ever appears.
+    setNotifications((current) => addNotification(current, { message, ...options }))
   }, [])
 
   const save = useCallback(async (path?: string) => {
@@ -680,6 +717,125 @@ export default function App({ onReady }: AppProps = {}) {
     )))
     setDirty((current) => new Set(current).add(path))
   }, [])
+
+  /**
+   * What the right-hand end of the status bar is reporting.
+   *
+   * Read from the file in front of you, not from a constant: the
+   * indentation is detected, the line endings are counted and the
+   * byte-order mark is looked for. The configured values are only the
+   * fallback for a file with nothing to detect.
+   */
+  const editorSetting = useMemo(() => ({
+    insertSpaces: configuration.values['editor.insertSpaces'] !== false,
+    tabSize: Number(configuration.values['editor.tabSize'] ?? 2),
+  }), [configuration.values])
+
+  const activeText = activeFile?.content ?? ''
+  const indentationFacts = useMemo(() => detectIndentation(activeText, editorSetting), [activeText, editorSetting])
+  const eolFacts = useMemo(() => detectEol(activeText), [activeText])
+  const encodingFacts = useMemo(() => detectEncoding(activeText), [activeText])
+
+  /** Rewrites the active file, which is the only thing these pickers do. */
+  const transformActiveFile = useCallback((transform: (text: string) => string, message: string) => {
+    if (!activePath || !activeFile) return
+    const next = transform(activeFile.content)
+    if (next === activeFile.content) { notify('Nothing to change in this file.'); return }
+    updateFileAt(activePath, next)
+    notify(message)
+  }, [activeFile, activePath, notify, updateFileAt])
+
+  /** The rows for whichever status-bar picker is open. */
+  const statusPickItems = useMemo((): QuickPickItem[] => {
+    if (statusPick === 'indent') {
+      const sizes = [2, 4, 8]
+      return [
+        ...sizes.map((size) => ({
+          id: `spaces-${size}`,
+          label: `Indent using spaces (${size})`,
+          current: editorSetting.insertSpaces && editorSetting.tabSize === size,
+          group: 'What new indentation uses',
+        })),
+        ...sizes.map((size) => ({
+          id: `tabs-${size}`,
+          label: `Indent using tabs (width ${size})`,
+          current: !editorSetting.insertSpaces && editorSetting.tabSize === size,
+          group: 'What new indentation uses',
+        })),
+        {
+          id: 'convert-spaces',
+          label: 'Convert this file to spaces',
+          detail: `${indentationFacts.tabSize}-wide`,
+          note: 'Rewrites leading whitespace only. Strings and comments are untouched.',
+          group: 'Rewrite the file',
+        },
+        {
+          id: 'convert-tabs',
+          label: 'Convert this file to tabs',
+          detail: `${indentationFacts.tabSize}-wide`,
+          group: 'Rewrite the file',
+        },
+      ]
+    }
+
+    if (statusPick === 'encoding') {
+      return [
+        { id: 'utf8', label: 'UTF-8', detail: 'No byte-order mark', current: encodingFacts === 'UTF-8' },
+        {
+          id: 'utf8-bom',
+          label: 'UTF-8 with BOM',
+          detail: 'Adds U+FEFF',
+          note: 'Some shells and JSON parsers refuse a file that starts with it.',
+          current: encodingFacts === 'UTF-8 with BOM',
+        },
+      ]
+    }
+
+    if (statusPick === 'eol') {
+      return [
+        { id: 'lf', label: 'LF', detail: 'Unix, macOS, Git default', current: eolFacts.kind === 'LF' },
+        { id: 'crlf', label: 'CRLF', detail: 'Windows', current: eolFacts.kind === 'CRLF' },
+      ]
+    }
+
+    if (statusPick === 'language') {
+      return languageModes.map((mode) => ({
+        id: mode.id,
+        label: mode.label,
+        detail: mode.id === languageForPath(activePath) ? 'from the file extension' : undefined,
+        current: mode.id === activeFile?.language,
+      }))
+    }
+
+    return []
+  }, [activeFile?.language, activePath, editorSetting, encodingFacts, eolFacts.kind, indentationFacts.tabSize, statusPick])
+
+  const runStatusPick = useCallback((id: string) => {
+    if (statusPick === 'indent') {
+      const size = Number(id.split('-')[1])
+      if (id.startsWith('spaces-') || id.startsWith('tabs-')) {
+        configuration.set('editor.insertSpaces', id.startsWith('spaces-'))
+        configuration.set('editor.tabSize', size)
+        notify(`New indentation: ${describeIndentation({ insertSpaces: id.startsWith('spaces-'), tabSize: size })}`)
+      } else if (id === 'convert-spaces' || id === 'convert-tabs') {
+        const to = { insertSpaces: id === 'convert-spaces', tabSize: editorSetting.tabSize }
+        transformActiveFile(
+          (text) => convertIndentation(text, indentationFacts, to),
+          `Converted the indentation to ${to.insertSpaces ? 'spaces' : 'tabs'}.`,
+        )
+      }
+    } else if (statusPick === 'encoding') {
+      const encoding = id === 'utf8-bom' ? 'UTF-8 with BOM' as const : 'UTF-8' as const
+      transformActiveFile((text) => setEncoding(text, encoding), `Saved as ${encoding}.`)
+    } else if (statusPick === 'eol') {
+      const kind = id === 'crlf' ? 'CRLF' as const : 'LF' as const
+      transformActiveFile((text) => convertEol(text, kind), `Line endings are now ${kind}.`)
+    } else if (statusPick === 'language' && activePath) {
+      setFiles((current) => current.map((file) => (file.path === activePath ? { ...file, language: id } : file)))
+      notify(`Language mode: ${languageModes.find((mode) => mode.id === id)?.label ?? id}`)
+    }
+    setStatusPick(null)
+  }, [activePath, configuration, editorSetting.tabSize, indentationFacts, notify, statusPick, transformActiveFile])
 
   /**
    * The visual builder.
@@ -2142,6 +2298,8 @@ export default function App({ onReady }: AppProps = {}) {
         onTogglePanel={() => setPanelOpen((value) => !value)}
         sidePreview={sidePreview}
         onToggleSidePreview={() => setSidePreview((value) => !value)}
+        assistantOpen={ai.open}
+        onOpenAssistant={() => ai.setOpen(!ai.open)}
       />}
 
       <main className="workbench">
@@ -2155,6 +2313,12 @@ export default function App({ onReady }: AppProps = {}) {
             selectActivity(id)
           }}
           onOpenSettings={() => setSettingsOpen(true)}
+          account={{
+            label: aiWallet.plan.label,
+            detail: `${aiWallet.plan.label} plan · ${formatCredits(aiWallet.balance.total)} credits${collaborationActive ? ' · collaborating' : ''} — open plans and top-ups`,
+            present: collaborationActive,
+          }}
+          onOpenAccount={() => { setBuilderOpen(true); notify('Plans, credits and top-ups are in the AI tab.') }}
         />}
 
         {sidebarVisible && !zenMode && <aside className="sidebar" style={{ width: sidebarWidth }}>
@@ -2269,15 +2433,32 @@ export default function App({ onReady }: AppProps = {}) {
         pendingChord={pendingChords.length ? keybindingLabel(pendingChords) : ''}
         workspaceName={workspaceName}
         workspaceRoot={workspaceRoot}
+        onOpenWorkspace={() => showView('explorer')}
         platform={window.tungsten?.platform ?? ''}
+        onOpenRuntime={() => setRuntimeOpen(true)}
         showEditorStatus={activePath !== PREVIEW_PATH}
         cursor={cursor}
         language={activeFile?.language ?? ''}
         gotoLineShortcut={shortcutFor('workbench.action.gotoLine')}
         onGotoLine={() => { setPalette({ open: true, mode: 'line' }); setPaletteQuery(':') }}
+        indentation={{ label: describeIndentation(indentationFacts), title: explainIndentation(indentationFacts) }}
+        onPickIndentation={() => setStatusPick('indent')}
+        encoding={{ label: encodingFacts === 'UTF-8 with BOM' ? 'UTF-8 BOM' : 'UTF-8', title: explainEncoding(encodingFacts) }}
+        onPickEncoding={() => setStatusPick('encoding')}
+        eol={{ label: eolFacts.kind, title: explainEol(eolFacts) }}
+        onPickEol={() => setStatusPick('eol')}
+        onPickLanguage={() => setStatusPick('language')}
         themeLabel={activeTheme.label}
         onPickTheme={() => { setThemePickerOpen(true); setPaletteQuery('') }}
         lsp={diagnostics.status}
+        onOpenLsp={() => showPanel('PROBLEMS')}
+        unreadNotifications={unreadCount(notifications)}
+        notificationsTitle={describeBell(notifications)}
+        notificationSeverity={highestUnread(notifications)}
+        onOpenNotifications={() => {
+          setNotificationsOpen(Date.now())
+          setNotifications((current) => markAllRead(current))
+        }}
         credits={aiWallet.balance.total}
         planLabel={aiWallet.plan.label}
         onOpenCredits={() => { setBuilderOpen(true); notify('Credits and plans are in the AI tab.') }}
@@ -2302,6 +2483,38 @@ export default function App({ onReady }: AppProps = {}) {
           placeholder={paletteModePlaceholder}
           onRun={executePaletteItem}
           onClose={() => setPalette((current) => ({ ...current, open: false }))}
+        />
+      )}
+
+      {statusPick && (
+        <QuickPick
+          title={
+            statusPick === 'indent' ? 'Indentation'
+            : statusPick === 'encoding' ? 'File encoding'
+            : statusPick === 'eol' ? 'Line endings'
+            : 'Language mode'
+          }
+          subtitle={activePath ? fileName(activePath) : undefined}
+          items={statusPickItems}
+          onPick={runStatusPick}
+          onClose={() => setStatusPick(null)}
+        />
+      )}
+
+      {runtimeOpen && (
+        <RuntimeDialog
+          facts={describeRuntime({ ...readRuntime(), aiGateway: Boolean(aiGateway) })}
+          onClose={() => setRuntimeOpen(false)}
+        />
+      )}
+
+      {notificationsOpen > 0 && (
+        <NotificationCentre
+          entries={notifications.entries}
+          now={notificationsOpen}
+          onDismiss={(id) => setNotifications((current) => dismissNotification(current, id))}
+          onClear={() => setNotifications((current) => clearNotifications(current))}
+          onClose={() => setNotificationsOpen(0)}
         />
       )}
 

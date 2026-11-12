@@ -34,9 +34,21 @@ export type ActivityBarProps = {
   badges?: Partial<Record<Activity, number>>
   onSelect: (id: Activity) => void
   onOpenSettings: () => void
+  /**
+   * The account button.
+   *
+   * Tungsten has exactly one account -- the AI plan the credits are
+   * billed against -- so this names it rather than showing a generic
+   * silhouette that leads nowhere. The dot is lit when a collaboration
+   * session is live, which is the only other identity in the product.
+   */
+  account: { label: string; detail: string; present: boolean }
+  onOpenAccount: () => void
 }
 
-export function ActivityBar({ active, sidebarVisible, badges = {}, onSelect, onOpenSettings }: ActivityBarProps) {
+export function ActivityBar({
+  active, sidebarVisible, badges = {}, onSelect, onOpenSettings, account, onOpenAccount,
+}: ActivityBarProps) {
   return (
     <aside className="activitybar">
       <div>
@@ -60,7 +72,10 @@ export function ActivityBar({ active, sidebarVisible, badges = {}, onSelect, onO
       </div>
 
       <div>
-        <button aria-label="Accounts" title="Accounts"><CircleUserRound size={20} strokeWidth={1.6} /><span className="presence-dot" /></button>
+        <button aria-label={`Account: ${account.label}`} title={account.detail} onClick={onOpenAccount}>
+          <CircleUserRound size={20} strokeWidth={1.6} />
+          {account.present && <span className="presence-dot" />}
+        </button>
         <button aria-label="Manage" title="Manage" onClick={onOpenSettings}><Settings size={20} strokeWidth={1.6} /></button>
       </div>
     </aside>
