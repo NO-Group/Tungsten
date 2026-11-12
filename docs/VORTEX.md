@@ -231,11 +231,75 @@ belongs where the money actually goes.
 
 ---
 
-## 8. Not built yet
+## 8. The mechanisms
 
-This is a cost model and a policy, not a running control plane. Still
-to build: the tenant router that wakes a sleeping schema, the sleeper
-itself, the per-tenant metering pipeline that feeds `Usage`, and the
+Three of Gemini's ideas were worth keeping, and a policy nothing
+enforces is a promise. These are the enforcement.
+
+### A token bucket, not a window — `limiter.ts`
+
+A fixed-window counter punishes the honest: a client that fires sixty
+requests in the first second of a minute and nothing afterwards is
+well inside a 120-per-minute quota and gets refused at exactly the
+moment it is behaving reasonably. `take()` is a bucket of two numbers
+that refills continuously — no scheduler, no cron, nothing to keep
+warm for a sleeping tenant — so a burst goes through and the sustained
+rate sits on the line. A refusal returns `retryAfterMs` rather than
+just "no". Buckets that have refilled completely are swept, because a
+full bucket is indistinguishable from no bucket.
+
+### Sleep, stated out loud — `limiter.ts`
+
+`sleepPlan()` returns the state, the days remaining, the wake cost and
+a sentence for the project header: *"Asleep after 9 quiet days. The
+next request wakes it in about 0.9s — nothing is lost."* A cold start
+nobody warned you about is a bug report; the same cold start printed
+next to "sleeps after 7 quiet days" is a tier. Waking queues the
+request up to `wakeDeadlineMs`; past that the box is broken, not the
+sleeper, and failing fast is the honest answer. Each sleeping project
+hands **88 MB** back to the fleet.
+
+### Client caching, for the right reason — `offload.ts`
+
+`CACHE_RULES` caches by **who can change the row**, not by how hot it
+is. Reference tables and your own rows go cache-first; rows other
+people can edit go network-first on a 30-second TTL, because serving
+those stale means showing one user another user's undone work; and
+sessions, tokens and policy decisions are **never** cached, because a
+cached authorisation is a revocation that did not happen.
+
+The default hit rate is **0.6**, not the 90% these models usually
+assume — real application caches land between a half and three
+quarters once cold starts, first visits and invalidations are counted.
+At 5,000 free projects a 60% cache avoids 15M reads and saves **$5.40
+a month**, about 5% of the bill. `describeOffload()` says so in those
+words. Do it for the latency, the offline support and the sleeping
+tenants it does not wake; the invoice is a rounding error.
+
+### Upgrade by capability, not by pain — `upgrade.ts`
+
+Hosting a free project costs a penny and a half, so there is no
+financial reason to make the free tier hurt. `nudgesFor()` stays
+silent below 80% of any quota, then names **what the next plan can
+do** — and a test asserts no message contains "delete", "lost",
+"suspend", "lock" or "penalty". The seats trigger is allowed to skip
+a plan, because Core also has one seat and selling somebody a second
+thing that does not work either is worse than saying nothing.
+
+The most honest trigger in the list is the cold start: a project that
+went quiet and then got visited is precisely the project whose owner
+has started caring, and "Core projects stay warm" is a sentence that
+sells itself.
+
+---
+
+## 9. Not built yet
+
+This is a cost model and a policy, not a running control plane. The limiter,
+the sleep policy, the cache rules and the upgrade triggers are real
+code with tests; what is missing is the plumbing around them. Still to
+build: the tenant router that calls `take()` on the way in and wakes a
+sleeping schema, the per-tenant metering pipeline that feeds `Usage`, and the
 provisioning that turns a blueprint into a schema and a role. The
 numbers above tell us what to build toward; they do not pretend it
 exists.
