@@ -421,6 +421,28 @@ describe('status bar', () => {
     render(<StatusBar {...props} platform="linux" />)
     expect(container.textContent).toContain('Desktop')
   })
+
+  it('shows the AI balance where it can be seen without looking for it', () => {
+    const onOpenCredits = vi.fn()
+    render(<StatusBar {...props} credits={2_940} planLabel="Core" onOpenCredits={onOpenCredits} />)
+    const credits = container.querySelector('.credit-status') as HTMLButtonElement
+    expect(credits.textContent).toBe('2,940')
+    expect(credits.title).toContain('Core')
+    act(() => { credits.click() })
+    expect(onOpenCredits).toHaveBeenCalled()
+  })
+
+  it('warns when the balance is nearly gone, and not before', () => {
+    render(<StatusBar {...props} credits={2_940} />)
+    expect(container.querySelector('.credit-status.low')).toBeNull()
+    render(<StatusBar {...props} credits={120} />)
+    expect(container.querySelector('.credit-status.low')).not.toBeNull()
+  })
+
+  it('says nothing about credits when there is no gateway to spend them on', () => {
+    render(<StatusBar {...props} />)
+    expect(container.querySelector('.credit-status')).toBeNull()
+  })
 })
 
 describe('activity bar', () => {

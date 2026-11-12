@@ -97,6 +97,11 @@ import { EXAMPLE_PLUGIN, PLUGIN_DIRECTORY, PLUGIN_SUFFIX, loadPluginBlocks } fro
 import { BUILDER_SYNC_PATH } from './builder/fileSync'
 import { useBuilderFileSync } from './builder/useBuilderFileSync'
 import { useAiAssistant } from './editor/ai/useAiAssistant'
+import { estimateTurn, meteredAssistant } from './editor/ai/meteredProvider'
+import { useAiWallet } from './ai/useAiWallet'
+import { createGateway } from './ai/gateway'
+import type { EngineId } from './ai/engines'
+import { defaultSend } from './backend/adapters/http'
 import { AiPanel } from './components/editor/AiPanel'
 import type { AiContext } from './editor/ai/aiModel'
 import { createDictionary } from './shell/commandDictionary'
@@ -767,7 +772,44 @@ export default function App({ onReady }: AppProps = {}) {
    * downstream (dirty marks, diagnostics, the builder's file sync) reacts
    * without being told.
    */
-  const ai = useAiAssistant({ onEdit: updateFileAt, notify })
+  /**
+   * The AI wallet, owned here rather than in the builder.
+   *
+   * One balance for the whole workbench: the assistant in the editor
+   * and the one in the builder spend from the same ledger, which is
+   * the only arrangement a person can reason about. The builder is
+   * handed this instance rather than opening its own.
+   */
+  const aiWallet = useAiWallet()
+  const [aiEngine, setAiEngine] = useState<EngineId>('balanced')
+
+  /**
+   * The metered gateway, when there is one.
+   *
+   * Tungsten ships no endpoint and no key. Without `VITE_AI_GATEWAY`
+   * there is nothing to call, the offline rules assistant answers, and
+   * no price is quoted for work that costs nothing — which is why the
+   * cost line in the panel appears only when this is defined rather
+   * than being shown greyed out as a permanent advertisement.
+   */
+  const aiGateway = useMemo(() => {
+    const base = import.meta.env?.VITE_AI_GATEWAY as string | undefined
+    if (!base) return undefined
+    return createGateway({
+      http: defaultSend(),
+      meter: aiWallet.meter,
+      baseUrl: base,
+      plan: () => aiWallet.wallet.plan,
+    })
+  }, [aiWallet.meter, aiWallet.wallet.plan])
+
+  const aiProvider = useMemo(
+    () => (aiGateway ? meteredAssistant({ gateway: aiGateway, engine: () => aiEngine }) : undefined),
+    [aiGateway, aiEngine],
+  )
+
+  const ai = useAiAssistant({ onEdit: updateFileAt, notify, provider: aiProvider })
+
 
   /**
    * What the assistant is looking at: the active file, narrowed to the
@@ -793,6 +835,21 @@ export default function App({ onReady }: AppProps = {}) {
       language: activeFile.language,
     }
   }, [activeFile, editorInstance])
+
+  /**
+   * What the typed question would cost, for the line beside Ask.
+   *
+   * Priced off the same `promptFor` the call will send, so the number
+   * on the button and the number in the hold cannot disagree.
+   */
+  const priceAiPrompt = useCallback(
+    (prompt: string) => {
+      const context = aiContext()
+      if (!aiGateway || !context) return undefined
+      return estimateTurn(aiEngine, { prompt, context })
+    },
+    [aiContext, aiEngine, aiGateway],
+  )
 
   /** Compiles the graph for a target and drops the result in the workspace. */
   const buildBuilderTarget = useCallback((target: CompileTarget) => {
@@ -2116,6 +2173,9 @@ export default function App({ onReady }: AppProps = {}) {
             onOpenFile={openFile}
                 onBuild={buildBuilderTarget}
                 onRunServer={runBackendService}
+                wallet={aiWallet}
+                engine={aiEngine}
+                onEngineChange={setAiEngine}
                 onClose={() => setBuilderOpen(false)}
               />
             ) : (
@@ -2186,6 +2246,10 @@ export default function App({ onReady }: AppProps = {}) {
               onClear={ai.clear}
               onClose={() => ai.setOpen(false)}
               preview={ai.preview}
+              priceOf={aiGateway ? priceAiPrompt : undefined}
+              credits={aiGateway ? aiWallet.balance.total : undefined}
+              engine={aiEngine}
+              onOpenCredits={() => { setBuilderOpen(true); notify('Credits and plans are in the AI tab.') }}
             />
           )}
         </section>
@@ -2213,6 +2277,9 @@ export default function App({ onReady }: AppProps = {}) {
         themeLabel={activeTheme.label}
         onPickTheme={() => { setThemePickerOpen(true); setPaletteQuery('') }}
         lsp={diagnostics.status}
+        credits={aiWallet.balance.total}
+        planLabel={aiWallet.plan.label}
+        onOpenCredits={() => { setBuilderOpen(true); notify('Credits and plans are in the AI tab.') }}
         updateState={statusLabel(web, updateState)}
         updateTitle={statusTitle(web, statusLabel(web, updateState))}
         onUpdate={() => {

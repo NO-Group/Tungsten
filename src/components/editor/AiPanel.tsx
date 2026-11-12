@@ -15,6 +15,9 @@ import { Suspense, lazy, useState } from 'react'
 import { Check, Loader2, Sparkles, Trash2, Undo2, X } from 'lucide-react'
 
 import { AI_MODES, describeRange, type AiContext, type AiMode, type AiTurn } from '../../editor/ai/aiModel'
+import { affords, describeEstimate } from '../../ai/receipt'
+import { formatCredits, type Estimate } from '../../ai/pricing'
+import { engineById, type EngineId } from '../../ai/engines'
 
 // Loaded only when a diff is actually shown: the assistant panel must not
 // drag Monaco into the initial bundle.
@@ -36,6 +39,19 @@ export type AiPanelProps = {
   onClose: () => void
   /** The buffer as it would be if a proposal were applied. */
   preview: (id: number) => string | undefined
+
+  /**
+   * Prices the question as it is typed. Absent when the assistant is
+   * the offline rules engine, which costs nothing and should not
+   * pretend to have a price.
+   */
+  priceOf?: (prompt: string) => Estimate | undefined
+  /** Spendable credits. Shown next to the estimate so the two compare. */
+  credits?: number
+  /** The engine the estimate was priced on. */
+  engine?: EngineId
+  /** Opens the credits panel. */
+  onOpenCredits?: () => void
 }
 
 const STATE_LABEL: Record<AiTurn['state'], string> = {
@@ -50,10 +66,16 @@ const STATE_LABEL: Record<AiTurn['state'], string> = {
 export function AiPanel(props: AiPanelProps) {
   const { mode, onModeChange, turns, busy, context, providerLabel, theme } = props
   const { onAsk, onAccept, onDiscard, onClear, onClose, preview } = props
+  const { priceOf, credits, engine, onOpenCredits } = props
   const [prompt, setPrompt] = useState('')
 
+  // A price is only shown once there is a question to price. An empty
+  // box advertising "about 4 credits" is quoting for nothing.
+  const priced = priceOf && prompt.trim() ? priceOf(prompt) : undefined
+  const broke = priced !== undefined && credits !== undefined && !affords(credits, priced)
+
   const send = () => {
-    if (!prompt.trim() || busy) return
+    if (!prompt.trim() || busy || broke) return
     onAsk(prompt)
     setPrompt('')
   }
@@ -142,10 +164,33 @@ export function AiPanel(props: AiPanelProps) {
           onChange={(event) => setPrompt(event.target.value)}
           onKeyDown={(event) => { if (event.key === 'Enter') send() }}
         />
-        <button onClick={send} disabled={busy || !prompt.trim() || !context}>
+        <button onClick={send} disabled={busy || !prompt.trim() || !context || broke}>
           {busy ? <Loader2 size={12} className="spin" /> : 'Ask'}
         </button>
       </div>
+
+      {priceOf !== undefined && (
+        <p className={`ai-cost ${broke ? 'short' : ''}`}>
+          {priced
+            ? <span className="ai-cost-estimate">{describeEstimate(priced, engine ? engineById(engine) : undefined)}</span>
+            : <span className="ai-cost-estimate">Type a question to see what it costs.</span>}
+          {credits !== undefined && (
+            <button
+              type="button"
+              className="ai-cost-balance"
+              title="Open credits and plans"
+              onClick={onOpenCredits}
+            >
+              {formatCredits(credits)} left
+            </button>
+          )}
+          {broke && (
+            <span className="ai-cost-short">
+              Not enough credits for this one. Shorten the selection or top up.
+            </span>
+          )}
+        </p>
+      )}
     </aside>
   )
 }

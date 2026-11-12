@@ -6,7 +6,9 @@
  * somewhere, so the bar doubles as navigation rather than being a read-out.
  */
 
-import { Bell, Box, CircleAlert, Download, Eye, GitBranch, Keyboard, Radio, RefreshCw, SquareCode, X, Zap } from 'lucide-react'
+import { Bell, Box, CircleAlert, Coins, Download, Eye, GitBranch, Keyboard, Radio, RefreshCw, SquareCode, X, Zap } from 'lucide-react'
+
+import { formatCredits } from '../ai/pricing'
 
 export type StatusBarProps = {
   remoteConnected: boolean
@@ -45,14 +47,29 @@ export type StatusBarProps = {
   /** Longer explanation for the hover; defaults to the label itself. */
   updateTitle?: string
   onUpdate: () => void
+
+  /**
+   * Spendable AI credits.
+   *
+   * In the bar rather than only in the panel because the number people
+   * need is the one they can see without going to look for it. A
+   * balance you have to open a tab to find is a balance you discover
+   * at zero.
+   */
+  credits?: number
+  planLabel?: string
+  onOpenCredits?: () => void
 }
 
 export function StatusBar({
   remoteConnected, onOpenRemote, branch, changeCount, onOpenSourceControl, onRefreshGit,
   errorCount, warningCount, onOpenProblems, pendingChord, workspaceName, workspaceRoot,
   platform, showEditorStatus, cursor, language, gotoLineShortcut, onGotoLine, themeLabel,
-  onPickTheme, lsp, updateState, updateTitle, onUpdate,
+  onPickTheme, lsp, updateState, updateTitle, onUpdate, credits, planLabel, onOpenCredits,
 }: StatusBarProps) {
+  // Low is a tenth of a Core month: enough warning to act, not so much
+  // that the bar nags from the day the plan renews.
+  const low = credits !== undefined && credits < 300
   return (
     <footer className="statusbar">
       <div>
@@ -102,6 +119,16 @@ export function StatusBar({
         <button title={lsp.message} className={lsp.running ? 'service-running' : ''}>
           <Zap size={12} /><span>{lsp.running ? `${lsp.language} LSP` : 'Syntax'}</span>
         </button>
+
+        {credits !== undefined && (
+          <button
+            className={`credit-status ${low ? 'low' : ''}`}
+            title={`${formatCredits(credits)} AI credits${planLabel ? ` on ${planLabel}` : ''} — click for plans and top-ups`}
+            onClick={onOpenCredits}
+          >
+            <Coins size={12} /><span>{formatCredits(credits)}</span>
+          </button>
+        )}
 
         <button title={updateTitle ?? updateState} onClick={onUpdate}><Download size={12} /><span>{updateState}</span></button>
         <button title="Notifications"><Bell size={13} /></button>

@@ -6,8 +6,8 @@
  * was: what it bought, what it refunded, or why it cost nothing.
  */
 
-import { engineById } from './engines'
-import { describeSpend, formatCredits } from './pricing'
+import { engineById, type Engine } from './engines'
+import { describeSpend, formatCredits, type Estimate } from './pricing'
 import type { LedgerEntry } from './wallet'
 
 export function describeEntry(entry: LedgerEntry): string {
@@ -17,4 +17,26 @@ export function describeEntry(entry: LedgerEntry): string {
   if (entry.kind === 'adjust') return entry.note ?? 'Adjustment; not charged.'
   if (engine && entry.usage) return describeSpend(engine, entry.usage, entry.credits)
   return `${formatCredits(entry.credits)} credits${engine ? ` on ${engine.label}` : ''}`
+}
+
+/**
+ * The line beside the send button.
+ *
+ * Two numbers, because one is a lie in both directions. The estimate
+ * alone makes the hold look like a bug when the balance dips further;
+ * the ceiling alone makes a one-credit question look like a purchase.
+ * Saying "about 6, at most 24" is what a person needs to decide
+ * whether to press the button.
+ */
+export function describeEstimate(estimate: Estimate, engine?: Engine): string {
+  const on = engine ? ` on ${engine.label}` : ''
+  if (estimate.ceiling <= estimate.credits) {
+    return `${formatCredits(estimate.credits)} credit${estimate.credits === 1 ? '' : 's'}${on}`
+  }
+  return `about ${formatCredits(estimate.credits)}, at most ${formatCredits(estimate.ceiling)} credits${on}`
+}
+
+/** Can this balance pay for that question at all? */
+export function affords(balanceCredits: number, estimate: Estimate): boolean {
+  return balanceCredits >= estimate.ceiling
 }

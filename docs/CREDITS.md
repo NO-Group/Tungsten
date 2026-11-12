@@ -232,15 +232,53 @@ account instead punishes the shared-office case, which is a real case.
 
 ## What is not built here
 
-This rung is the engine and its rules. Still to come, in order:
+### Built since
+
+**The UI.** The balance is in the status bar — and turns amber below
+300, which is a tenth of a Core month: enough warning to act on,
+infrequent enough not to nag from the day the plan renews. The usage
+list, the plans and the top-ups are in the builder's AI tab. The
+estimate sits under the assistant's question box, as two numbers
+rather than one: *"about 6, at most 24 credits on Balanced"*, with the
+remaining balance beside it as a button into the plans. The Ask button
+disables itself when the balance cannot cover the ceiling, so the
+refusal arrives before the request rather than after it.
+
+**The editor assistant, on the gateway.** `meteredAssistant` in
+`src/editor/ai/meteredProvider.ts` is a third provider beside the
+offline rules engine and the bring-your-own-endpoint one. It composes
+the prompt in cache order — a constant system block, then constant
+house rules, then the file — so the cached prefix is byte-identical
+between turns and the repeated part bills at a tenth. The file itself
+stays *out* of that prefix, because it changes on every keystroke and
+a cache entry that never hits costs more to write than it saves.
+
+The quote and the hold come from one place: `estimateTurn` prices the
+same `promptFor` output the call will send, with the same 2,048-token
+output clamp, so the number on the button and the number in the ledger
+cannot disagree. A refusal comes back as the assistant's *answer* —
+running out of credits is an ordinary state with a sentence and an
+upgrade attached, not a stack trace in a red box. And the money does
+not buy permissions: the metered provider returns an `AiProposal` like
+the other two, and `aiModel.ts` still decides whether it may touch a
+buffer.
+
+One wallet for the whole workbench. `App.tsx` owns `useAiWallet()` and
+hands it to the builder, so the editor assistant and the builder's
+panel spend from the same ledger.
+
+### Still to come
+
+This rung is the engine and its rules. Still outstanding:
 
 1. The gateway service itself — the thing on the other end of
    `POST /v1/complete`, holding the provider keys, doing the routing
-   and reporting usage. Tungsten already speaks its wire format.
+   and reporting usage. Tungsten already speaks its wire format, and
+   points at it with `VITE_AI_GATEWAY`; without that variable there is
+   nothing to call, the offline assistant answers, and no price is
+   quoted for work that costs nothing.
 2. The billing integration: a payment provider's webhooks mapped onto
    `applyBillingEvent`.
-3. The UI: a balance in the status bar, the estimate next to the send
-   button, the usage list, and the upgrade sheet driven by
-   `Refusal.upgradeTo`.
-4. Wiring `src/editor/ai` and the AI Architect onto `createGateway`, so
-   the assistant and the schema planner spend from the same wallet.
+3. The upgrade sheet driven by `Refusal.upgradeTo`.
+4. Wiring the AI Architect onto `createGateway`, so the schema planner
+   spends from the same wallet the assistant does.

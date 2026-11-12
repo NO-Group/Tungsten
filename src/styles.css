@@ -1962,6 +1962,38 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .ai-compose button:disabled { opacity: 0.4; cursor: default; }
 .spin { animation: ai-spin 1s linear infinite; }
 
+/* The price, under the question rather than hidden behind the send. */
+.ai-cost {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  padding: 0 9px 8px;
+  font-size: 10px;
+  color: var(--muted);
+}
+
+.ai-cost-estimate { flex: 1; min-width: 0; }
+
+.ai-cost-balance {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted);
+  font-family: inherit;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.ai-cost-balance:hover { color: var(--text); border-color: var(--accent); }
+.ai-cost.short .ai-cost-estimate { color: var(--danger); }
+.ai-cost-short { flex-basis: 100%; color: var(--danger); }
+
+.statusbar .credit-status span { font-variant-numeric: tabular-nums; }
+.statusbar .credit-status.low { color: var(--warning); }
+
 @keyframes ai-spin { to { transform: rotate(360deg); } }
 
 /* -- Builder: working on many blocks at once ----------------------------- */

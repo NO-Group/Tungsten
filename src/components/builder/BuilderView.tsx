@@ -27,7 +27,7 @@ import type { CompileTarget } from '../../builder/compile'
 import { targetInfo, type Project } from '../../project/targets'
 import { TargetsPanel } from './TargetsPanel'
 import { AiUsagePanel } from './AiUsagePanel'
-import { useAiWallet } from '../../ai/useAiWallet'
+import { useAiWallet, type AiWallet } from '../../ai/useAiWallet'
 import { formatCredits, type EngineId } from '../../ai'
 import type { BuilderState } from '../../builder/useBuilder'
 import { BUILDER_SYNC_PATH } from '../../builder/fileSync'
@@ -51,6 +51,16 @@ export type BuilderViewProps = {
   onBuild: (target: CompileTarget) => void
   /** Builds the backend service and starts it where the user can see it. */
   onRunServer?: () => void
+  /**
+   * The workbench's AI wallet. Passed in so the builder and the editor
+   * assistant spend from one ledger; when it is absent — which is the
+   * case in the builder's own tests — this view opens its own over the
+   * same browser store.
+   */
+  wallet?: AiWallet
+  /** The engine the whole workbench will spend on, when it is lifted. */
+  engine?: EngineId
+  onEngineChange?: (engine: EngineId) => void
   onClose: () => void
 }
 
@@ -87,8 +97,14 @@ export function BuilderView(props: BuilderViewProps) {
   // next. Both live here rather than in `useBuilder` because neither
   // belongs in a saved project file: one is an account, one is a
   // preference.
-  const aiWallet = useAiWallet()
-  const [engine, setEngine] = useState<EngineId>('balanced')
+  // Always called, because hooks are; used only when the workbench did
+  // not hand one down. Both read the same browser store, so the
+  // fallback cannot disagree with the real one — it simply goes unused.
+  const ownWallet = useAiWallet()
+  const aiWallet = props.wallet ?? ownWallet
+  const [ownEngine, setOwnEngine] = useState<EngineId>('balanced')
+  const engine = props.engine ?? ownEngine
+  const setEngine = props.onEngineChange ?? setOwnEngine
   const [target, setTarget] = useState<CompileTarget>('web')
   const targets = quickTargets(builder.project)
 

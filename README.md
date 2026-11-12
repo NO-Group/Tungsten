@@ -696,8 +696,19 @@ session token carries identity only — `sub`, `sid`, `iat`, `exp` — so
 an upgrade or a cancellation takes effect in milliseconds instead of
 whenever a JWT happens to expire.
 
-The engine, the arithmetic and the invariants are in `src/ai/`, and the
-full design is in [docs/CREDITS.md](docs/CREDITS.md).
+You can see all of it while you work. The balance sits in the status
+bar and turns amber below 300; the plans, top-ups and spend history are
+in the builder's AI tab; and the assistant quotes the question *before*
+you ask it — "about 6, at most 24 credits on Balanced" — with the Ask
+button disabled when the balance cannot cover the ceiling, so a refusal
+arrives before the request instead of after it. The editor assistant
+runs through `createGateway` when `VITE_AI_GATEWAY` is configured;
+without it the offline rules engine answers, nothing is charged, and no
+price is quoted for work that costs nothing.
+
+The engine, the arithmetic and the invariants are in `src/ai/`, the
+editor's metered provider is in `src/editor/ai/meteredProvider.ts`, and
+the full design is in [docs/CREDITS.md](docs/CREDITS.md).
 
 ## What the free tier costs, also enforced in code
 
