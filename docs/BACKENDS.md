@@ -348,37 +348,47 @@ string.
 ### The same thing on a phone
 
 A page can carry four dialects and choose at run time, because it is
-also the preview and the preview can be repointed. A Flutter app
+also the preview and the preview can be repointed. An installed app
 cannot and should not: it is built for one project, whose backend is
 known while it is being emitted.
 
 So `src/builder/targets/wire.ts` holds the same four protocols as
 language-neutral data — paths with `{table}`/`{id}`/`{bucket}`
 placeholders, the envelope each backend wraps rows in, where the token
-goes — and the Flutter emitter renders **only the chosen one**. A
+goes — and each mobile emitter renders **only the chosen one**. A
 Supabase build's `lib/runtime.dart` contains PostgREST paths and no
 mention of `/api/collections/`; a PocketBase build contains the filter
 escaping and a hand-built multipart body. No dialect table ships in the
 app.
 
-One thing the table is worth having for on its own: four languages
+All three mobile languages now read that plan:
+
+| Build | File | What a Supabase project gets |
+| --- | --- | --- |
+| Flutter | `lib/runtime.dart` | `dart:io` only — `HttpClient`, no package |
+| Kotlin | `app/src/main/java/…/Runtime.kt` | `HttpURLConnection` + `org.json`, nothing in Gradle |
+| Swift | `Sources/Runtime.swift` | `URLSession` + `JSONSerialization`, no SPM package |
+
+They differ only where the platform does. Android rewrites a
+`localhost` address to `10.0.2.2`, because that is the developer's
+machine seen from inside the emulator and the first thing that fails
+without it; iOS leaves it alone, because the simulator shares the Mac's
+loopback. A real address is copied verbatim in both.
+
+One thing the table is worth having for on its own: three languages
 disagreeing about where `/rest/v1/` goes is a bug nobody finds until a
 phone build is in somebody's hands. There is one table, with one set of
-tests, and each emitter renders it.
-
-Android and iOS still emit the generated service's routes in Kotlin and
-Swift. They are next, and they read the same plan.
+tests, and `wire.test.ts` asserts the same facts against the Dart, the
+Kotlin and the Swift — so an Android build and an iOS build of one
+project cannot drift apart about the backend they share.
 
 ## 7. What is next
 
 In order:
 
-1. **Kotlin and Swift** — the last two runtimes still hard-code the
-   generated service's routes. The plan in `wire.ts` is already there;
-   each needs a renderer, as Dart now has.
-2. **Firebase, then Appwrite.** PocketBase shipped; its realtime waits
+1. **Firebase, then Appwrite.** PocketBase shipped; its realtime waits
    on a Server-Sent Events transport beside `HttpSend` and
    `SocketOpen`, which is a contract change, not an adapter one.
-3. **The migration assistant** — `inspect()` on the old backend,
+2. **The migration assistant** — `inspect()` on the old backend,
    `plan()` on the new one, and a diff in between. The shape is already
    there: both ends speak blueprints.

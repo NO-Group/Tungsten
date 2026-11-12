@@ -14,6 +14,8 @@ import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile
 import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral, rowFields } from './expressions'
 import { appIdFor, slug, type Project } from '../../project/targets'
 import { DEFAULT_API_URL } from './server'
+import { renderPath, wirePlan, type WirePlan } from './wire'
+import type { RuntimeProfile } from '../../backend/runtimeProfile'
 
 function handlerName(nodeId: string): string {
   return `handle_${nodeId.replace(/[^A-Za-z0-9_]/g, '_')}`
@@ -458,12 +460,13 @@ ${handlers.join('\n\n') || '// No handlers yet.'}
 `
 }
 
-export function iosFiles(ir: Ir, project: Project): CompiledFile[] {
+export function iosFiles(ir: Ir, project: Project, profile?: RuntimeProfile): CompiledFile[] {
   const identifier = appIdFor(project, 'ios')
   const name = slug(project.name) || 'app'
-  // The simulator shares the Mac's loopback, so the backend is simply
-  // localhost here -- unlike Android, which needs 10.0.2.2.
-  const baseUrl = DEFAULT_API_URL
+  // The simulator shares the Mac's loopback, so a backend on the
+  // developer's machine is simply localhost here -- unlike Android,
+  // which needs 10.0.2.2.
+  const plan = wirePlan(profile)
 
   return [
     {
@@ -488,11 +491,17 @@ struct GeneratedApp: App {
       path: 'Sources/Runtime.swift',
       contents: `// The services a generated app talks to.
 //
-// Not stubs: these call the backend the builder writes alongside this app.
+${plan.base
+    ? `// Not stubs: these call the ${plan.dialect} API this project is configured
+// for. The address and the keys below came from the project's backend
+// settings; server-only credentials are deliberately not here, because an
+// installed app is readable by whoever has it.`
+    : `// Not stubs: these call the backend the builder writes alongside this app.
 // Build the Backend Service target, run \`node main.js\` in it, and sign-up,
-// the drawn tables and file uploads all work from here. Foundation has
-// everything needed -- URLSession and JSONSerialization -- so there is no
-// package to add.
+// the drawn tables and file uploads all work from here.`}
+//
+// Foundation has everything needed -- URLSession and JSONSerialization --
+// so there is no package to add.
 
 import Foundation
 
@@ -515,152 +524,7 @@ func toNumber(_ value: Any?) -> Double {
     }
 }
 
-/// Where the backend lives.
-///
-/// The simulator shares the Mac's loopback, so localhost is the machine
-/// running \`node main.js\`. On a device, put the Mac's address here.
-enum Backend {
-    nonisolated(unsafe) static var baseUrl = "${baseUrl}"
-    /// Set by the sign-in blocks; sent on every later request.
-    nonisolated(unsafe) static var token: String?
-}
-
-struct BackendError: LocalizedError {
-    let message: String
-    var errorDescription: String? { message }
-}
-
-/// One HTTP call, as JSON in and JSON out.
-private func call(
-    _ path: String,
-    method: String = "GET",
-    body: [String: Any]? = nil,
-    bytes: Data? = nil,
-    headers: [String: String] = [:]
-) async throws -> [String: Any] {
-    guard let url = URL(string: Backend.baseUrl + path) else {
-        throw BackendError(message: "Bad backend URL: " + Backend.baseUrl + path)
-    }
-    var request = URLRequest(url: url)
-    request.httpMethod = method
-    request.timeoutInterval = 30
-    request.setValue("application/json", forHTTPHeaderField: "accept")
-    if let token = Backend.token { request.setValue("Bearer " + token, forHTTPHeaderField: "authorization") }
-    for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
-
-    if let bytes {
-        request.httpBody = bytes
-        request.setValue("application/octet-stream", forHTTPHeaderField: "content-type")
-    } else if let body {
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
-        request.setValue("application/json", forHTTPHeaderField: "content-type")
-    }
-
-    let (data, response) = try await URLSession.shared.data(for: request)
-    let parsed = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] ?? [:]
-    if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
-        // The service answers errors as {"error": "..."}, so what the user
-        // sees is the sentence the backend chose, not a status code.
-        throw BackendError(message: parsed["error"] as? String ?? "Request failed: \\(http.statusCode)")
-    }
-    return parsed
-}
-
-enum Api {
-    /// Rows of a table you drew in the schema editor.
-    static func select(_ table: String, where filters: [String: Any] = [:]) async throws -> [[String: Any]] {
-        var path = "/data/" + table
-        if !filters.isEmpty {
-            let pairs = filters.map { key, value in
-                let encoded = toText(value).addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
-                return key + "=" + encoded
-            }
-            path += "?" + pairs.joined(separator: "&")
-        }
-        return try await call(path)["rows"] as? [[String: Any]] ?? []
-    }
-
-    static func insert(_ table: String, _ row: Any?) async throws -> [String: Any] {
-        let body = row as? [String: Any] ?? ["value": toText(row)]
-        return try await call("/data/" + table, method: "POST", body: body)["row"] as? [String: Any] ?? [:]
-    }
-
-    static func update(_ table: String, id: String, changes: Any?) async throws -> [String: Any] {
-        let body = changes as? [String: Any] ?? ["value": toText(changes)]
-        return try await call("/data/" + table + "/" + id, method: "PATCH", body: body)["row"] as? [String: Any] ?? [:]
-    }
-
-    static func remove(_ table: String, id: String) async throws {
-        _ = try await call("/data/" + table + "/" + id, method: "DELETE")
-    }
-
-    /// Anything else, including URLs that are not this backend.
-    static func request(_ url: String, method: String) async throws -> String {
-        if url.hasPrefix("/") {
-            let reply = try await call(url, method: method)
-            let data = try JSONSerialization.data(withJSONObject: reply)
-            return String(data: data, encoding: .utf8) ?? ""
-        }
-        guard let target = URL(string: url) else { return "" }
-        var request = URLRequest(url: target)
-        request.httpMethod = method
-        let (data, _) = try await URLSession.shared.data(for: request)
-        return String(data: data, encoding: .utf8) ?? ""
-    }
-}
-
-enum Auth {
-    static func signUp(email: String, password: String) async throws -> [String: Any] {
-        let reply = try await call("/auth/sign-up", method: "POST", body: ["email": email, "password": password])
-        if let token = reply["token"] as? String { Backend.token = token }
-        return reply["user"] as? [String: Any] ?? reply
-    }
-
-    static func signIn(email: String, password: String) async throws -> [String: Any] {
-        let reply = try await call("/auth/sign-in", method: "POST", body: ["email": email, "password": password])
-        if let token = reply["token"] as? String { Backend.token = token }
-        return reply["user"] as? [String: Any] ?? reply
-    }
-
-    /// Starts a provider round trip. The reply carries the URL to open --
-    /// opening it is the app's call, not the runtime's.
-    static func oauth(_ provider: String) async throws -> [String: Any] {
-        try await call("/auth/oauth", method: "POST", body: ["provider": provider])
-    }
-
-    static func session() async throws -> [String: Any]? {
-        guard Backend.token != nil else { return nil }
-        return try await call("/auth/session")["user"] as? [String: Any]
-    }
-
-    static func signOut() async throws {
-        if Backend.token != nil { _ = try await call("/auth/sign-out", method: "POST") }
-        Backend.token = nil
-    }
-}
-
-enum Storage {
-    /// Bytes in, a URL out. Give it Data, a file URL, or text.
-    static func upload(bucket: String, file: Any?) async throws -> String {
-        var bytes = Data()
-        var name = "upload"
-        switch file {
-        case let data as Data: bytes = data
-        case let url as URL:
-            bytes = (try? Data(contentsOf: url)) ?? Data()
-            name = url.lastPathComponent
-        case .none: break
-        default: bytes = Data(toText(file).utf8)
-        }
-        let reply = try await call(
-            "/storage/" + bucket,
-            method: "POST",
-            bytes: bytes,
-            headers: ["x-file-name": name]
-        )
-        return reply["url"] as? String ?? ""
-    }
-}
+${swiftBackend(plan)}
 `,
     },
     {
@@ -735,9 +599,13 @@ open ${name}.xcodeproj
 
 - \`Sources/ContentView.swift\` is the interface and the handlers your blocks
   became.
-- \`Sources/Runtime.swift\` calls the generated backend. Build the Backend
-  Service target, run \`node main.js\` in it, and the auth, table and upload
-  blocks work against it.
+- \`Sources/Runtime.swift\` is the backend this project is configured for,
+  written out as Swift: ${plan.base
+    ? `calls to \`${plan.base}\`. Server-only keys are deliberately absent,
+  because an installed app can be read.`
+    : `calls to the generated service. Build the Backend Service target, run
+  \`node main.js\` in it, and the auth, table and upload blocks work against
+  it.`}
 
 Bundle identifier \`${identifier}\`, version ${project.version}, both from the
 project in the Targets panel. Xcode is required, and so is macOS; that is
@@ -745,4 +613,364 @@ Apple's rule, not Tungsten's.
 `,
     },
   ]
+}
+
+/* ------------------------------------------------------------- the backend */
+
+/** `"text"` as a Swift string literal. */
+function swiftString(text: string): string {
+  return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`
+}
+
+const SWIFT = {
+  quote: swiftString,
+  escape: (expression: string) => `encode(${expression})`,
+  join: ' + ',
+}
+
+/** A wire path as a Swift expression, with the placeholders filled in. */
+function swiftPath(path: string, values: Record<string, string>): string {
+  return renderPath(path, values, SWIFT)
+}
+
+/** The rows of a reply, wherever this backend keeps them. */
+function swiftRows(plan: WirePlan): string {
+  return plan.list.envelope === 'array'
+    ? 'rowsOf(reply)'
+    : `rowsOf(asMap(reply)[${swiftString(plan.list.envelope)}])`
+}
+
+/** One row of a reply, wherever this backend keeps it. */
+function swiftRow(step: WirePlan['create'] | WirePlan['modify']): string {
+  if (step.envelope === 'self') return 'asMap(reply)'
+  if (step.envelope === 'row') return 'asMap(asMap(reply)["row"])'
+  return 'rowsOf(reply).first ?? [:]'
+}
+
+/** The arguments a write needs: the body, wrapped, and any extra header. */
+function swiftWrite(step: WirePlan['create'] | WirePlan['modify'], body: string): string {
+  const wrapped = step.wrap ? `[${swiftString(step.wrap)}: ${body}]` : body
+  const prefer = step.prefer ? `, headers: ["prefer": ${swiftString(step.prefer)}]` : ''
+  return `method: ${swiftString(step.method)}, body: ${wrapped}${prefer}`
+}
+
+/** The filter encoder for this dialect, and nothing else. */
+function swiftFilter(plan: WirePlan): string {
+  switch (plan.list.filter) {
+    case 'postgrest':
+      return `/// A filter as PostgREST parameters: column=eq.value.
+private func query(_ filters: [String: Any]) -> String {
+    var query = "?select=*"
+    for (key, value) in filters { query += "&" + encode(key) + "=eq." + encode(toText(value)) }
+    return query
+}`
+    case 'pocketbase':
+      return `/// A filter as a PocketBase expression.
+///
+/// There is no parameter binding on the wire here: the value is quoted
+/// into the expression, so a quote inside it has to be escaped or it
+/// ends the string early.
+private func query(_ filters: [String: Any]) -> String {
+    if filters.isEmpty { return "" }
+    let tests = filters.map { key, value in
+        key + "='" + toText(value).replacingOccurrences(of: "'", with: "\\\\'") + "'"
+    }
+    return "?filter=" + encode(tests.joined(separator: " && "))
+}`
+    case 'tree':
+      return `/// A filter as the tree this backend takes in the body of a query.
+private func whereBody(_ filters: [String: Any]) -> [String: Any] {
+    if filters.isEmpty { return [:] }
+    let tests = filters.map { key, value in ["column": key, "op": "eq", "value": value] }
+    return ["where": ["all": tests]]
+}`
+    default:
+      return `/// A filter as the query string the generated service reads.
+private func query(_ filters: [String: Any]) -> String {
+    if filters.isEmpty { return "" }
+    return "?" + filters.map { key, value in encode(key) + "=" + encode(toText(value)) }.joined(separator: "&")
+}`
+  }
+}
+
+/** Sign-up, sign-in, session and sign-out, as this backend spells them. */
+function swiftAuth(plan: WirePlan): string {
+  const credentials = plan.signUp.body === 'record'
+    ? '["email": email, "password": password, "passwordConfirm": password]'
+    : '["email": email, "password": password]'
+
+  const signUp = plan.signUp.thenSignIn
+    ? `        // Creating the account does not start a session here, so the app
+        // signs in straight afterwards rather than handing back a user who
+        // cannot read anything.
+        _ = try await call(${swiftString(plan.signUp.path)}, method: "POST", body: ${credentials})
+        return try await signIn(email: email, password: password)`
+    : `        return accept(try await call(${swiftString(plan.signUp.path)}, method: "POST", body: ${credentials}))`
+
+  const identity = plan.signIn.identity === 'identity'
+    ? '["identity": email, "password": password]'
+    : '["email": email, "password": password]'
+
+  const oauth = plan.oauth.kind === 'url'
+    ? `    /// The provider's address, built from the backend's own. Opening it
+    /// is the app's call: only it knows whether that is a sheet, a tab or
+    /// an ASWebAuthenticationSession.
+    static func oauth(_ provider: String) async throws -> [String: Any] {
+        ["url": Backend.baseUrl + ${swiftString(plan.oauth.path)} + encode(provider), "provider": provider]
+    }`
+    : `    /// Starts a provider round trip. The reply carries the URL to open --
+    /// opening it is the app's call, not the runtime's.
+    static func oauth(_ provider: String) async throws -> [String: Any] {
+        asMap(try await call(${swiftString(plan.oauth.path)}, method: "POST", body: ["provider": provider]))
+    }`
+
+  const signOut = plan.signOut
+    ? `        if Backend.token != nil { _ = try await call(${swiftString(plan.signOut.path)}, method: ${swiftString(plan.signOut.method)}) }
+        Backend.token = nil`
+    : `        // Signing out is local here: the backend keeps no session to end.
+        Backend.token = nil`
+
+  return `enum Auth {
+    static func signUp(email: String, password: String) async throws -> [String: Any] {
+${signUp}
+    }
+
+    static func signIn(email: String, password: String) async throws -> [String: Any] {
+        accept(try await call(${swiftString(plan.signIn.path)}, method: "POST", body: ${identity}))
+    }
+
+${oauth}
+
+    static func session() async throws -> [String: Any]? {
+        guard Backend.token != nil else { return nil }
+        do {
+            return accept(try await call(${swiftString(plan.session.path)}, method: ${swiftString(plan.session.method)}))
+        } catch {
+            // An expired token is nobody being signed in, not a failure
+            // the app has to handle.
+            Backend.token = nil
+            return nil
+        }
+    }
+
+    static func signOut() async throws {
+${signOut}
+    }
+}`
+}
+
+/** Uploading a file, and working out what its URL is afterwards. */
+function swiftStorage(plan: WirePlan): string {
+  const { upload } = plan
+  const path = swiftPath(upload.path, { bucket: 'bucket', name: 'name' })
+
+  // A reply nobody reads is a warning in the generated app, so the
+  // binding only appears when the address below is built from it.
+  const keeps = upload.idInPath || Boolean(upload.urlKey)
+  const open = keeps ? 'let reply = asMap(try await call(' : '_ = try await call('
+  const close = keeps ? '))' : ')'
+
+  const send = upload.form
+    ? `        let boundary = "tungsten-" + String(Int(Date().timeIntervalSince1970 * 1000))
+        ${open}
+            ${path},
+            method: "POST",
+            bytes: multipart(boundary: boundary, name: name, bytes: bytes),
+            headers: ["content-type": "multipart/form-data; boundary=" + boundary]
+        ${close}`
+    : `        ${open}
+            ${path},
+            method: "POST",
+            bytes: bytes${upload.path.includes('{name}')
+      ? ''
+      : `,
+            // The name is not in the address, so it travels in a header.
+            headers: ["x-file-name": name]`}
+        ${close}`
+
+  const address = upload.idInPath
+    ? `        // A file belongs to a record here, so its address needs the id
+        // the upload came back with.
+        let stored = (reply["file"] as? [Any]).map { toText($0.first) } ?? toText(reply["file"])
+        return Backend.baseUrl + ${swiftPath(upload.publicPath ?? '', { bucket: 'bucket', id: 'toText(reply["id"])', name: 'stored' })}`
+    : upload.urlKey
+      ? `        let url = reply[${swiftString(upload.urlKey)}] as? String ?? ""
+        ${upload.publicPath
+        ? `return url.isEmpty ? Backend.baseUrl + ${swiftPath(upload.publicPath, { bucket: 'bucket', name: 'name' })} : url`
+        : 'return url'}`
+      : `        return Backend.baseUrl + ${swiftPath(upload.publicPath ?? '', { bucket: 'bucket', name: 'name' })}`
+
+  const multipart = upload.form
+    ? `
+/// A multipart body, by hand: a generated app should not need a package
+/// to post one file.
+private func multipart(boundary: String, name: String, bytes: Data) -> Data {
+    var body = Data()
+    body.append(Data(("--" + boundary + "\\r\\n"
+        + "Content-Disposition: form-data; name=\\"file\\"; filename=\\"" + name + "\\"\\r\\n"
+        + "Content-Type: application/octet-stream\\r\\n\\r\\n").utf8))
+    body.append(bytes)
+    body.append(Data(("\\r\\n--" + boundary + "--\\r\\n").utf8))
+    return body
+}
+`
+    : ''
+
+  return `${multipart}
+enum Storage {
+    /// Bytes in, a URL out. Give it Data, a file URL, or text.
+    static func upload(bucket: String, file: Any?) async throws -> String {
+        var bytes = Data()
+        var name = "upload"
+        switch file {
+        case let data as Data: bytes = data
+        case let url as URL:
+            bytes = (try? Data(contentsOf: url)) ?? Data()
+            name = url.lastPathComponent
+        case .none: break
+        default: bytes = Data(toText(file).utf8)
+        }
+${send}
+${address}
+    }
+}`
+}
+
+/**
+ * The backend half of `Runtime.swift`.
+ *
+ * Written for the one backend this project is configured for, rather
+ * than carrying a dialect table into the app. An iPhone build for a
+ * Supabase project contains PostgREST paths and nothing else, which is
+ * the code a person would have written for it.
+ */
+function swiftBackend(plan: WirePlan): string {
+  const constants = plan.headers
+    .map(([key, value]) => `    request.setValue(${swiftString(value)}, forHTTPHeaderField: ${swiftString(key)})`)
+    .join('\n')
+
+  return `/// Where the backend lives.
+///
+${plan.base
+    ? `/// The address and the keys below came from the project's backend
+/// settings. Server-only credentials are deliberately not here: an
+/// installed app is readable by whoever has it.`
+    : `/// The simulator shares the Mac's loopback, so localhost is the machine
+/// running the generated service. On a device, put the Mac's address here.`}
+enum Backend {
+    nonisolated(unsafe) static var baseUrl = ${swiftString(plan.base || DEFAULT_API_URL)}
+    /// Set by the sign-in blocks; sent on every later request.
+    nonisolated(unsafe) static var token: String?
+}
+
+struct BackendError: LocalizedError {
+    let message: String
+    var errorDescription: String? { message }
+}
+
+private func encode(_ value: Any?) -> String {
+    toText(value).addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? ""
+}
+
+private func asMap(_ value: Any?) -> [String: Any] { value as? [String: Any] ?? [:] }
+
+private func rowsOf(_ value: Any?) -> [[String: Any]] { value as? [[String: Any]] ?? [] }
+
+/// One HTTP call: JSON in, decoded JSON out.
+private func call(
+    _ path: String,
+    method: String = "GET",
+    body: [String: Any]? = nil,
+    bytes: Data? = nil,
+    headers: [String: String] = [:]
+) async throws -> Any {
+    guard let url = URL(string: Backend.baseUrl + path) else {
+        throw BackendError(message: "Bad backend URL: " + Backend.baseUrl + path)
+    }
+    var request = URLRequest(url: url)
+    request.httpMethod = method
+    request.timeoutInterval = 30
+    request.setValue("application/json", forHTTPHeaderField: "accept")
+${constants}
+    // A signed-in user's token replaces the publishable key rather than
+    // being sent beside it.
+    if let token = Backend.token {
+        request.setValue(${plan.token.prefix ? `${swiftString(plan.token.prefix)} + token` : 'token'}, forHTTPHeaderField: ${swiftString(plan.token.header)})
+    }
+    for (key, value) in headers { request.setValue(value, forHTTPHeaderField: key) }
+
+    if let bytes {
+        request.httpBody = bytes
+        if headers["content-type"] == nil {
+            request.setValue("application/octet-stream", forHTTPHeaderField: "content-type")
+        }
+    } else if let body {
+        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        request.setValue("application/json", forHTTPHeaderField: "content-type")
+    }
+
+    let (data, response) = try await URLSession.shared.data(for: request)
+    let parsed = try? JSONSerialization.jsonObject(with: data)
+    if let http = response as? HTTPURLResponse, http.statusCode >= 400 {
+        // Every backend puts its sentence somewhere else, and a status
+        // code on its own tells the user nothing they can act on.
+        let map = asMap(parsed)
+        let said = map["error"] ?? map["message"] ?? map["msg"]
+        throw BackendError(message: said as? String ?? "Request failed: \\(http.statusCode)")
+    }
+    return parsed ?? [:]
+}
+
+${swiftFilter(plan)}
+
+/// Keeps the token from a sign-in reply, and hands back the user.
+private func accept(_ reply: Any?) -> [String: Any] {
+    let map = asMap(reply)
+    if let token = map[${swiftString(plan.tokenKey)}] as? String, !token.isEmpty { Backend.token = token }
+    return map[${swiftString(plan.userKey)}] as? [String: Any] ?? map
+}
+
+enum Api {
+    /// Rows of a table you drew in the schema editor.
+    static func select(_ table: String, where filters: [String: Any] = [:]) async throws -> [[String: Any]] {
+        let reply = ${plan.list.filter === 'tree'
+      ? `try await call(${swiftPath(plan.list.path, { table: 'table' })}, method: "POST", body: whereBody(filters))`
+      : `try await call(${swiftPath(plan.list.path, { table: 'table' })} + query(filters))`}
+        return ${swiftRows(plan)}
+    }
+
+    static func insert(_ table: String, _ row: Any?) async throws -> [String: Any] {
+        let body = row as? [String: Any] ?? ["value": toText(row)]
+        let reply = try await call(${swiftPath(plan.create.path, { table: 'table' })}, ${swiftWrite(plan.create, 'body')})
+        return ${swiftRow(plan.create)}
+    }
+
+    static func update(_ table: String, id: String, changes: Any?) async throws -> [String: Any] {
+        let body = changes as? [String: Any] ?? ["value": toText(changes)]
+        let reply = try await call(${swiftPath(plan.modify.path, { table: 'table', id: 'id' })}, ${swiftWrite(plan.modify, 'body')})
+        return ${swiftRow(plan.modify)}
+    }
+
+    static func remove(_ table: String, id: String) async throws {
+        _ = try await call(${swiftPath(plan.destroy.path, { table: 'table', id: 'id' })}, method: ${swiftString(plan.destroy.method)})
+    }
+
+    /// Anything else, including URLs that are not this backend.
+    static func request(_ url: String, method: String) async throws -> String {
+        if url.hasPrefix("/") {
+            let reply = try await call(url, method: method)
+            let data = try JSONSerialization.data(withJSONObject: reply)
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+        guard let target = URL(string: url) else { return "" }
+        var request = URLRequest(url: target)
+        request.httpMethod = method
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+${swiftAuth(plan)}
+
+${swiftStorage(plan)}`
 }

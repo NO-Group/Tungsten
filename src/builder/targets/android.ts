@@ -17,16 +17,10 @@ import { uiThemeKotlin } from '../uiTokens'
 import type { CompiledFile, Ir, IrEvent, IrStatement, IrValue } from '../compile'
 import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral, rowFields } from './expressions'
 import { appIdFor, type Project } from '../../project/targets'
-import { DEFAULT_API_PORT } from './server'
+import { DEFAULT_API_URL } from './server'
+import { renderPath, wirePlan, type WirePlan } from './wire'
+import type { RuntimeProfile } from '../../backend/runtimeProfile'
 
-/**
- * The backend, as seen from an Android emulator.
- *
- * 10.0.2.2 is the loopback of the machine running the emulator; the
- * phone's own localhost has nothing listening on it. Getting this wrong
- * is the single most common reason a first run shows an empty list.
- */
-const ANDROID_API_URL = `http://10.0.2.2:${DEFAULT_API_PORT}`
 
 /** `com.acme.timer` → `com/acme/timer`, where Gradle expects the sources. */
 export function packagePath(identifier: string): string {
@@ -490,18 +484,269 @@ ${handlers.join('\n\n') || '// No handlers yet.'}
 `
 }
 
-/** The stubs the handlers call, kept apart so they are easy to replace. */
-function runtime(identifier: string, baseUrl: string): string {
+/* ------------------------------------------------------------- the backend */
+
+/** `"text"` as a Kotlin string literal. */
+function kotlinString(text: string): string {
+  return `"${text.replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\$/g, '\\$')}"`
+}
+
+const KOTLIN = {
+  quote: kotlinString,
+  escape: (expression: string) => `encode(${expression})`,
+  join: ' + ',
+}
+
+/** A wire path as a Kotlin expression, with the placeholders filled in. */
+function kotlinPath(path: string, values: Record<string, string>): string {
+  return renderPath(path, values, KOTLIN)
+}
+
+/**
+ * Where a generated app looks for its backend.
+ *
+ * 10.0.2.2 is the host machine as seen from the Android emulator;
+ * localhost there is the phone itself, which is running nothing. This
+ * is the most common first-run failure on Android, so an address on
+ * the developer's own machine is translated rather than copied.
+ */
+function kotlinBaseUrl(plan: WirePlan): string {
+  const base = plan.base || DEFAULT_API_URL
+  return base.replace(/\/\/(localhost|127\.0\.0\.1)/, '//10.0.2.2')
+}
+
+/** The rows of a reply, wherever this backend keeps them. */
+function kotlinRows(plan: WirePlan): string {
+  return plan.list.envelope === 'array'
+    ? 'rowsOf(reply)'
+    : `rowsOf(asMap(reply)[${kotlinString(plan.list.envelope)}])`
+}
+
+/** One row of a reply, wherever this backend keeps it. */
+function kotlinRow(step: WirePlan['create'] | WirePlan['modify']): string {
+  if (step.envelope === 'self') return 'asMap(reply)'
+  if (step.envelope === 'row') return 'asMap(asMap(reply)["row"])'
+  return 'rowsOf(reply).firstOrNull() ?: emptyMap()'
+}
+
+/** The arguments a write needs: the body, wrapped, and any extra header. */
+function kotlinWrite(step: WirePlan['create'] | WirePlan['modify'], body: string): string {
+  const wrapped = step.wrap ? `JSONObject().put(${kotlinString(step.wrap)}, ${body})` : body
+  const prefer = step.prefer ? `, extraHeaders = mapOf("prefer" to ${kotlinString(step.prefer)})` : ''
+  return `${kotlinString(step.method)}, ${wrapped}${prefer}`
+}
+
+/** The filter encoder for this dialect, and nothing else. */
+function kotlinFilter(plan: WirePlan): string {
+  switch (plan.list.filter) {
+    case 'postgrest':
+      return `/** A filter as PostgREST parameters: column=eq.value. */
+private fun query(where: Map<String, Any?>): String =
+    "?select=*" + where.entries.joinToString("") { "&" + encode(it.key) + "=eq." + encode(toText(it.value)) }`
+    case 'pocketbase':
+      return `/**
+ * A filter as a PocketBase expression.
+ *
+ * There is no parameter binding on the wire here: the value is quoted
+ * into the expression, so a quote inside it has to be escaped or it
+ * ends the string early.
+ */
+private fun query(where: Map<String, Any?>): String {
+    if (where.isEmpty()) return ""
+    val tests = where.entries.joinToString(" && ") {
+        it.key + "='" + toText(it.value).replace("'", "\\\\'") + "'"
+    }
+    return "?filter=" + encode(tests)
+}`
+    case 'tree':
+      return `/** A filter as the tree this backend takes in the body of a query. */
+private fun whereBody(where: Map<String, Any?>): JSONObject {
+    if (where.isEmpty()) return JSONObject()
+    val tests = JSONArray()
+    for ((column, value) in where) {
+        tests.put(JSONObject().put("column", column).put("op", "eq").put("value", value))
+    }
+    return JSONObject().put("where", JSONObject().put("all", tests))
+}`
+    default:
+      return `/** A filter as the query string the generated service reads. */
+private fun query(where: Map<String, Any?>): String {
+    if (where.isEmpty()) return ""
+    return "?" + where.entries.joinToString("&") { encode(it.key) + "=" + encode(toText(it.value)) }
+}`
+  }
+}
+
+/** Sign-up, sign-in, session and sign-out, as this backend spells them. */
+function kotlinAuth(plan: WirePlan): string {
+  const credentials = plan.signUp.body === 'record'
+    ? 'JSONObject().put("email", email).put("password", password).put("passwordConfirm", password)'
+    : 'JSONObject().put("email", email).put("password", password)'
+
+  const signUp = plan.signUp.thenSignIn
+    ? `        // Creating the account does not start a session here, so the app
+        // signs in straight afterwards rather than handing back a user who
+        // cannot read anything.
+        call(${kotlinString(plan.signUp.path)}, "POST", ${credentials})
+        return signIn(email, password)`
+    : `        return accept(call(${kotlinString(plan.signUp.path)}, "POST", ${credentials}))`
+
+  const identity = plan.signIn.identity === 'identity'
+    ? 'JSONObject().put("identity", email).put("password", password)'
+    : 'JSONObject().put("email", email).put("password", password)'
+
+  const oauth = plan.oauth.kind === 'url'
+    ? `    /**
+     * The provider's address, built from the backend's own.
+     *
+     * Opening it is the app's job, because only the app knows whether
+     * that is a browser tab, a custom tab or a web view.
+     */
+    fun oauth(provider: String): Map<String, Any?> = mapOf(
+        "url" to Backend.baseUrl + ${kotlinString(plan.oauth.path)} + encode(provider),
+        "provider" to provider,
+    )`
+    : `    /** Starts a provider round trip. The reply carries the URL to open. */
+    suspend fun oauth(provider: String): Map<String, Any?> =
+        asMap(call(${kotlinString(plan.oauth.path)}, "POST", JSONObject().put("provider", provider)))`
+
+  const signOut = plan.signOut
+    ? `        if (Backend.token != null) call(${kotlinString(plan.signOut.path)}, ${kotlinString(plan.signOut.method)})
+        Backend.token = null`
+    : `        // Signing out is local here: the backend keeps no session to end.
+        Backend.token = null`
+
+  return `object Auth {
+    suspend fun signUp(email: String, password: String): Map<String, Any?> {
+${signUp}
+    }
+
+    suspend fun signIn(email: String, password: String): Map<String, Any?> =
+        accept(call(${kotlinString(plan.signIn.path)}, "POST", ${identity}))
+
+${oauth}
+
+    suspend fun session(): Map<String, Any?>? {
+        if (Backend.token == null) return null
+        return try {
+            accept(call(${kotlinString(plan.session.path)}, ${kotlinString(plan.session.method)}))
+        } catch (error: RuntimeException) {
+            // An expired token is nobody being signed in, not a failure
+            // the app has to handle.
+            Backend.token = null
+            null
+        }
+    }
+
+    suspend fun signOut() {
+${signOut}
+    }
+}`
+}
+
+/** Uploading a file, and working out what its URL is afterwards. */
+function kotlinStorage(plan: WirePlan): string {
+  const { upload } = plan
+  const path = kotlinPath(upload.path, { bucket: 'bucket', name: 'name' })
+
+  // A reply nobody reads is a warning in the generated app, so the
+  // binding only appears when the address below is built from it.
+  const keeps = upload.idInPath || Boolean(upload.urlKey)
+  const open = keeps ? 'val reply = asMap(call(' : 'call('
+  const close = keeps ? '))' : ')'
+
+  const send = upload.form
+    ? `        val boundary = "tungsten-" + System.currentTimeMillis()
+        ${open}
+            ${path},
+            "POST",
+            bytes = multipart(boundary, name, bytes),
+            contentType = "multipart/form-data; boundary=" + boundary,
+        ${close}`
+    : `        ${open}
+            ${path},
+            "POST",
+            bytes = bytes,
+            contentType = "application/octet-stream",${upload.path.includes('{name}')
+        ? ''
+        : `
+            // The name is not in the address, so it travels in a header.
+            extraHeaders = mapOf("x-file-name" to name),`}
+        ${close}`
+
+  const address = upload.idInPath
+    ? `        // A file belongs to a record here, so its address needs the id
+        // the upload came back with.
+        val stored = (reply["file"] as? List<*>)?.firstOrNull()?.let { toText(it) } ?: toText(reply["file"])
+        return Backend.baseUrl + ${kotlinPath(upload.publicPath ?? '', { bucket: 'bucket', id: 'toText(reply["id"])', name: 'stored' })}`
+    : upload.urlKey
+      ? `        val url = toText(reply[${kotlinString(upload.urlKey)}])
+        ${upload.publicPath
+        ? `return if (url.isNotEmpty()) url else Backend.baseUrl + ${kotlinPath(upload.publicPath, { bucket: 'bucket', name: 'name' })}`
+        : 'return url'}`
+      : `        return Backend.baseUrl + ${kotlinPath(upload.publicPath ?? '', { bucket: 'bucket', name: 'name' })}`
+
+  const multipart = upload.form
+    ? `
+/** A multipart body, by hand: a generated app should not need a library for one file. */
+private fun multipart(boundary: String, name: String, bytes: ByteArray): ByteArray {
+    val head = ("--" + boundary + "\\r\\n"
+        + "Content-Disposition: form-data; name=\\"file\\"; filename=\\"" + name + "\\"\\r\\n"
+        + "Content-Type: application/octet-stream\\r\\n\\r\\n").toByteArray()
+    val tail = ("\\r\\n--" + boundary + "--\\r\\n").toByteArray()
+    return head + bytes + tail
+}
+`
+    : ''
+
+  return `${multipart}
+object Storage {
+    /** Bytes in, a URL out. Give it a ByteArray, a File, or text. */
+    suspend fun upload(bucket: String, file: Any?): String {
+        val bytes = when (file) {
+            is ByteArray -> file
+            is File -> file.readBytes()
+            null -> ByteArray(0)
+            else -> toText(file).toByteArray()
+        }
+        val name = if (file is File) file.name else "upload"
+${send}
+${address}
+    }
+}`
+}
+
+/**
+ * The whole of `Runtime.kt`.
+ *
+ * Generated against one backend rather than carrying a dialect table:
+ * an app is built for a project, and a project has one backend. The
+ * result is Kotlin a person could have written for that backend, which
+ * is the promise the rest of this generator makes too.
+ */
+function runtime(identifier: string, plan: WirePlan): string {
+  const constants = plan.headers
+    .map(([key, value]) => `    connection.setRequestProperty(${kotlinString(key)}, ${kotlinString(value)})`)
+    .join('\n')
+
   return `// The services a generated app talks to.
 //
-// These are not stubs. They call the backend the builder writes alongside
-// this app -- build the Backend Service target, run \`node main.js\` in it,
-// and sign-up, the drawn tables and file uploads all work from here.
-//
+// Not stubs: these call ${plan.base ? `the ${plan.dialect} API this project is configured for` : 'the backend the builder writes alongside this app'}.
+${plan.base ? '// The address and the keys below came from the project\'s backend\n// settings; server-only credentials are deliberately not here, because\n// an installed app is readable by whoever has it.\n' : ''}//
 // JSON is handled with org.json, which Android ships: a generated app
 // should not need a dependency to parse its own backend's replies.
 
 package ${identifier}
+
+import java.io.File
+import java.net.HttpURLConnection
+import java.net.URL
+import java.net.URLEncoder
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
+import org.json.JSONArray
+import org.json.JSONObject
+import org.json.JSONTokener
 
 /**
  * Values out of a field map have no static type, so the two conversions
@@ -517,21 +762,14 @@ fun toNumber(value: Any?): Double = when (value) {
     else -> value?.toString()?.toDoubleOrNull() ?: 0.0
 }
 
-/**
- * Where the backend lives.
- *
- * 10.0.2.2 is the host machine as seen from the Android emulator;
- * localhost there is the phone itself, which is running nothing. Change
- * this one line when you deploy -- it is the only place the address
- * appears.
- */
+/** Where the backend lives. One line to change when you deploy. */
 object Backend {
-    var baseUrl: String = "${baseUrl}"
+    var baseUrl: String = ${kotlinString(kotlinBaseUrl(plan))}
     /** Set by the sign-in blocks; sent on every later request. */
     var token: String? = null
 }
 
-/** One HTTP call, off the main thread, as JSON in and JSON out. */
+/** One HTTP call, off the main thread, as JSON in and parsed JSON out. */
 private suspend fun call(
     path: String,
     method: String = "GET",
@@ -539,13 +777,16 @@ private suspend fun call(
     bytes: ByteArray? = null,
     contentType: String = "application/json",
     extraHeaders: Map<String, String> = emptyMap(),
-): String = withContext(Dispatchers.IO) {
+): Any? = withContext(Dispatchers.IO) {
     val connection = URL(Backend.baseUrl + path).openConnection() as HttpURLConnection
     connection.requestMethod = method
     connection.connectTimeout = 10_000
     connection.readTimeout = 30_000
     connection.setRequestProperty("accept", "application/json")
-    Backend.token?.let { connection.setRequestProperty("authorization", "Bearer " + it) }
+${constants}
+    // A signed-in user's token replaces the publishable key rather than
+    // being sent beside it.
+    Backend.token?.let { connection.setRequestProperty(${kotlinString(plan.token.header)}, ${plan.token.prefix ? `${kotlinString(plan.token.prefix)} + it` : 'it'}) }
     for ((key, value) in extraHeaders) connection.setRequestProperty(key, value)
 
     val payload = bytes ?: body?.toString()?.toByteArray()
@@ -559,12 +800,12 @@ private suspend fun call(
     val text = stream?.bufferedReader()?.use { it.readText() } ?: ""
     connection.disconnect()
     if (connection.responseCode >= 400) {
-        // The service answers errors as {"error": "..."}, so the message a
-        // user sees is the one the backend chose, not a status code.
-        val message = runCatching { JSONObject(text).optString("error") }.getOrNull()
-        throw RuntimeException(if (message.isNullOrBlank()) "Request failed: " + connection.responseCode else message)
+        // Every backend puts its sentence somewhere else, and a status
+        // code on its own tells the user nothing they can act on.
+        val said = asMap(parse(text)).let { it["error"] ?: it["message"] ?: it["msg"] }
+        throw RuntimeException(if (said is String && said.isNotBlank()) said else "Request failed: " + connection.responseCode)
     }
-    text
+    parse(text)
 }
 
 /** org.json values, as the plain Kotlin the generated handlers expect. */
@@ -575,23 +816,37 @@ private fun unwrap(value: Any?): Any? = when (value) {
     else -> value
 }
 
-private fun asMap(text: String): Map<String, Any?> {
-    if (text.isBlank()) return emptyMap()
-    @Suppress("UNCHECKED_CAST")
-    return (unwrap(JSONObject(text)) as? Map<String, Any?>) ?: emptyMap()
+/** A reply body, which is an object on some backends and an array on others. */
+private fun parse(text: String): Any? {
+    if (text.isBlank()) return null
+    return runCatching { unwrap(JSONTokener(text).nextValue()) }.getOrNull()
 }
 
+@Suppress("UNCHECKED_CAST")
+private fun asMap(value: Any?): Map<String, Any?> = (value as? Map<String, Any?>) ?: emptyMap()
+
+@Suppress("UNCHECKED_CAST")
+private fun rowsOf(value: Any?): List<Map<String, Any?>> =
+    (value as? List<*>)?.mapNotNull { it as? Map<String, Any?> } ?: emptyList()
+
 private fun encode(value: Any?): String = URLEncoder.encode(toText(value), "UTF-8")
+
+${kotlinFilter(plan)}
+
+/** Keeps the token from a sign-in reply, and hands back the user. */
+private fun accept(reply: Any?): Map<String, Any?> {
+    val map = asMap(reply)
+    (map[${kotlinString(plan.tokenKey)}] as? String)?.let { if (it.isNotBlank()) Backend.token = it }
+    return asMap(map[${kotlinString(plan.userKey)}]).ifEmpty { map }
+}
 
 object Api {
     /** Rows of a table you drew in the schema editor. */
     suspend fun select(table: String, where: Map<String, Any?> = emptyMap()): List<Map<String, Any?>> {
-        val queryString = if (where.isEmpty()) "" else "?" + where.entries.joinToString("&") {
-            encode(it.key) + "=" + encode(it.value)
-        }
-        val rows = asMap(call("/data/" + table + queryString))["rows"]
-        @Suppress("UNCHECKED_CAST")
-        return (rows as? List<Map<String, Any?>>) ?: emptyList()
+        val reply = ${plan.list.filter === 'tree'
+    ? `call(${kotlinPath(plan.list.path, { table: 'table' })}, "POST", whereBody(where))`
+    : `call(${kotlinPath(plan.list.path, { table: 'table' })} + query(where))`}
+        return ${kotlinRows(plan)}
     }
 
     suspend fun insert(table: String, row: Any?): Map<String, Any?> {
@@ -600,8 +855,8 @@ object Api {
             is String -> runCatching { JSONObject(row) }.getOrElse { JSONObject().put("value", row) }
             else -> JSONObject().put("value", row)
         }
-        @Suppress("UNCHECKED_CAST")
-        return (asMap(call("/data/" + table, "POST", body))["row"] as? Map<String, Any?>) ?: emptyMap()
+        val reply = call(${kotlinPath(plan.create.path, { table: 'table' })}, ${kotlinWrite(plan.create, 'body')})
+        return ${kotlinRow(plan.create)}
     }
 
     suspend fun update(table: String, id: String, changes: Any?): Map<String, Any?> {
@@ -609,17 +864,17 @@ object Api {
             is Map<*, *> -> JSONObject(changes.entries.associate { toText(it.key) to it.value })
             else -> JSONObject().put("value", changes)
         }
-        @Suppress("UNCHECKED_CAST")
-        return (asMap(call("/data/" + table + "/" + id, "PATCH", body))["row"] as? Map<String, Any?>) ?: emptyMap()
+        val reply = call(${kotlinPath(plan.modify.path, { table: 'table', id: 'id' })}, ${kotlinWrite(plan.modify, 'body')})
+        return ${kotlinRow(plan.modify)}
     }
 
     suspend fun remove(table: String, id: String) {
-        call("/data/" + table + "/" + id, "DELETE")
+        call(${kotlinPath(plan.destroy.path, { table: 'table', id: 'id' })}, ${kotlinString(plan.destroy.method)})
     }
 
     /** Anything else, including URLs that are not this backend. */
     suspend fun request(url: String, method: String): String = withContext(Dispatchers.IO) {
-        if (url.startsWith("/")) call(url, method) else {
+        if (url.startsWith("/")) toText(call(url, method)) else {
             val connection = URL(url).openConnection() as HttpURLConnection
             connection.requestMethod = method
             val stream = if (connection.responseCode >= 400) connection.errorStream else connection.inputStream
@@ -630,69 +885,16 @@ object Api {
     }
 }
 
-object Auth {
-    suspend fun signUp(email: String, password: String): Map<String, Any?> {
-        val reply = asMap(call("/auth/sign-up", "POST", JSONObject().put("email", email).put("password", password)))
-        (reply["token"] as? String)?.let { Backend.token = it }
-        @Suppress("UNCHECKED_CAST")
-        return (reply["user"] as? Map<String, Any?>) ?: reply
-    }
+${kotlinAuth(plan)}
 
-    suspend fun signIn(email: String, password: String): Map<String, Any?> {
-        val reply = asMap(call("/auth/sign-in", "POST", JSONObject().put("email", email).put("password", password)))
-        (reply["token"] as? String)?.let { Backend.token = it }
-        @Suppress("UNCHECKED_CAST")
-        return (reply["user"] as? Map<String, Any?>) ?: reply
-    }
-
-    /**
-     * Starts a provider round trip.
-     *
-     * The backend hands back the authorize URL; opening it is the app's
-     * job, because only the app knows whether that is a browser tab, a
-     * custom tab or a web view.
-     */
-    suspend fun oauth(provider: String): Map<String, Any?> =
-        asMap(call("/auth/oauth", "POST", JSONObject().put("provider", provider)))
-
-    suspend fun session(): Map<String, Any?>? {
-        if (Backend.token == null) return null
-        @Suppress("UNCHECKED_CAST")
-        return asMap(call("/auth/session"))["user"] as? Map<String, Any?>
-    }
-
-    suspend fun signOut() {
-        if (Backend.token != null) call("/auth/sign-out", "POST")
-        Backend.token = null
-    }
-}
-
-object Storage {
-    /** Bytes in, a URL out. Give it a ByteArray, a File, or text. */
-    suspend fun upload(bucket: String, file: Any?): String {
-        val bytes = when (file) {
-            is ByteArray -> file
-            is File -> file.readBytes()
-            null -> ByteArray(0)
-            else -> toText(file).toByteArray()
-        }
-        val name = if (file is File) file.name else "upload"
-        val reply = asMap(call(
-            "/storage/" + bucket,
-            "POST",
-            bytes = bytes,
-            contentType = "application/octet-stream",
-            extraHeaders = mapOf("x-file-name" to name),
-        ))
-        return toText(reply["url"])
-    }
-}
+${kotlinStorage(plan)}
 `
 }
 
-export function androidFiles(ir: Ir, project: Project): CompiledFile[] {
+export function androidFiles(ir: Ir, project: Project, profile?: RuntimeProfile): CompiledFile[] {
   const identifier = appIdFor(project, 'android')
   const path = packagePath(identifier)
+  const plan = wirePlan(profile)
 
   return [
     {
@@ -701,7 +903,7 @@ export function androidFiles(ir: Ir, project: Project): CompiledFile[] {
     },
     {
       path: `app/src/main/java/${path}/Runtime.kt`,
-      contents: runtime(identifier, ANDROID_API_URL),
+      contents: runtime(identifier, plan),
     },
     {
       path: 'app/src/main/AndroidManifest.xml',
@@ -820,8 +1022,14 @@ Generated by the Tungsten builder. Kotlin and Jetpack Compose; no web view.
 Or open this folder in Android Studio and press run.
 
 - \`MainActivity.kt\` is the interface and the handlers your blocks became.
-- \`Runtime.kt\` holds the backend stubs. Replace the bodies, keep the
-  signatures, and everything else keeps compiling.
+- \`Runtime.kt\` is the backend this project is configured for, written
+  out as Kotlin: ${plan.base
+    ? `calls to \`${plan.base}\`. Server-only keys are deliberately
+  absent, because an installed app can be read.`
+    : `calls to the generated service. Build the Backend Service target,
+  run \`node main.js\` in it, and the auth, table and upload blocks work
+  against it. An emulator reaches your machine at 10.0.2.2, which is the
+  address written in here.`}
 
 Application id \`${identifier}\`, version ${project.version}. Both come from
 the project in the Targets panel; change them there rather than here, or the

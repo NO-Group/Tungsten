@@ -1,12 +1,18 @@
 /**
- * The wire plan, and the Dart it turns into.
+ * The wire plan, and the Dart, Kotlin and Swift it turns into.
  *
  * The web runtime carries all four dialects and chooses at run time.
  * A phone app cannot: it is built for one project, whose backend is
- * known while it is being emitted. So the Flutter target writes the
+ * known while it is being emitted. So each mobile target writes the
  * code for that one backend — PostgREST paths for a Supabase project,
  * a PocketBase filter expression for a PocketBase one — and the
  * generated app contains no dialect table at all.
+ *
+ * All three languages read the same plan, so the tests below are
+ * deliberately the same tests three times over: whatever the plan says
+ * about an envelope or a token has to come out of Dart, Kotlin and
+ * Swift alike, or a project's Android build and its iOS build disagree
+ * about the backend they share.
  *
  * What is worth testing is therefore not "does it compile" but "is the
  * emitted source the right source": the paths, the envelope each
@@ -19,6 +25,8 @@ import { describe, expect, it } from 'vitest'
 import { pathParts, renderPath, wirePlan } from './wire'
 import { runtimeProfileFor } from '../../backend/runtimeProfile'
 import { flutterFiles } from './flutter'
+import { androidFiles } from './android'
+import { iosFiles } from './ios'
 import { DEFAULT_PROJECT, type Ir } from '../compile'
 import type { BackendSettings } from '../../backend/registry'
 
@@ -51,6 +59,18 @@ function dart(settings?: BackendSettings): string {
     profile: settings ? runtimeProfileFor(settings) : undefined,
   })
   return files.find((file) => file.path.endsWith('runtime.dart'))!.contents
+}
+
+/** The runtime file a Kotlin build would write for this backend. */
+function kotlin(settings?: BackendSettings): string {
+  const files = androidFiles(EMPTY_IR, DEFAULT_PROJECT, settings ? runtimeProfileFor(settings) : undefined)
+  return files.find((file) => file.path.endsWith('Runtime.kt'))!.contents
+}
+
+/** The runtime file a Swift build would write for this backend. */
+function swift(settings?: BackendSettings): string {
+  const files = iosFiles(EMPTY_IR, DEFAULT_PROJECT, settings ? runtimeProfileFor(settings) : undefined)
+  return files.find((file) => file.path.endsWith('Runtime.swift'))!.contents
 }
 
 /* ----------------------------------------------------------------- plans */
@@ -186,5 +206,203 @@ describe('the Flutter runtime', () => {
 
   it('reports the sentence the backend chose, whichever key it used', () => {
     expect(dart(SUPABASE)).toContain("map['error'] ?? map['message'] ?? map['msg']")
+  })
+})
+
+/* ---------------------------------------------------------- the Kotlin */
+
+describe('the Kotlin runtime', () => {
+  it('is written for one backend, not for all four', () => {
+    const source = kotlin(SUPABASE)
+    expect(source).toContain('"/rest/v1/" + encode(table)')
+    expect(source).not.toContain('/api/collections/')
+    expect(source).not.toContain('/v1/data/')
+    expect(source).not.toContain('"/data/"')
+  })
+
+  it('sends the publishable key on every call, and the session token over it', () => {
+    const source = kotlin(SUPABASE)
+    expect(source).toContain('connection.setRequestProperty("apikey", "anon-key")')
+    expect(source).toContain('Backend.token?.let { connection.setRequestProperty("authorization", "Bearer " + it) }')
+    // The key that bypasses every row policy is not in an APK.
+    expect(source).not.toContain('service-key')
+  })
+
+  it('sends PocketBase a bare token, because that is what it reads', () => {
+    expect(kotlin(POCKETBASE)).toContain('Backend.token?.let { connection.setRequestProperty("authorization", it) }')
+    expect(kotlin(POCKETBASE)).not.toContain('"" + it')
+  })
+
+  it('escapes a value that is about to become PocketBase syntax', () => {
+    const source = kotlin(POCKETBASE)
+    expect(source).toContain('.replace("\'", "\\\\\'")')
+    expect(source).toContain('"?filter=" + encode(tests)')
+  })
+
+  it('posts a filter tree to Vortex and a query string to the local service', () => {
+    expect(kotlin(VORTEX)).toContain('JSONObject().put("column", column).put("op", "eq").put("value", value)')
+    expect(kotlin(SELF)).toContain('"?" + where.entries.joinToString("&")')
+  })
+
+  it('unwraps the reply where that backend actually puts it', () => {
+    expect(kotlin(SUPABASE)).toContain('return rowsOf(reply)')
+    expect(kotlin(POCKETBASE)).toContain('return rowsOf(asMap(reply)["items"])')
+    expect(kotlin(VORTEX)).toContain('return rowsOf(asMap(reply)["rows"])')
+  })
+
+  it('signs a new PocketBase account in, and keeps its record as the user', () => {
+    const source = kotlin(POCKETBASE)
+    expect(source).toContain('return signIn(email, password)')
+    expect(source).toContain('.put("passwordConfirm", password)')
+    expect(source).toContain('map["record"]')
+    expect(source).toContain('Signing out is local here')
+  })
+
+  it('builds the right URL for a file, per backend', () => {
+    expect(kotlin(SUPABASE)).toContain('Backend.baseUrl + "/storage/v1/object/public/"')
+    expect(kotlin(POCKETBASE)).toContain('"/api/files/"')
+    expect(kotlin(POCKETBASE)).toContain('multipart/form-data; boundary=')
+    expect(kotlin(VORTEX)).toContain('val url = toText(reply["url"])')
+    expect(kotlin(SUPABASE)).not.toContain('x-file-name')
+    expect(kotlin()).toContain('x-file-name')
+  })
+
+  it('does not bind a reply nobody reads', () => {
+    // Supabase answers an upload with a key, not a URL, so the address is
+    // worked out locally -- and an unused `val reply` is a warning in
+    // every Android build after that.
+    const storage = kotlin(SUPABASE).slice(kotlin(SUPABASE).indexOf('object Storage'))
+    expect(storage).not.toContain('val reply')
+    expect(kotlin(VORTEX).slice(kotlin(VORTEX).indexOf('object Storage'))).toContain('val reply = asMap(call(')
+  })
+
+  it('points an emulator at the host machine, and leaves a real address alone', () => {
+    // 10.0.2.2 is the developer's own machine seen from inside the
+    // emulator, and this is the first thing that fails without it.
+    expect(kotlin(POCKETBASE)).toContain('var baseUrl: String = "http://10.0.2.2:8090"')
+    expect(kotlin()).toContain('var baseUrl: String = "http://10.0.2.2:8787"')
+    expect(kotlin(SELF)).toContain('var baseUrl: String = "https://api.example.com"')
+  })
+
+  it('reports the sentence the backend chose, whichever key it used', () => {
+    expect(kotlin(SUPABASE)).toContain('it["error"] ?: it["message"] ?: it["msg"]')
+  })
+
+  it('imports only what Android already ships', () => {
+    const source = kotlin(SUPABASE)
+    expect(source).toContain('import org.json.JSONArray')
+    expect(source).toContain('import org.json.JSONObject')
+    // No Retrofit, no OkHttp, no Moshi: a generated app should build with
+    // nothing added to its Gradle file.
+    expect(source).not.toContain('okhttp')
+    expect(source).not.toContain('retrofit')
+  })
+})
+
+/* ----------------------------------------------------------- the Swift */
+
+describe('the Swift runtime', () => {
+  it('is written for one backend, not for all four', () => {
+    const source = swift(SUPABASE)
+    expect(source).toContain('"/rest/v1/" + encode(table)')
+    expect(source).not.toContain('/api/collections/')
+    expect(source).not.toContain('/v1/data/')
+    expect(source).not.toContain('"/data/"')
+  })
+
+  it('sends the publishable key on every call, and the session token over it', () => {
+    const source = swift(SUPABASE)
+    expect(source).toContain('request.setValue("anon-key", forHTTPHeaderField: "apikey")')
+    expect(source).toContain('request.setValue("Bearer " + token, forHTTPHeaderField: "authorization")')
+    expect(source).not.toContain('service-key')
+  })
+
+  it('sends PocketBase a bare token, because that is what it reads', () => {
+    expect(swift(POCKETBASE)).toContain('request.setValue(token, forHTTPHeaderField: "authorization")')
+    expect(swift(POCKETBASE)).not.toContain('"" + token')
+  })
+
+  it('escapes a value that is about to become PocketBase syntax', () => {
+    const source = swift(POCKETBASE)
+    expect(source).toContain('replacingOccurrences(of: "\'", with: "\\\\\'")')
+    expect(source).toContain('"?filter=" + encode(tests.joined(separator: " && "))')
+  })
+
+  it('posts a filter tree to Vortex and a query string to the local service', () => {
+    expect(swift(VORTEX)).toContain('["column": key, "op": "eq", "value": value]')
+    expect(swift(VORTEX)).toContain('method: "POST", body: whereBody(filters)')
+    expect(swift(SELF)).toContain('encode(key) + "=" + encode(toText(value))')
+  })
+
+  it('unwraps the reply where that backend actually puts it', () => {
+    expect(swift(SUPABASE)).toContain('return rowsOf(reply)')
+    expect(swift(POCKETBASE)).toContain('return rowsOf(asMap(reply)["items"])')
+    expect(swift(VORTEX)).toContain('return rowsOf(asMap(reply)["rows"])')
+  })
+
+  it('signs a new PocketBase account in, and keeps its record as the user', () => {
+    const source = swift(POCKETBASE)
+    expect(source).toContain('return try await signIn(email: email, password: password)')
+    expect(source).toContain('"passwordConfirm": password')
+    expect(source).toContain('map["record"]')
+    expect(source).toContain('Signing out is local here')
+  })
+
+  it('builds the right URL for a file, per backend', () => {
+    expect(swift(SUPABASE)).toContain('Backend.baseUrl + "/storage/v1/object/public/"')
+    expect(swift(POCKETBASE)).toContain('"/api/files/"')
+    expect(swift(POCKETBASE)).toContain('multipart/form-data; boundary=')
+    expect(swift(VORTEX)).toContain('let url = reply["url"] as? String ?? ""')
+    expect(swift(SUPABASE)).not.toContain('x-file-name')
+    expect(swift()).toContain('x-file-name')
+  })
+
+  it('discards a reply nobody reads rather than binding it', () => {
+    expect(swift(SUPABASE)).toContain('_ = try await call(')
+    expect(swift(VORTEX)).toContain('let reply = asMap(try await call(')
+  })
+
+  it('leaves localhost alone, because the simulator shares it', () => {
+    // The opposite of Android: no 10.0.2.2 rewrite belongs in an iOS
+    // build, where the simulator and the Mac share a loopback.
+    expect(swift()).toContain('nonisolated(unsafe) static var baseUrl = "http://localhost:8787"')
+    expect(swift(POCKETBASE)).toContain('"http://127.0.0.1:8090"')
+    expect(swift(POCKETBASE)).not.toContain('10.0.2.2')
+    expect(swift(SELF)).toContain('"https://api.example.com"')
+  })
+
+  it('reports the sentence the backend chose, whichever key it used', () => {
+    expect(swift(SUPABASE)).toContain('map["error"] ?? map["message"] ?? map["msg"]')
+  })
+
+  it('needs nothing but Foundation', () => {
+    const source = swift(SUPABASE)
+    expect(source).toContain('import Foundation')
+    expect(source).not.toContain('import Supabase')
+    expect(source).not.toContain('Package.swift')
+  })
+})
+
+/* ------------------------------------------------- the same plan, thrice */
+
+describe('the three mobile runtimes together', () => {
+  const cases: [string, BackendSettings | undefined][] = [
+    ['Supabase', SUPABASE],
+    ['PocketBase', POCKETBASE],
+    ['Vortex', VORTEX],
+    ['the generated service', undefined],
+  ]
+
+  it.each(cases)('agrees with itself about %s', (_name, settings) => {
+    const plan = wirePlan(settings ? runtimeProfileFor(settings) : undefined)
+    const sources = [dart(settings), kotlin(settings), swift(settings)]
+    for (const source of sources) {
+      // The list path is the one thing every runtime must spell the same
+      // way, because it is the route the app uses most.
+      expect(source).toContain(plan.list.path.split('{')[0])
+      // And none of them may carry a credential the server keeps.
+      expect(source).not.toContain('service-key')
+      expect(source).not.toContain('admin-token')
+    }
   })
 })

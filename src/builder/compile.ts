@@ -492,10 +492,10 @@ function filesFor({ target, root, ir, ui, code, schema, project, profile }: Emit
   const toolchain = target === 'node' ? 'web' : toolchainFor(project, target)
 
   if (target === 'android') {
-    return toolchain === 'kotlin' ? at(androidFiles(ir, project)) : flutterFiles({ root, ir, project, kind: 'android', profile })
+    return toolchain === 'kotlin' ? at(androidFiles(ir, project, profile)) : flutterFiles({ root, ir, project, kind: 'android', profile })
   }
   if (target === 'ios') {
-    return toolchain === 'swift' ? at(iosFiles(ir, project)) : flutterFiles({ root, ir, project, kind: 'ios', profile })
+    return toolchain === 'swift' ? at(iosFiles(ir, project, profile)) : flutterFiles({ root, ir, project, kind: 'ios', profile })
   }
   if (isDesktopKind(target)) {
     const shell = {

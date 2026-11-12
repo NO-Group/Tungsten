@@ -682,15 +682,21 @@ ${signOut}
 function dartStorage(plan: WirePlan): string {
   const { upload } = plan
   const path = dartPath(upload.path, { bucket: 'bucket', name: 'name' })
+  // A reply nobody reads is a warning in the generated app, so the
+  // binding only appears when the address below is built from it.
+  const keeps = upload.idInPath || Boolean(upload.urlKey)
+  const open = keeps ? 'final reply = _map(await _call(' : 'await _call('
+  const close = keeps ? '));' : ');'
+
   const send = upload.form
     ? `    final boundary = 'tungsten-' + DateTime.now().microsecondsSinceEpoch.toString();
-    final reply = _map(await _call(
+    ${open}
       ${path},
       method: 'POST',
       bytes: _multipart(boundary, name, bytes),
       headers: {'content-type': 'multipart/form-data; boundary=' + boundary},
-    ));`
-    : `    final reply = _map(await _call(
+    ${close}`
+    : `    ${open}
       ${path},
       method: 'POST',
       bytes: bytes,${upload.path.includes('{name}')
@@ -698,7 +704,7 @@ function dartStorage(plan: WirePlan): string {
         : `
       // The name is not in the address, so it travels in a header.
       headers: {'x-file-name': name},`}
-    ));`
+    ${close}`
 
   const address = upload.idInPath
     ? `    // A file belongs to a record here, so its address needs the id the
