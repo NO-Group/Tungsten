@@ -77,7 +77,7 @@ describe('tenancy', () => {
   })
 
   it('stops writes rather than taking a project offline', () => {
-    const breaches = quotaBreaches(FREE_TIER, { ...NO_USAGE, databaseMb: 800, filesMb: 2_000 })
+    const breaches = quotaBreaches(FREE_TIER, { ...NO_USAGE, databaseMb: 800, filesMb: 3_000 })
     expect(breaches.map((breach) => breach.quota)).toEqual(['databaseMb', 'filesMb'])
     expect(breaches[0].effect).toBe('block-writes')
     expect(breaches[1].effect).toBe('block-uploads')

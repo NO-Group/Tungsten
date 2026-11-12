@@ -22,6 +22,8 @@ import { tierFor, type Tier, type Usage } from './tenancy'
 
 export type Trigger =
   | 'storage'
+  | 'writes'
+  | 'reads'
   | 'database'
   | 'rows'
   | 'traffic'
@@ -95,6 +97,25 @@ export function nudgesFor(tier: Tier, usage: Usage, options: { seatsWanted?: num
     `Storage is ${Math.round((usage.filesMb / quota.filesMb) * 100)}% full. ${plan.label} gives ${gb(
       better.quota.filesMb,
     )}.`,
+  )
+  // Operations, not just bytes. At any real population the request
+  // bill is larger than the storage bill, so a plan that raises
+  // storage without raising operations has not raised anything.
+  add(
+    'writes',
+    usage.writesThisMonth / quota.writesPerMonth,
+    `${better.quota.writesPerMonth.toLocaleString('en-US')} uploads a month`,
+    `${usage.writesThisMonth.toLocaleString('en-US')} uploads of ${quota.writesPerMonth.toLocaleString(
+      'en-US',
+    )} this month. ${plan.label} includes ${better.quota.writesPerMonth.toLocaleString('en-US')}.`,
+  )
+  add(
+    'reads',
+    usage.readsThisMonth / quota.readsPerMonth,
+    `${better.quota.readsPerMonth.toLocaleString('en-US')} file reads a month`,
+    `${usage.readsThisMonth.toLocaleString('en-US')} file reads of ${quota.readsPerMonth.toLocaleString(
+      'en-US',
+    )}. ${plan.label} includes ${better.quota.readsPerMonth.toLocaleString('en-US')}.`,
   )
   add(
     'traffic',

@@ -84,7 +84,10 @@ data, because it is always one bug away from being exactly that.
 | Quota | Spark | Core | Forge | Titan |
 |---|---|---|---|---|
 | Database | 500 MB | 8 GB | 32 GB | 256 GB |
-| Files | 1 GB | 50 GB | 250 GB | 2 TB |
+| Files | 2 GB | 50 GB | 250 GB | 2 TB |
+| Uploads / month (Class A) | 10k | 1M | 10M | 100M |
+| File reads / month (Class B) | 100k | 20M | 200M | 2B |
+| Max single upload | 50 MB | 500 MB | 2 GB | 10 GB |
 | Egress / month | 5 GB | 250 GB | 1 TB | 10 TB |
 | Requests / minute | 120 | 1,200 | 6,000 | 30,000 |
 | Requests / month | 1M | 20M | 100M | 1B |
@@ -374,9 +377,135 @@ Redis buys **correctness across machines**, not speed. That is a good
 reason to adopt it, and a different one from the reason it is usually
 adopted.
 
+**Adopted.** `tieredLimiter()` composes the two tiers for real: local
+first so a refusable request never costs a network hop, global second
+and only for what got past it. Under an attack the global tier sees a
+trickle rather than the flood, which is also what keeps it affordable.
+It fails **open** and labels the decision `degraded`, because a
+coordination outage must not become a total outage for every tenant at
+once — and because enforcement quietly degrading is something a
+dashboard should show rather than something discovered in a bill.
+
 ---
 
-## 10. Not built yet
+## 10. Getting paid, and not getting farmed
+
+Four problems that look like one: empty cards at signup, real cards
+that stop working later, overage too small to be worth charging for,
+and a runaway loop turning somebody's bug into your invoice. The
+arithmetic is in `billing.ts`.
+
+### A $1 pre-authorisation is not free
+
+The standard advice is a $1 charge, voided immediately, to prove the
+card has funds. **Stripe has not returned processing fees on refunds
+since 2019** — a $1 charge reversed one second later still costs
+2.9% + 30c, and keeps costing it.
+
+| Free signups / month | Cost of a $1 pre-auth | The entire free fleet |
+|---|---|---|
+| 1,000 | $329 | $81.78 |
+| 5,000 | **$1,645** | **$105.65** |
+| 20,000 | $6,580 | $357.34 |
+
+Fifteen dollars spent to protect one. A **zero-amount card
+authorisation** answers the same question — is this card real and
+live — for nothing, which is precisely why the networks support it.
+
+### And the card does not belong at signup
+
+A free tenant costs **$0.015 a month**. Card-gating a free tier
+reliably removes most of the people who would have signed up, to
+defend a penny and a half. `VERIFICATION.requiredAt` is
+`'first-overage'`: the card is asked for the moment somebody wants to
+spend money, which is the upgrade trigger `upgrade.ts` already
+describes and the one moment the request is obviously reasonable.
+
+Abuse is contained the way §7 says it should be — by quotas and blast
+radius, not by a credit check at the door.
+
+### Controls that are worse than the problem
+
+`REJECTED_CONTROLS` keeps these in code, with reasons, because each
+gets proposed again every six months:
+
+- **Blocking prepaid and virtual card BINs.** Prepaid and virtual
+  cards are how much of the world pays — most of Africa and Latin
+  America, and anyone using their bank's own single-use card for
+  safety. BIN prefixes are shared between legitimate fintechs and
+  burners, so the rule blocks real customers while a determined abuser
+  changes BIN in an afternoon.
+- **Blocking "high-risk jurisdictions".** A country blocklist with a
+  compliance word in front of it. It excludes entire markets to stop a
+  cost measured in cents, and the excluded are disproportionately the
+  people a developer tool should want.
+- **Deleting on a failed payment.** Cards fail for expiry, bank fraud
+  holds and travel far more often than for fraud.
+
+### Overage: twice wholesale, and the margin stated honestly
+
+| Metric | R2 wholesale | Vortex overage |
+|---|---|---|
+| Storage / GB-month | $0.015 | $0.030 |
+| Uploads / million | $4.50 | $9.00 |
+| Reads / million | $0.36 | $0.72 |
+| Egress / GB | $0.00 | **$0.00** |
+
+Doubling the rate looks like a 50% margin and is not, because the card
+fee lands on the *invoice* rather than on the resource. `marginOf()`
+returns both numbers:
+
+| Invoice | Headline margin | Real margin |
+|---|---|---|
+| $1.11 (light) | 50% | **21%** |
+| $11.10 (medium) | 50% | 45% |
+| $111 (heavy) | 50% | 48% |
+
+A fixed thirty cents does not care how small the invoice is — which is
+the whole argument for the next part.
+
+### Never charge a card for fifteen cents
+
+Below **$0.31** the fee exceeds the revenue outright. Balances roll
+forward until they reach **$5**, or until the quarter ends — because a
+balance that rolls forever is a receivable nobody collects and a
+surprise the first time somebody does.
+
+### A spending cap, on by default
+
+$0 on Spark, $20 on Core, $100 on Forge, $1,000 on Titan, all
+raisable in a minute by anyone who means it. A user whose app is in a
+retry storm at 3am cannot lower it and will not be awake to. Hitting
+the cap pauses writes and uploads; everything already stored keeps
+serving.
+
+### When a real card stops working
+
+| Stage | After | Reads | Writes |
+|---|---|---|---|
+| `current` | — | yes | yes |
+| `grace` | 72 h | yes | yes |
+| `frozen` | 7 days | **yes** | no |
+| `archived` | 90 days | cold storage | no |
+
+The ladder never deletes, and a test asserts no stage even threatens
+to. Settling the balance restores everything immediately. This is the
+same rule `quotaBreaches` follows, for the same reason: a platform
+whose penalty is data loss is one nobody starts a real project on.
+
+### Operations cost more than storage
+
+The free tier is **2 GB** — twice what Vercel Blob and Upstash give
+away, and affordable because files live in R2 rather than on the box.
+But at 1,000 active free users the *operations* bill beats the storage
+bill, so `Quota` now meters `writesPerMonth` (10k) and `readsPerMonth`
+(100k) alongside bytes, with a 50 MB cap on any single upload. A free
+tier with unlimited requests is a free tier whose cost nobody can
+predict.
+
+---
+
+## 11. Not built yet
 
 This is a cost model and a policy, not a running control plane. The limiter,
 the sleep policy, the cache rules and the upgrade triggers are real

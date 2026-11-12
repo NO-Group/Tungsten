@@ -32,6 +32,19 @@ export type Quota = {
   requestsPerMinute: number
   /** Hard monthly request ceiling. */
   requestsPerMonth: number
+  /**
+   * Object-storage operations a month.
+   *
+   * Capped separately from requests because R2 prices them separately
+   * and asymmetrically — writes are $4.50/M against $0.36/M for reads,
+   * a 12.5x gap — and because at any real population the operations
+   * bill is larger than the storage bill. A free tier with unlimited
+   * requests is a free tier whose cost nobody can predict.
+   */
+  writesPerMonth: number
+  readsPerMonth: number
+  /** Largest single upload, in MB. Caps multipart and bandwidth abuse. */
+  maxUploadMb: number
   /** Concurrent realtime sockets. The constraint people forget. */
   realtimeConnections: number
   /** Rows across all tables. Keeps one tenant from eating a box. */
@@ -64,10 +77,15 @@ export const FREE_TIER: Tier = {
   housing: 'shared',
   quota: {
     databaseMb: 500,
-    filesMb: 1_024,
+    // Two gigabytes: twice what Vercel Blob and Upstash give away, and
+    // it costs pennies because files live in R2 rather than on the box.
+    filesMb: 2_048,
     egressGb: 5,
     requestsPerMinute: 120,
     requestsPerMonth: 1_000_000,
+    writesPerMonth: 10_000,
+    readsPerMonth: 100_000,
+    maxUploadMb: 50,
     realtimeConnections: 20,
     rows: 100_000,
     statementTimeoutMs: 5_000,
@@ -87,6 +105,9 @@ export const CORE_TIER: Tier = {
     egressGb: 250,
     requestsPerMinute: 1_200,
     requestsPerMonth: 20_000_000,
+    writesPerMonth: 1_000_000,
+    readsPerMonth: 20_000_000,
+    maxUploadMb: 500,
     realtimeConnections: 500,
     rows: 10_000_000,
     statementTimeoutMs: 30_000,
@@ -105,6 +126,9 @@ export const FORGE_TIER: Tier = {
     egressGb: 1_000,
     requestsPerMinute: 6_000,
     requestsPerMonth: 100_000_000,
+    writesPerMonth: 10_000_000,
+    readsPerMonth: 200_000_000,
+    maxUploadMb: 2_048,
     realtimeConnections: 2_500,
     rows: 50_000_000,
     statementTimeoutMs: 60_000,
@@ -123,6 +147,9 @@ export const TITAN_TIER: Tier = {
     egressGb: 10_000,
     requestsPerMinute: 30_000,
     requestsPerMonth: 1_000_000_000,
+    writesPerMonth: 100_000_000,
+    readsPerMonth: 2_000_000_000,
+    maxUploadMb: 10_240,
     realtimeConnections: 20_000,
     rows: 500_000_000,
     statementTimeoutMs: 120_000,
@@ -215,6 +242,8 @@ export type Usage = {
   requestsLastMinute: number
   realtimeConnections: number
   rows: number
+  writesThisMonth: number
+  readsThisMonth: number
   /** Days since anything touched this project. */
   idleDays: number
 }
@@ -227,6 +256,8 @@ export const NO_USAGE: Usage = {
   requestsLastMinute: 0,
   realtimeConnections: 0,
   rows: 0,
+  writesThisMonth: 0,
+  readsThisMonth: 0,
   idleDays: 0,
 }
 
@@ -273,6 +304,24 @@ export function quotaBreaches(tier: Tier, usage: Usage): QuotaBreach[] {
       quota: 'filesMb',
       effect: 'block-uploads',
       message: `Storage is full at ${mb(quota.filesMb)}. Existing files still download.`,
+    })
+  }
+  if (usage.writesThisMonth > quota.writesPerMonth) {
+    breaches.push({
+      quota: 'writesPerMonth',
+      effect: 'block-uploads',
+      message: `${usage.writesThisMonth.toLocaleString('en-US')} uploads this month is past the ${quota.writesPerMonth.toLocaleString(
+        'en-US',
+      )} this plan includes. Existing files still download.`,
+    })
+  }
+  if (usage.readsThisMonth > quota.readsPerMonth) {
+    breaches.push({
+      quota: 'readsPerMonth',
+      effect: 'throttle',
+      message: `${usage.readsThisMonth.toLocaleString('en-US')} file reads this month, past the ${quota.readsPerMonth.toLocaleString(
+        'en-US',
+      )} on this plan. Downloads are being slowed rather than cut off.`,
     })
   }
   if (usage.egressGb > quota.egressGb) {

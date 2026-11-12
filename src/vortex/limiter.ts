@@ -226,3 +226,61 @@ export function localBudget(tier: Tier, boxes: number): { perSecond: number; bur
     burst: Math.ceil((budget.burst / share) * LOCAL_SLACK),
   }
 }
+
+/**
+ * The two tiers, composed.
+ *
+ * Local first, because a request the local bucket can already refuse
+ * should never cost a network hop. Global second, and only for
+ * requests that got past it. The ordering is the whole optimisation:
+ * under an attack the global tier sees a trickle rather than the
+ * flood, which is also what keeps it affordable.
+ *
+ * Fail-open is deliberate and bounded. If the global tier is
+ * unreachable the local bucket has already had its say, so the worst
+ * case is the over-admission we started with — and the alternative,
+ * failing closed, turns one coordination outage into a total outage
+ * for every tenant at once. The decision records which tier decided,
+ * so a dashboard can show when enforcement is degraded rather than
+ * discovering it in a bill.
+ */
+export type TieredDecision = Decision & {
+  decidedBy: 'local' | 'global' | 'degraded'
+}
+
+export function tieredLimiter(options: {
+  tier: Tier
+  boxes: number
+  global?: GlobalLimiter
+  /** Buckets for this box. Mutated in place; sweep it periodically. */
+  buckets?: Map<string, Bucket>
+}) {
+  const buckets = options.buckets ?? new Map<string, Bucket>()
+  const local: Tier = {
+    ...options.tier,
+    quota: { ...options.tier.quota, requestsPerMinute: localBudget(options.tier, options.boxes).burst * 2 },
+  }
+
+  return {
+    buckets,
+    take: async (tenantId: string, now: number = Date.now(), cost = 1): Promise<TieredDecision> => {
+      const bucket = buckets.get(tenantId) ?? newBucket(local, now)
+      const decision = take(local, bucket, now, cost)
+      buckets.set(tenantId, decision.bucket)
+      if (!decision.allowed) return { ...decision, decidedBy: 'local' }
+
+      if (!options.global) {
+        return { ...decision, decidedBy: limitIsHonest(options.tier, options.boxes) ? 'local' : 'degraded' }
+      }
+
+      try {
+        const global = await options.global.take(tenantId, cost, now)
+        return { ...global, bucket: decision.bucket, decidedBy: 'global' }
+      } catch {
+        // The global tier is down. The local bucket already decided,
+        // and a coordination outage must not become a service outage.
+        return { ...decision, decidedBy: 'degraded' }
+      }
+    },
+  }
+}

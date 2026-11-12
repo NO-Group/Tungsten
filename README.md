@@ -754,8 +754,35 @@ already budget, so the two files cannot drift apart.
 Breaching a quota never deletes data and never takes a project
 offline: the database ceiling blocks writes while reads keep serving,
 full storage blocks uploads while existing files still download, and
-traffic limits throttle rather than cut. The reasoning is in
-[docs/VORTEX.md](docs/VORTEX.md).
+traffic limits throttle rather than cut.
+
+The billing layer follows the same arithmetic. Overage is twice R2
+wholesale, and `marginOf()` reports both the headline margin and the
+real one after the card fee — 50% and 21% on a $1.11 invoice, because
+a fixed 30c does not care how small the invoice is. Balances roll
+forward to a $5 minimum rather than losing money on collection, and
+every plan ships a spending cap that is on by default. A failed
+payment goes warning, then grace, then read-only, then cold storage;
+no stage deletes anything, and a test asserts none of them even
+threatens to.
+
+Two pieces of standard anti-abuse advice are rejected in code with
+reasons. A $1 pre-authorisation is not free — Stripe keeps the fee on
+refunds, so verifying 5,000 free signups that way costs **$1,645
+against a fleet that costs $105**; a zero-amount authorisation answers
+the same question for nothing. And blocking prepaid or virtual card
+BINs blocks much of Africa and Latin America to stop a cost measured
+in cents. The card is asked for at first overage, not at signup,
+because a free tenant costs a penny and a half and abuse is contained
+by quotas and blast radius instead.
+
+Whether Vortex should run Redis gets the same treatment: a cache in
+front of a warm Postgres needs an **80%** hit rate to break even and
+real ones measure 60%, and the fleet is memory-bound, so a cache tier
+costs 150 free projects per gigabyte. It is adopted for the two jobs
+it actually wins — per-tenant counters and p99 under write load — and
+for cross-box rate limiting, where N boxes each enforcing L admit N×L.
+All of it is in [docs/VORTEX.md](docs/VORTEX.md).
 
 ## Extending Tungsten
 

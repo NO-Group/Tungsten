@@ -153,7 +153,7 @@ describe('why somebody upgrades', () => {
   it('names the capability, never the punishment', () => {
     const nudges = nudgesFor(
       FREE_TIER,
-      usage({ databaseMb: 480, filesMb: 1_000, egressGb: 4.9, realtimeConnections: 19 }),
+      usage({ databaseMb: 480, filesMb: 2_000, egressGb: 4.9, realtimeConnections: 19 }),
     )
     expect(nudges.length).toBeGreaterThan(3)
     for (const nudge of nudges) {
@@ -165,9 +165,9 @@ describe('why somebody upgrades', () => {
   })
 
   it('puts the tightest limit first', () => {
-    const nudges = nudgesFor(FREE_TIER, usage({ databaseMb: 420, filesMb: 1_020 }))
+    const nudges = nudgesFor(FREE_TIER, usage({ databaseMb: 420, filesMb: 2_040 }))
     expect(nudges[0].trigger).toBe('storage')
-    expect(topNudge(FREE_TIER, usage({ databaseMb: 420, filesMb: 1_020 }))?.trigger).toBe('storage')
+    expect(topNudge(FREE_TIER, usage({ databaseMb: 420, filesMb: 2_040 }))?.trigger).toBe('storage')
   })
 
   it('treats the cold start as the most honest upgrade there is', () => {
