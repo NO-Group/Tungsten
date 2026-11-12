@@ -22,10 +22,10 @@ import type { CompiledFile, Ir, IrStatement, IrValue } from '../compile'
 import { flattenComponents, headingLevelOf, optionsOf, type ComponentSchema } from '../uiSchema'
 import { uiThemeDart } from '../uiTokens'
 import { ARITHMETIC, COMPARISONS, isEquality, isTextual, objectIn, operatorOf, parseObjectLiteral, rowFields } from './expressions'
-import { DEFAULT_API_PORT, DEFAULT_API_URL } from './server'
+import { DEFAULT_API_URL } from './server'
+import { renderPath, wirePlan, type WirePlan } from './wire'
+import type { RuntimeProfile } from '../../backend/runtimeProfile'
 
-/** The host machine, as seen from an Android emulator. */
-const androidUrl = `http://10.0.2.2:${DEFAULT_API_PORT}`
 
 /** The platforms Flutter can be chosen for. */
 export type FlutterKind = Extract<TargetKind, 'android' | 'ios' | 'mobile'>
@@ -277,10 +277,19 @@ export type FlutterInput = {
   ir: Ir
   project: Project
   kind: FlutterKind
+  /**
+   * The backend this app should call.
+   *
+   * Absent means the project has none configured, and the emitted
+   * runtime talks to the Node service Tungsten generates — which is
+   * what it has always done.
+   */
+  profile?: RuntimeProfile
 }
 
-export function flutterFiles({ root, ir, project, kind }: FlutterInput): CompiledFile[] {
+export function flutterFiles({ root, ir, project, kind, profile }: FlutterInput): CompiledFile[] {
   const info = targetInfo(kind)
+  const plan = wirePlan(profile)
   const names = new Map<string, string>()
   const handlers = ir.events.map((event) => {
     const body = event.body.flatMap((statement) => dartStatement(statement, '    ', names))
@@ -444,200 +453,7 @@ ${handlers.join('\n\n')}
 `,
   }, {
     path: `${root}/lib/runtime.dart`,
-    contents: `// The services a generated app talks to.
-//
-// Not stubs: these call the backend the builder writes alongside this app.
-// Build the Backend Service target, run \`node main.js\` in it, and sign-up,
-// the drawn tables and file uploads all work from here. Only dart:io and
-// dart:convert are used, so the pubspec stays empty.
-
-import 'dart:convert';
-import 'dart:io';
-
-/// Values out of a field map have no static type, so the two conversions
-/// every generated comparison needs live here. Equality compares text and
-/// ordering compares numbers: "3" < "20" being true is a bug that takes an
-/// hour to find in code you did not write.
-String toText(Object? value) => value?.toString() ?? '';
-
-double toNumber(Object? value) {
-  if (value is num) return value.toDouble();
-  if (value is bool) return value ? 1 : 0;
-  return double.tryParse(value?.toString() ?? '') ?? 0;
-}
-
-/// Where the backend lives.
-///
-/// 10.0.2.2 is the host machine as seen from an Android emulator; an iOS
-/// simulator shares the Mac's loopback and wants localhost. One line to
-/// change when you deploy -- the address appears nowhere else.
-class Backend {
-  static String baseUrl = Platform.isAndroid
-      ? '${androidUrl}'
-      : '${DEFAULT_API_URL}';
-
-  /// Set by the sign-in blocks; sent on every later request.
-  static String? token;
-}
-
-class BackendException implements Exception {
-  BackendException(this.message);
-  final String message;
-  @override
-  String toString() => message;
-}
-
-final _client = HttpClient();
-
-/// One HTTP call, as JSON in and JSON out.
-Future<Map<String, dynamic>> _call(
-  String path, {
-  String method = 'GET',
-  Object? body,
-  List<int>? bytes,
-  Map<String, String> headers = const {},
-}) async {
-  final request = await _client.openUrl(method, Uri.parse(Backend.baseUrl + path));
-  request.headers.set('accept', 'application/json');
-  final token = Backend.token;
-  if (token != null) request.headers.set('authorization', 'Bearer ' + token);
-  headers.forEach(request.headers.set);
-
-  if (bytes != null) {
-    request.headers.contentType = ContentType('application', 'octet-stream');
-    request.add(bytes);
-  } else if (body != null) {
-    request.headers.contentType = ContentType('application', 'json', charset: 'utf-8');
-    request.add(utf8.encode(jsonEncode(body)));
-  }
-
-  final response = await request.close();
-  final text = await response.transform(utf8.decoder).join();
-  final parsed = text.isEmpty ? <String, dynamic>{} : jsonDecode(text);
-  final map = parsed is Map<String, dynamic> ? parsed : <String, dynamic>{};
-  if (response.statusCode >= 400) {
-    // The service answers errors as {"error": "..."}, so the user sees the
-    // sentence the backend chose rather than a status code.
-    throw BackendException(toText(map['error']).isEmpty
-        ? 'Request failed: ' + response.statusCode.toString()
-        : toText(map['error']));
-  }
-  return map;
-}
-
-class Api {
-  /// Rows of a table you drew in the schema editor.
-  Future<List<Map<String, dynamic>>> select(String table, [Map<String, dynamic>? where]) async {
-    var path = '/data/' + table;
-    if (where != null && where.isNotEmpty) {
-      path += '?' + where.entries
-          .map((entry) => Uri.encodeQueryComponent(entry.key) + '=' + Uri.encodeQueryComponent(toText(entry.value)))
-          .join('&');
-    }
-    final rows = (await _call(path))['rows'];
-    return rows is List ? rows.whereType<Map<String, dynamic>>().toList() : <Map<String, dynamic>>[];
-  }
-
-  Future<Map<String, dynamic>> insert(String table, Object? row) async {
-    final body = row is Map ? Map<String, dynamic>.from(row) : {'value': toText(row)};
-    final reply = await _call('/data/' + table, method: 'POST', body: body);
-    final inserted = reply['row'];
-    return inserted is Map<String, dynamic> ? inserted : <String, dynamic>{};
-  }
-
-  Future<Map<String, dynamic>> update(String table, String id, Object? changes) async {
-    final body = changes is Map ? Map<String, dynamic>.from(changes) : {'value': toText(changes)};
-    final reply = await _call('/data/' + table + '/' + id, method: 'PATCH', body: body);
-    final saved = reply['row'];
-    return saved is Map<String, dynamic> ? saved : <String, dynamic>{};
-  }
-
-  Future<void> remove(String table, String id) async {
-    await _call('/data/' + table + '/' + id, method: 'DELETE');
-  }
-
-  /// Anything else, including URLs that are not this backend.
-  Future<Map<String, dynamic>> request(String url, String method) async {
-    if (url.startsWith('/')) return _call(url, method: method);
-    final outgoing = await _client.openUrl(method, Uri.parse(url));
-    final response = await outgoing.close();
-    final text = await response.transform(utf8.decoder).join();
-    final parsed = text.isEmpty ? null : jsonDecode(text);
-    return parsed is Map<String, dynamic> ? parsed : {'body': text};
-  }
-}
-
-class Auth {
-  Future<Map<String, dynamic>> signUp(String email, String password) async {
-    final reply = await _call('/auth/sign-up', method: 'POST', body: {'email': email, 'password': password});
-    if (reply['token'] is String) Backend.token = reply['token'] as String;
-    final user = reply['user'];
-    return user is Map<String, dynamic> ? user : reply;
-  }
-
-  Future<Map<String, dynamic>> signIn(String email, String password) async {
-    final reply = await _call('/auth/sign-in', method: 'POST', body: {'email': email, 'password': password});
-    if (reply['token'] is String) Backend.token = reply['token'] as String;
-    final user = reply['user'];
-    return user is Map<String, dynamic> ? user : reply;
-  }
-
-  /// Starts a provider round trip. The reply carries the URL to open; the
-  /// app decides whether that is a tab, a web view or something else.
-  Future<Map<String, dynamic>> oauth(String provider) =>
-      _call('/auth/oauth', method: 'POST', body: {'provider': provider});
-
-  Future<Map<String, dynamic>> session() async {
-    if (Backend.token == null) return {};
-    final user = (await _call('/auth/session'))['user'];
-    return user is Map<String, dynamic> ? user : {};
-  }
-
-  Future<void> signOut() async {
-    if (Backend.token != null) await _call('/auth/sign-out', method: 'POST');
-    Backend.token = null;
-  }
-}
-
-class Storage {
-  /// Bytes in, a URL out. Give it a File, a list of bytes, or text.
-  Future<String> upload(String bucket, Object? file) async {
-    var name = 'upload';
-    List<int> bytes;
-    if (file is File) {
-      name = file.uri.pathSegments.last;
-      bytes = await file.readAsBytes();
-    } else if (file is List<int>) {
-      bytes = file;
-    } else {
-      bytes = utf8.encode(toText(file));
-    }
-    final reply = await _call(
-      '/storage/' + bucket,
-      method: 'POST',
-      bytes: bytes,
-      headers: {'x-file-name': name},
-    );
-    return toText(reply['url']);
-  }
-}
-
-/// Opening a link.
-///
-/// Still a stub, and the only one left. Add url_launcher to the pubspec
-/// and the body becomes launchUrl(Uri.parse(url)) -- not done for you,
-/// because that package needs per-platform set-up this generator cannot
-/// perform, and a link that silently did nothing would be worse than one
-/// that says what it would have opened.
-void openUrl(String url) {
-  // ignore: avoid_print
-  print('open ' + url);
-}
-
-final api = Api();
-final auth = Auth();
-final storage = Storage();
-`,
+    contents: dartRuntime(plan),
   }, {
     // Without this the folder is Dart source rather than a Flutter project,
     // and `flutter run` has nothing to read.
@@ -678,4 +494,416 @@ ${kind === 'mobile' ? 'another toolchain is not offered — the Cross-Platform M
 than building over the top.
 `,
   }]
+}
+
+/* ------------------------------------------------------------- the backend */
+
+/** `'text'` as a Dart string literal. */
+function dartString(text: string): string {
+  return `'${text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\$/g, '\\$')}'`
+}
+
+const DART = {
+  quote: dartString,
+  escape: (expression: string) => `Uri.encodeComponent(${expression})`,
+  join: ' + ',
+}
+
+/** A wire path as a Dart expression, with the placeholders filled in. */
+function dartPath(path: string, values: Record<string, string>): string {
+  return renderPath(path, values, DART)
+}
+
+/**
+ * Where a generated app looks for its backend.
+ *
+ * An address on the developer's own machine is the one case the phone
+ * cannot take literally: `localhost` inside the Android emulator is the
+ * emulator, which is running nothing. 10.0.2.2 is the host, and getting
+ * this wrong is the most common first-run failure on Android.
+ */
+function dartBaseUrl(plan: WirePlan): string {
+  const base = plan.base || DEFAULT_API_URL
+  const local = /^https?:\/\/(localhost|127\.0\.0\.1)(:|\/|$)/.test(base)
+  if (!local) return `static String baseUrl = ${dartString(base)};`
+  const android = base.replace(/\/\/(localhost|127\.0\.0\.1)/, '//10.0.2.2')
+  return [
+    'static String baseUrl = Platform.isAndroid',
+    `    ? ${dartString(android)}`,
+    `    : ${dartString(base)};`,
+  ].join('\n  ')
+}
+
+/** The rows of a reply, wherever this backend keeps them. */
+function dartRows(plan: WirePlan): string {
+  if (plan.list.envelope === 'array') return '_rows(reply)'
+  return `_rows(_map(reply)[${dartString(plan.list.envelope)}])`
+}
+
+/** One row of a reply, wherever this backend keeps it. */
+function dartRow(step: WirePlan['create'] | WirePlan['modify']): string {
+  if (step.envelope === 'self') return '_map(reply)'
+  if (step.envelope === 'row') return "_map(_map(reply)['row'])"
+  return 'rows.isEmpty ? <String, dynamic>{} : rows.first'
+}
+
+/** The named arguments a write needs: the body, wrapped, and any header. */
+function dartWrite(step: WirePlan['create'] | WirePlan['modify'], body: string): string {
+  const wrapped = step.wrap ? `{${dartString(step.wrap)}: ${body}}` : body
+  const prefer = step.prefer ? `, headers: {'prefer': ${dartString(step.prefer)}}` : ''
+  return `method: ${dartString(step.method)}, body: ${wrapped}${prefer}`
+}
+
+/** The filter encoder for this dialect, and nothing else. */
+function dartFilter(plan: WirePlan): string {
+  switch (plan.list.filter) {
+    case 'postgrest':
+      return `/// A filter as PostgREST parameters: column=eq.value.
+String _query(Map<String, dynamic>? where) {
+  var query = '?select=*';
+  if (where == null) return query;
+  where.forEach((key, value) {
+    query += '&' + Uri.encodeQueryComponent(key) + '=eq.' + Uri.encodeQueryComponent(toText(value));
+  });
+  return query;
+}`
+    case 'pocketbase':
+      return `/// A filter as a PocketBase expression.
+///
+/// There is no parameter binding on the wire here: the value is quoted
+/// into the expression, so a quote inside it has to be escaped or it
+/// ends the string early.
+String _query(Map<String, dynamic>? where) {
+  if (where == null || where.isEmpty) return '';
+  final tests = where.entries
+      .map((entry) => entry.key + "='" + toText(entry.value).replaceAll("'", "\\\\'") + "'")
+      .join(' && ');
+  return '?filter=' + Uri.encodeQueryComponent(tests);
+}`
+    case 'tree':
+      return `/// A filter as the tree this backend takes in the body of a query.
+Map<String, dynamic> _where(Map<String, dynamic>? where) {
+  if (where == null || where.isEmpty) return <String, dynamic>{};
+  return {
+    'where': {
+      'all': where.entries
+          .map((entry) => {'column': entry.key, 'op': 'eq', 'value': entry.value})
+          .toList(),
+    },
+  };
+}`
+    default:
+      return `/// A filter as the query string the generated service reads.
+String _query(Map<String, dynamic>? where) {
+  if (where == null || where.isEmpty) return '';
+  return '?' + where.entries
+      .map((entry) => Uri.encodeQueryComponent(entry.key) + '=' + Uri.encodeQueryComponent(toText(entry.value)))
+      .join('&');
+}`
+  }
+}
+
+/** The select call, which is the one operation whose shape really differs. */
+function dartSelect(plan: WirePlan): string {
+  const path = dartPath(plan.list.path, { table: 'table' })
+  const call = plan.list.filter === 'tree'
+    ? `await _call(${path}, method: 'POST', body: _where(where))`
+    : `await _call(${path} + _query(where))`
+  return `  /// Rows of a table you drew in the schema editor.
+  Future<List<Map<String, dynamic>>> select(String table, [Map<String, dynamic>? where]) async {
+    final reply = ${call};
+    return ${dartRows(plan)};
+  }`
+}
+
+/** Sign-up, sign-in, session and sign-out, as this backend spells them. */
+function dartAuth(plan: WirePlan): string {
+  const credentials = plan.signUp.body === 'record'
+    ? "{'email': email, 'password': password, 'passwordConfirm': password}"
+    : "{'email': email, 'password': password}"
+  const signUpBody = plan.signUp.thenSignIn
+    ? `    // Creating the account does not start a session here, so the app
+    // signs in straight afterwards rather than handing back a user who
+    // cannot read anything.
+    await _call(${dartString(plan.signUp.path)}, method: 'POST', body: ${credentials});
+    return signIn(email, password);`
+    : `    return _accept(await _call(${dartString(plan.signUp.path)}, method: 'POST', body: ${credentials}));`
+
+  const identity = plan.signIn.identity === 'identity'
+    ? "{'identity': email, 'password': password}"
+    : "{'email': email, 'password': password}"
+
+  const oauth = plan.oauth.kind === 'url'
+    ? `  /// The provider's address, built from the backend's own.
+  ///
+  /// Opening it is the app's business: only the app knows whether that
+  /// is a browser tab, a custom tab or a web view.
+  Future<Map<String, dynamic>> oauth(String provider) async =>
+      {'url': Backend.baseUrl + ${dartString(plan.oauth.path)} + Uri.encodeComponent(provider), 'provider': provider};`
+    : `  /// Starts a provider round trip. The reply carries the URL to open.
+  Future<Map<String, dynamic>> oauth(String provider) async =>
+      _map(await _call(${dartString(plan.oauth.path)}, method: 'POST', body: {'provider': provider}));`
+
+  const signOut = plan.signOut
+    ? `    if (Backend.token != null) await _call(${dartString(plan.signOut.path)}, method: ${dartString(plan.signOut.method)});
+    Backend.token = null;`
+    : `    // Signing out is local here: the backend keeps no session to end.
+    Backend.token = null;`
+
+  return `class Auth {
+  Future<Map<String, dynamic>> signUp(String email, String password) async {
+${signUpBody}
+  }
+
+  Future<Map<String, dynamic>> signIn(String email, String password) async =>
+      _accept(await _call(${dartString(plan.signIn.path)}, method: 'POST', body: ${identity}));
+
+${oauth}
+
+  Future<Map<String, dynamic>> session() async {
+    if (Backend.token == null) return {};
+    try {
+      return _accept(await _call(${dartString(plan.session.path)}, method: ${dartString(plan.session.method)}));
+    } on BackendException {
+      // An expired token is nobody being signed in, not a failure the
+      // app has to handle.
+      Backend.token = null;
+      return {};
+    }
+  }
+
+  Future<void> signOut() async {
+${signOut}
+  }
+}`
+}
+
+/** Uploading a file, and working out what its URL is afterwards. */
+function dartStorage(plan: WirePlan): string {
+  const { upload } = plan
+  const path = dartPath(upload.path, { bucket: 'bucket', name: 'name' })
+  const send = upload.form
+    ? `    final boundary = 'tungsten-' + DateTime.now().microsecondsSinceEpoch.toString();
+    final reply = _map(await _call(
+      ${path},
+      method: 'POST',
+      bytes: _multipart(boundary, name, bytes),
+      headers: {'content-type': 'multipart/form-data; boundary=' + boundary},
+    ));`
+    : `    final reply = _map(await _call(
+      ${path},
+      method: 'POST',
+      bytes: bytes,${upload.path.includes('{name}')
+        ? ''
+        : `
+      // The name is not in the address, so it travels in a header.
+      headers: {'x-file-name': name},`}
+    ));`
+
+  const address = upload.idInPath
+    ? `    // A file belongs to a record here, so its address needs the id the
+    // upload came back with.
+    final stored = reply['file'] is List
+        ? toText((reply['file'] as List).first)
+        : toText(reply['file']);
+    return Backend.baseUrl + ${dartPath(upload.publicPath ?? '', { bucket: 'bucket', id: "toText(reply['id'])", name: 'stored' })};`
+    : upload.urlKey
+      ? `    final url = toText(reply[${dartString(upload.urlKey)}]);
+    ${upload.publicPath
+      ? `return url.isNotEmpty ? url : Backend.baseUrl + ${dartPath(upload.publicPath, { bucket: 'bucket', name: 'name' })};`
+      : 'return url;'}`
+      : `    return Backend.baseUrl + ${dartPath(upload.publicPath ?? '', { bucket: 'bucket', name: 'name' })};`
+
+  const multipart = upload.form
+    ? `
+/// A multipart body, by hand: a generated app should not need a package
+/// to post one file.
+List<int> _multipart(String boundary, String name, List<int> bytes) {
+  final head = utf8.encode('--' + boundary + '\\r\\n'
+      + 'Content-Disposition: form-data; name="file"; filename="' + name + '"\\r\\n'
+      + 'Content-Type: application/octet-stream\\r\\n\\r\\n');
+  final tail = utf8.encode('\\r\\n--' + boundary + '--\\r\\n');
+  return <int>[...head, ...bytes, ...tail];
+}
+`
+    : ''
+
+  return `${multipart}
+class Storage {
+  /// Bytes in, a URL out. Give it a File, a list of bytes, or text.
+  Future<String> upload(String bucket, Object? file) async {
+    var name = 'upload';
+    List<int> bytes;
+    if (file is File) {
+      name = file.uri.pathSegments.last;
+      bytes = await file.readAsBytes();
+    } else if (file is List<int>) {
+      bytes = file;
+    } else {
+      bytes = utf8.encode(toText(file));
+    }
+${send}
+${address}
+  }
+}`
+}
+
+/**
+ * The whole of `lib/runtime.dart`.
+ *
+ * Generated against one backend rather than carrying a dialect table:
+ * an app is built for a project, and a project has one backend. The
+ * result is source a person could have written for that backend, which
+ * is the promise the rest of the generator makes too.
+ */
+export function dartRuntime(plan: WirePlan): string {
+  const constants = plan.headers
+    .map(([key, value]) => `  request.headers.set(${dartString(key)}, ${dartString(value)});`)
+    .join('\n')
+  return `// The services a generated app talks to.
+//
+// Not stubs, and not a shim: these call ${plan.base ? `the ${plan.dialect} API this project is configured for` : 'the backend the builder writes alongside this app'}.
+// Only dart:io and dart:convert are used, so the pubspec stays empty.
+${plan.base ? '//\n// The address and the keys below came from the project\'s backend\n// settings. Server-only credentials are deliberately not here: a built\n// app is readable by whoever has it.\n' : ''}
+import 'dart:convert';
+import 'dart:io';
+
+/// Values out of a field map have no static type, so the two conversions
+/// every generated comparison needs live here. Equality compares text and
+/// ordering compares numbers: "3" < "20" being true is a bug that takes an
+/// hour to find in code you did not write.
+String toText(Object? value) => value?.toString() ?? '';
+
+double toNumber(Object? value) {
+  if (value is num) return value.toDouble();
+  if (value is bool) return value ? 1 : 0;
+  return double.tryParse(value?.toString() ?? '') ?? 0;
+}
+
+/// Where the backend lives. One line to change when you deploy.
+class Backend {
+  ${dartBaseUrl(plan)}
+
+  /// Set by the sign-in blocks; sent on every later request.
+  static String? token;
+}
+
+class BackendException implements Exception {
+  BackendException(this.message);
+  final String message;
+  @override
+  String toString() => message;
+}
+
+final _client = HttpClient();
+
+Map<String, dynamic> _map(Object? value) =>
+    value is Map<String, dynamic> ? value : <String, dynamic>{};
+
+List<Map<String, dynamic>> _rows(Object? value) =>
+    value is List ? value.whereType<Map<String, dynamic>>().toList() : <Map<String, dynamic>>[];
+
+/// One HTTP call: JSON in, decoded JSON out.
+Future<dynamic> _call(
+  String path, {
+  String method = 'GET',
+  Object? body,
+  List<int>? bytes,
+  Map<String, String> headers = const {},
+}) async {
+  final request = await _client.openUrl(method, Uri.parse(Backend.baseUrl + path));
+  request.headers.set('accept', 'application/json');
+${constants}
+  final token = Backend.token;
+  // A signed-in user's token replaces the publishable key rather than
+  // being sent beside it.
+  if (token != null) request.headers.set(${dartString(plan.token.header)}, ${plan.token.prefix ? `${dartString(plan.token.prefix)} + token` : 'token'});
+  headers.forEach(request.headers.set);
+
+  if (bytes != null) {
+    if (!headers.containsKey('content-type')) {
+      request.headers.contentType = ContentType('application', 'octet-stream');
+    }
+    request.add(bytes);
+  } else if (body != null) {
+    request.headers.contentType = ContentType('application', 'json', charset: 'utf-8');
+    request.add(utf8.encode(jsonEncode(body)));
+  }
+
+  final response = await request.close();
+  final text = await response.transform(utf8.decoder).join();
+  final parsed = text.isEmpty ? null : jsonDecode(text);
+  if (response.statusCode >= 400) {
+    // Every backend puts its sentence somewhere else, and a status code
+    // on its own tells the user nothing they can act on.
+    final map = _map(parsed);
+    final said = map['error'] ?? map['message'] ?? map['msg'];
+    throw BackendException(said is String && said.isNotEmpty
+        ? said
+        : 'Request failed: ' + response.statusCode.toString());
+  }
+  return parsed;
+}
+
+${dartFilter(plan)}
+
+/// Keeps the token from a sign-in reply, and hands back the user.
+Map<String, dynamic> _accept(Object? reply) {
+  final map = _map(reply);
+  final token = map[${dartString(plan.tokenKey)}];
+  if (token is String && token.isNotEmpty) Backend.token = token;
+  final user = map[${dartString(plan.userKey)}];
+  return user is Map<String, dynamic> ? user : map;
+}
+
+class Api {
+${dartSelect(plan)}
+
+  Future<Map<String, dynamic>> insert(String table, Object? row) async {
+    final body = row is Map ? Map<String, dynamic>.from(row) : {'value': toText(row)};
+    final reply = await _call(${dartPath(plan.create.path, { table: 'table' })}, ${dartWrite(plan.create, 'body')});
+${plan.create.envelope === 'first' ? '    final rows = _rows(reply);\n' : ''}    return ${dartRow(plan.create)};
+  }
+
+  Future<Map<String, dynamic>> update(String table, String id, Object? changes) async {
+    final body = changes is Map ? Map<String, dynamic>.from(changes) : {'value': toText(changes)};
+    final reply = await _call(${dartPath(plan.modify.path, { table: 'table', id: 'id' })}, ${dartWrite(plan.modify, 'body')});
+${plan.modify.envelope === 'first' ? '    final rows = _rows(reply);\n' : ''}    return ${dartRow(plan.modify)};
+  }
+
+  Future<void> remove(String table, String id) async {
+    await _call(${dartPath(plan.destroy.path, { table: 'table', id: 'id' })}, method: ${dartString(plan.destroy.method)});
+  }
+
+  /// Anything else, including URLs that are not this backend.
+  Future<Map<String, dynamic>> request(String url, String method) async {
+    if (url.startsWith('/')) return _map(await _call(url, method: method));
+    final outgoing = await _client.openUrl(method, Uri.parse(url));
+    final response = await outgoing.close();
+    final text = await response.transform(utf8.decoder).join();
+    final parsed = text.isEmpty ? null : jsonDecode(text);
+    return parsed is Map<String, dynamic> ? parsed : {'body': text};
+  }
+}
+
+${dartAuth(plan)}
+
+${dartStorage(plan)}
+
+/// Opening a link.
+///
+/// Still a stub, and the only one left. Add url_launcher to the pubspec
+/// and the body becomes launchUrl(Uri.parse(url)) -- not done for you,
+/// because that package needs per-platform set-up this generator cannot
+/// perform, and a link that silently did nothing would be worse than one
+/// that says what it would have opened.
+void openUrl(String url) {
+  // ignore: avoid_print
+  print('open ' + url);
+}
+
+final api = Api();
+final auth = Auth();
+final storage = Storage();
+`
 }

@@ -343,16 +343,39 @@ can be pointed at staging without a rebuild — the same escape hatch
 The tests in `src/builder/backendRuntime.test.ts` run the emitted page
 in a real DOM with a recording `fetch`, so "a Supabase build calls
 PostgREST" is a request that has happened rather than a claim about a
-string. Android, iOS and Flutter still emit the generated service's
-routes; they are next.
+string.
+
+### The same thing on a phone
+
+A page can carry four dialects and choose at run time, because it is
+also the preview and the preview can be repointed. A Flutter app
+cannot and should not: it is built for one project, whose backend is
+known while it is being emitted.
+
+So `src/builder/targets/wire.ts` holds the same four protocols as
+language-neutral data — paths with `{table}`/`{id}`/`{bucket}`
+placeholders, the envelope each backend wraps rows in, where the token
+goes — and the Flutter emitter renders **only the chosen one**. A
+Supabase build's `lib/runtime.dart` contains PostgREST paths and no
+mention of `/api/collections/`; a PocketBase build contains the filter
+escaping and a hand-built multipart body. No dialect table ships in the
+app.
+
+One thing the table is worth having for on its own: four languages
+disagreeing about where `/rest/v1/` goes is a bug nobody finds until a
+phone build is in somebody's hands. There is one table, with one set of
+tests, and each emitter renders it.
+
+Android and iOS still emit the generated service's routes in Kotlin and
+Swift. They are next, and they read the same plan.
 
 ## 7. What is next
 
 In order:
 
-1. **The native runtimes** — Kotlin, Swift and Dart still hard-code the
-   generated service's routes. The web runtime now reads a profile; the
-   other three need the same table, one language at a time.
+1. **Kotlin and Swift** — the last two runtimes still hard-code the
+   generated service's routes. The plan in `wire.ts` is already there;
+   each needs a renderer, as Dart now has.
 2. **Firebase, then Appwrite.** PocketBase shipped; its realtime waits
    on a Server-Sent Events transport beside `HttpSend` and
    `SocketOpen`, which is a contract change, not an adapter one.

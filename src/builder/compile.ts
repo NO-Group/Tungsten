@@ -492,10 +492,10 @@ function filesFor({ target, root, ir, ui, code, schema, project, profile }: Emit
   const toolchain = target === 'node' ? 'web' : toolchainFor(project, target)
 
   if (target === 'android') {
-    return toolchain === 'kotlin' ? at(androidFiles(ir, project)) : flutterFiles({ root, ir, project, kind: 'android' })
+    return toolchain === 'kotlin' ? at(androidFiles(ir, project)) : flutterFiles({ root, ir, project, kind: 'android', profile })
   }
   if (target === 'ios') {
-    return toolchain === 'swift' ? at(iosFiles(ir, project)) : flutterFiles({ root, ir, project, kind: 'ios' })
+    return toolchain === 'swift' ? at(iosFiles(ir, project)) : flutterFiles({ root, ir, project, kind: 'ios', profile })
   }
   if (isDesktopKind(target)) {
     const shell = {
@@ -507,7 +507,7 @@ function filesFor({ target, root, ir, ui, code, schema, project, profile }: Emit
     }
     return at(toolchain === 'electron' ? desktopFiles(shell) : tauriFiles(shell))
   }
-  if (target === 'mobile') return flutterFiles({ root, ir, project, kind: 'mobile' })
+  if (target === 'mobile') return flutterFiles({ root, ir, project, kind: 'mobile', profile })
   if (target === 'node') return nodeFiles(root, ir, code, schema)
   return webFiles(root, ir, ui, code, schema, profile)
 }
