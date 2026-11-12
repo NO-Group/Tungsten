@@ -1070,8 +1070,13 @@ export function useBuilder(host: BuilderHost): BuilderState {
   )
 
   const build = useCallback(
-    (target: CompileTarget) => compile({ graph, registry, schema, state, screens, target, project }),
-    [graph, project, registry, schema, screens, state],
+    // The project's backend goes into the build, so an exported app
+    // calls the backend the project is configured for rather than the
+    // routes of a local service that may not be running.
+    (target: CompileTarget) => compile({
+      graph, registry, schema, state, screens, target, project, backend: backendSettings,
+    }),
+    [backendSettings, graph, project, registry, schema, screens, state],
   )
 
   const openProject = useCallback((index: number) => {

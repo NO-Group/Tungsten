@@ -135,6 +135,26 @@ describe('the backend picker', () => {
     expect(realtime?.querySelector('.backend-lacks')?.textContent).toContain('no replay')
   })
 
+  it('says what a built app will call, and what it will not carry', () => {
+    mount({
+      adapter: 'supabase',
+      config: { url: 'https://demo.supabase.co', anonKey: 'anon', serviceKey: 'service' },
+    })
+    const shipped = container.querySelector('.backend-shipped')?.textContent ?? ''
+    expect(shipped).toContain('Built apps call Supabase at demo.supabase.co')
+    // The thing worth saying out loud: the key that bypasses every
+    // policy is not going into a page anyone can view-source.
+    expect(shipped).toContain('Service role key')
+    expect(shipped).toContain('stays in the IDE')
+  })
+
+  it('does not promise a built app an address that is half typed in', () => {
+    mount({ adapter: 'supabase', config: { url: 'https://demo.supabase.co' } })
+    const shipped = container.querySelector('.backend-shipped')?.textContent ?? ''
+    expect(shipped).toContain('local Node service')
+    expect(shipped).not.toContain('demo.supabase.co')
+  })
+
   it('clears a stale result when the settings change under it', async () => {
     mount({ adapter: 'self-hosted', config: { url: 'http://localhost:8787' } })
     await act(async () => { button('Test connection')?.click() })

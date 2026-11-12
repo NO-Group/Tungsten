@@ -40,6 +40,8 @@ import { desktopFiles, isDesktopKind } from './targets/desktop'
 import { flutterFiles } from './targets/flutter'
 import { tauriFiles } from './targets/tauri'
 import { DEFAULT_API_URL, serverFiles } from './targets/server'
+import { runtimeProfileFor, type RuntimeProfile } from '../backend/runtimeProfile'
+import type { BackendSettings } from '../backend/registry'
 
 export const IR_VERSION = 1
 
@@ -274,6 +276,17 @@ export type CompileInput = {
    * between a build and an error.
    */
   project?: Project
+  /**
+   * Which backend the built app should talk to.
+   *
+   * Optional, and absent means what it has always meant: the emitted
+   * app calls the Node service Tungsten generates, on the machine it
+   * is running on. When a project has a backend configured, the
+   * profile for it is baked into the page instead, so a project on
+   * Supabase builds an app that calls Supabase rather than routes
+   * nobody is serving.
+   */
+  backend?: BackendSettings
 }
 
 /**
@@ -294,11 +307,18 @@ function uiSchemaJson(ir: Ir): string {
   )}\n`
 }
 
-function webFiles(root: string, ir: Ir, ui: UiDocument, code: string, schema: DataSchema): CompiledFile[] {
+function webFiles(
+  root: string,
+  ir: Ir,
+  ui: UiDocument,
+  code: string,
+  schema: DataSchema,
+  profile?: RuntimeProfile,
+): CompiledFile[] {
   const files: CompiledFile[] = [
     {
       path: `${root}/index.html`,
-      contents: previewHtml({ document: ui, code, screen: ir.home, api: DEFAULT_API_URL }),
+      contents: previewHtml({ document: ui, code, screen: ir.home, api: apiFor(profile), profile }),
     },
     {
       path: `${root}/app.ts`,
@@ -392,6 +412,7 @@ export function compile({
   screens = DEFAULT_SCREENS,
   target,
   project = DEFAULT_PROJECT,
+  backend,
 }: CompileInput): CompileResult {
   const report = checkIntegrity(graph, registry, state, screens)
   const errors = report.diagnostics.filter((entry) => entry.severity === 'error')
@@ -414,7 +435,8 @@ export function compile({
   const { code } = generateProgram(graph, registry, state, screens)
 
   const root = targetRoot(project, target)
-  const files = filesFor({ target, root, ir, ui, code, schema, project })
+  const profile = backend ? runtimeProfileFor(backend) : undefined
+  const files = filesFor({ target, root, ir, ui, code, schema, project, profile })
 
   return {
     ok: true,
@@ -438,6 +460,18 @@ type EmitInput = {
   code: string
   schema: DataSchema
   project: Project
+  profile?: RuntimeProfile
+}
+
+/**
+ * The address baked into a build.
+ *
+ * A configured backend brings its own; the local service is the
+ * fallback, which is what a project with nothing configured still
+ * gets, exactly as before.
+ */
+function apiFor(profile: RuntimeProfile | undefined): string {
+  return profile ? profile.base : DEFAULT_API_URL
 }
 
 /**
@@ -448,7 +482,7 @@ type EmitInput = {
  * native source. Everything is prefixed with the target's own root here,
  * so no emitter has to remember where it is being written.
  */
-function filesFor({ target, root, ir, ui, code, schema, project }: EmitInput): CompiledFile[] {
+function filesFor({ target, root, ir, ui, code, schema, project, profile }: EmitInput): CompiledFile[] {
   const at = (files: CompiledFile[]) => files.map((file) => ({ ...file, path: `${root}/${file.path}` }))
 
   // Which emitter runs is the target *and* the toolchain chosen for it:
@@ -465,7 +499,7 @@ function filesFor({ target, root, ir, ui, code, schema, project }: EmitInput): C
   }
   if (isDesktopKind(target)) {
     const shell = {
-      html: previewHtml({ document: ui, code, screen: ir.home, api: DEFAULT_API_URL }),
+      html: previewHtml({ document: ui, code, screen: ir.home, api: apiFor(profile), profile }),
       code,
       schema: uiSchemaJson(ir),
       project,
@@ -475,7 +509,7 @@ function filesFor({ target, root, ir, ui, code, schema, project }: EmitInput): C
   }
   if (target === 'mobile') return flutterFiles({ root, ir, project, kind: 'mobile' })
   if (target === 'node') return nodeFiles(root, ir, code, schema)
-  return webFiles(root, ir, ui, code, schema)
+  return webFiles(root, ir, ui, code, schema, profile)
 }
 
 /** The static markup of the current interface, for a quick look. */

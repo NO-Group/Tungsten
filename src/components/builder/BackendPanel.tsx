@@ -18,10 +18,11 @@
  */
 
 import { useState } from 'react'
-import { CircleAlert, CircleCheck, Loader2, Plug, ShieldQuestion } from 'lucide-react'
+import { CircleAlert, CircleCheck, Loader2, PackageOpen, Plug, ShieldQuestion } from 'lucide-react'
 
 import type { AdapterInfo, Capabilities } from '../../backend/contract'
 import { missingFields, type BackendSettings } from '../../backend/registry'
+import { describeRuntimeProfile, runtimeProfileFor } from '../../backend/runtimeProfile'
 
 export type HealthResult = { ok: boolean; detail: string }
 
@@ -58,6 +59,10 @@ export function BackendPanel({ choices, settings, onChange, onTest }: BackendPan
   const selected = choices.find((choice) => choice.id === settings.adapter)
   const missing = missingFields(settings)
   const planned = selected?.status === 'planned'
+  // What a *built* app will do, which is a different question from
+  // what the IDE can reach: a server credential is usable here and
+  // must not be shipped in a page anyone can read.
+  const shipped = describeRuntimeProfile(runtimeProfileFor(settings))
 
   const choose = (id: string) => {
     setTest({ kind: 'idle' })
@@ -137,6 +142,10 @@ export function BackendPanel({ choices, settings, onChange, onTest }: BackendPan
                   {test.result.ok ? <CircleCheck size={12} /> : <CircleAlert size={12} />} {test.result.detail}
                 </p>
               )}
+
+              <p className="backend-shipped">
+                <PackageOpen size={12} /> {shipped}
+              </p>
             </>
           )}
 

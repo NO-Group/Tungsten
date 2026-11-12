@@ -14,6 +14,7 @@
 
 import { uiThemeCss } from './uiTokens'
 import { renderDocumentBody, type UiDocument } from './uiSchema'
+import type { RuntimeProfile } from '../backend/runtimeProfile'
 
 /** What the frame posts back to the workbench. */
 export type PreviewMessage =
@@ -429,23 +430,31 @@ function bindClick(screen, target, handler) {
 /**
  * Where the backend is, if there is one.
  *
- * The same four services answer twice over. Inside the IDE there is no
- * server and must not be one -- a preview that wrote to a database would
- * be a preview that could ruin your afternoon -- so the calls are
- * simulated and say so in the log. In a build, API_BASE points at the
- * generated backend and exactly the same blocks do the real thing.
+ * The same four services answer three ways over. Inside the IDE there
+ * is no server and must not be one -- a preview that wrote to a
+ * database would be a preview that could ruin your afternoon -- so the
+ * calls are simulated and say so in the log. A build with a backend
+ * configured carries that backend's profile and speaks its dialect. A
+ * build without one falls back to the Node service Tungsten generates,
+ * which is where this runtime started.
  *
- * window.TUNGSTEN_API wins over the baked-in address, so a built app can
- * be pointed at staging by one line in the page rather than a rebuild.
+ * window.TUNGSTEN_API and window.TUNGSTEN_BACKEND win over whatever is
+ * baked in, so a built app can be pointed at staging by one line in the
+ * page rather than a rebuild.
  */
-const BACKEND = (typeof window !== 'undefined' && window.TUNGSTEN_API) || API_BASE || ''
+const PROFILE = (typeof window !== 'undefined' && window.TUNGSTEN_BACKEND) || BAKED_PROFILE || null
+const BACKEND = (typeof window !== 'undefined' && window.TUNGSTEN_API) || (PROFILE && PROFILE.base) || API_BASE || ''
+const TOKEN_SLOT = (PROFILE && PROFILE.token) || { header: 'authorization', prefix: 'Bearer ' }
+const USERS = (PROFILE && PROFILE.users) || 'users'
 
 let AUTH_TOKEN = null
 
 async function backend(path, options) {
   const settings = options || {}
-  const headers = { accept: 'application/json' }
-  if (AUTH_TOKEN) headers.authorization = 'Bearer ' + AUTH_TOKEN
+  const headers = Object.assign({ accept: 'application/json' }, (PROFILE && PROFILE.headers) || {})
+  // A signed-in user's token replaces the publishable key the profile
+  // carries, rather than being sent beside it.
+  if (AUTH_TOKEN) headers[TOKEN_SLOT.header] = TOKEN_SLOT.prefix + AUTH_TOKEN
   if (settings.json !== undefined) headers['content-type'] = 'application/json'
   Object.assign(headers, settings.headers || {})
 
@@ -458,12 +467,178 @@ async function backend(path, options) {
   let parsed = {}
   try { parsed = text ? JSON.parse(text) : {} } catch { parsed = { body: text } }
   if (!response.ok) {
-    // The service answers errors as {error}, so what reaches the user is
-    // the sentence it chose rather than a status code.
-    throw new Error(parsed.error || ('Request failed: ' + response.status))
+    // Every backend puts its sentence somewhere else, and a status code
+    // on its own tells the user nothing they can act on.
+    const said = parsed.error || parsed.message || parsed.msg || parsed.error_description
+    throw new Error(typeof said === 'string' ? said : ('Request failed: ' + response.status))
   }
   return parsed
 }
+
+const nameOf = (file) => (file && file.name) || 'upload'
+const blobOf = (file) => (file instanceof Blob ? file : new Blob([String(file == null ? '' : file)]))
+const pairs = (where) => Object.keys(where || {}).map((key) => [key, where[key]])
+
+/**
+ * One entry per wire protocol.
+ *
+ * The blocks never see this: they call db.select and the dialect
+ * decides whether that is a query string, a PostgREST parameter, a
+ * PocketBase filter expression or a POSTed filter tree. Adding a
+ * backend is adding an entry here and a profile in runtimeProfile.ts.
+ */
+const WIRE = {
+  tungsten: {
+    list: (table, where) => ({
+      path: '/data/' + table + (pairs(where).length ? '?' + new URLSearchParams(where).toString() : ''),
+    }),
+    rows: (reply) => reply.rows || [],
+    create: (table, row) => ({ path: '/data/' + table, method: 'POST', json: row || {} }),
+    row: (reply) => reply.row || reply,
+    patch: (table, id, changes) => ({ path: '/data/' + table + '/' + id, method: 'PATCH', json: changes || {} }),
+    drop: (table, id) => ({ path: '/data/' + table + '/' + id, method: 'DELETE' }),
+    signUp: (email, password) => ({ path: '/auth/sign-up', method: 'POST', json: { email, password } }),
+    signIn: (email, password) => ({ path: '/auth/sign-in', method: 'POST', json: { email, password } }),
+    session: () => ({ path: '/auth/session' }),
+    signOut: () => ({ path: '/auth/sign-out', method: 'POST' }),
+    oauth: (provider) => ({ path: '/auth/oauth', method: 'POST', json: { provider } }),
+    token: (reply) => reply.token,
+    user: (reply) => reply.user || reply,
+    upload: (bucket, file) => ({
+      path: '/storage/' + bucket,
+      method: 'POST',
+      body: blobOf(file),
+      headers: { 'x-file-name': nameOf(file) },
+    }),
+    uploaded: (reply) => reply.url || '',
+  },
+
+  postgrest: {
+    list: (table, where) => ({
+      path: '/rest/v1/' + table + '?select=*'
+        + pairs(where).map((pair) => '&' + encodeURIComponent(pair[0]) + '=eq.' + encodeURIComponent(pair[1])).join(''),
+    }),
+    // PostgREST answers with the array itself, not an envelope.
+    rows: (reply) => (Array.isArray(reply) ? reply : reply.rows || []),
+    create: (table, row) => ({
+      path: '/rest/v1/' + table,
+      method: 'POST',
+      json: row || {},
+      headers: { prefer: 'return=representation' },
+    }),
+    row: (reply) => (Array.isArray(reply) ? reply[0] || {} : reply),
+    patch: (table, id, changes) => ({
+      path: '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id),
+      method: 'PATCH',
+      json: changes || {},
+      headers: { prefer: 'return=representation' },
+    }),
+    drop: (table, id) => ({ path: '/rest/v1/' + table + '?id=eq.' + encodeURIComponent(id), method: 'DELETE' }),
+    signUp: (email, password) => ({ path: '/auth/v1/signup', method: 'POST', json: { email, password } }),
+    signIn: (email, password) => ({ path: '/auth/v1/token?grant_type=password', method: 'POST', json: { email, password } }),
+    session: () => ({ path: '/auth/v1/user' }),
+    signOut: () => ({ path: '/auth/v1/logout', method: 'POST' }),
+    oauth: (provider, redirect) => ({
+      url: BACKEND + '/auth/v1/authorize?provider=' + encodeURIComponent(provider)
+        + '&redirect_to=' + encodeURIComponent(redirect),
+    }),
+    token: (reply) => reply.access_token,
+    user: (reply) => reply.user || reply,
+    upload: (bucket, file) => ({
+      path: '/storage/v1/object/' + bucket + '/' + encodeURIComponent(nameOf(file)),
+      method: 'POST',
+      body: blobOf(file),
+    }),
+    uploaded: (reply, bucket, name) => BACKEND + '/storage/v1/object/public/' + bucket + '/' + encodeURIComponent(name),
+  },
+
+  pocketbase: {
+    list: (table, where) => ({
+      path: '/api/collections/' + table + '/records'
+        + (pairs(where).length
+          ? '?filter=' + encodeURIComponent(
+            pairs(where).map((pair) => pair[0] + "='" + String(pair[1]).replace(/'/g, "\\'") + "'").join(' && '),
+          )
+          : ''),
+    }),
+    rows: (reply) => reply.items || [],
+    create: (table, row) => ({ path: '/api/collections/' + table + '/records', method: 'POST', json: row || {} }),
+    row: (reply) => reply,
+    patch: (table, id, changes) => ({
+      path: '/api/collections/' + table + '/records/' + id,
+      method: 'PATCH',
+      json: changes || {},
+    }),
+    drop: (table, id) => ({ path: '/api/collections/' + table + '/records/' + id, method: 'DELETE' }),
+    // Creating the record does not sign it in, so the runtime does both.
+    signUp: (email, password) => ({
+      path: '/api/collections/' + USERS + '/records',
+      method: 'POST',
+      json: { email, password, passwordConfirm: password },
+      then: 'sign-in',
+    }),
+    signIn: (email, password) => ({
+      path: '/api/collections/' + USERS + '/auth-with-password',
+      method: 'POST',
+      json: { identity: email, password },
+    }),
+    session: () => ({ path: '/api/collections/' + USERS + '/auth-refresh', method: 'POST' }),
+    signOut: () => null,
+    oauth: (provider, redirect) => ({
+      url: BACKEND + '/api/oauth2-redirect?provider=' + encodeURIComponent(provider)
+        + '&redirect=' + encodeURIComponent(redirect),
+    }),
+    token: (reply) => reply.token,
+    user: (reply) => reply.record || reply,
+    upload: (bucket, file) => {
+      const form = new FormData()
+      form.append('file', blobOf(file), nameOf(file))
+      return { path: '/api/collections/' + bucket + '/records', method: 'POST', body: form }
+    },
+    // A file belongs to a record here, so the URL needs the id that
+    // came back from the upload.
+    uploaded: (reply, bucket) => BACKEND + '/api/files/' + bucket + '/' + reply.id + '/'
+      + (Array.isArray(reply.file) ? reply.file[0] : reply.file),
+  },
+
+  vortex: {
+    list: (table, where) => ({
+      path: '/v1/data/' + table + '/query',
+      method: 'POST',
+      json: pairs(where).length
+        ? { where: { all: pairs(where).map((pair) => ({ column: pair[0], op: 'eq', value: pair[1] })) } }
+        : {},
+    }),
+    rows: (reply) => reply.rows || [],
+    create: (table, row) => ({ path: '/v1/data/' + table, method: 'POST', json: { row: row || {} } }),
+    row: (reply) => reply.row || (reply.rows && reply.rows[0]) || {},
+    patch: (table, id, changes) => ({
+      path: '/v1/data/' + table + '/' + id,
+      method: 'PATCH',
+      json: { changes: changes || {} },
+    }),
+    drop: (table, id) => ({ path: '/v1/data/' + table + '/' + id, method: 'DELETE' }),
+    signUp: (email, password) => ({ path: '/v1/auth/sign-up', method: 'POST', json: { email, password } }),
+    signIn: (email, password) => ({ path: '/v1/auth/sign-in', method: 'POST', json: { email, password } }),
+    session: () => ({ path: '/v1/auth/session' }),
+    signOut: () => ({ path: '/v1/auth/sign-out', method: 'POST' }),
+    oauth: (provider, redirect) => ({
+      url: BACKEND + '/v1/auth/oauth/' + encodeURIComponent(provider) + '?redirect=' + encodeURIComponent(redirect),
+    }),
+    token: (reply) => reply.token || reply.access_token,
+    user: (reply) => reply.user || reply,
+    upload: (bucket, file) => ({
+      path: '/v1/storage/' + bucket + '/' + encodeURIComponent(nameOf(file)),
+      method: 'POST',
+      body: blobOf(file),
+      headers: { 'content-type': (file && file.type) || 'application/octet-stream' },
+    }),
+    uploaded: (reply, bucket, name) => reply.url || (BACKEND + '/v1/storage/' + bucket + '/' + encodeURIComponent(name)),
+  },
+}
+
+const wire = WIRE[(PROFILE && PROFILE.dialect) || 'tungsten'] || WIRE.tungsten
+const ask = (request) => backend(request.path, request)
 
 // Seeded, obviously fake, and honest about it: a preview must not imply that
 // it reached a real database.
@@ -475,29 +650,29 @@ const db = {
       log('db.select("' + table + '") — preview data' + (where ? ' with a filter' : ''))
       return seeds[table] ? seeds[table].slice() : []
     }
-    const query = where ? '?' + new URLSearchParams(where).toString() : ''
-    return (await backend('/data/' + table + query)).rows || []
+    return wire.rows(await ask(wire.list(table, where)))
   },
   insert: async (table, row) => {
     if (!BACKEND) {
       log('db.insert("' + table + '") — preview only, nothing was written')
       return { id: Math.floor(Math.random() * 1000), ...row }
     }
-    return (await backend('/data/' + table, { method: 'POST', json: row || {} })).row || {}
+    return wire.row(await ask(wire.create(table, row)))
   },
   update: async (table, id, changes) => {
     if (!BACKEND) {
       log('db.update("' + table + '", ' + id + ') — preview only, nothing was changed')
       return { id, ...changes }
     }
-    return (await backend('/data/' + table + '/' + id, { method: 'PATCH', json: changes || {} })).row || {}
+    return wire.row(await ask(wire.patch(table, id, changes)))
   },
   remove: async (table, id) => {
     if (!BACKEND) {
       log('db.remove("' + table + '", ' + id + ') — preview only, nothing was deleted')
       return { ok: true }
     }
-    return backend('/data/' + table + '/' + id, { method: 'DELETE' })
+    await ask(wire.drop(table, id))
+    return { ok: true }
   },
 }
 
@@ -513,41 +688,62 @@ const http = {
   },
 }
 
+/** Keeps the token from a sign-in reply, and hands back the user. */
+function accept(reply) {
+  const token = wire.token(reply)
+  if (token) AUTH_TOKEN = token
+  return wire.user(reply)
+}
+
 const auth = {
   signUp: async (email, password) => {
     if (!BACKEND) {
       log('auth.signUp("' + email + '") — preview account')
       return { id: 'preview-user', email }
     }
-    const reply = await backend('/auth/sign-up', { method: 'POST', json: { email, password } })
-    if (reply.token) AUTH_TOKEN = reply.token
-    return reply.user || reply
+    const request = wire.signUp(email, password)
+    const reply = await ask(request)
+    // Some backends create the account without signing it in. Handing
+    // back a user with no session would leave the next block
+    // unauthorised for a reason nobody could see.
+    if (request.then === 'sign-in') return accept(await ask(wire.signIn(email, password)))
+    return accept(reply)
   },
   signIn: async (email, password) => {
     if (!BACKEND) {
       log('auth.signIn("' + email + '") — preview account')
       return { id: 'preview-user', email }
     }
-    const reply = await backend('/auth/sign-in', { method: 'POST', json: { email, password } })
-    if (reply.token) AUTH_TOKEN = reply.token
-    return reply.user || reply
+    return accept(await ask(wire.signIn(email, password)))
   },
   oauth: async (provider) => {
     if (!BACKEND) {
       log('auth.oauth("' + provider + '") — preview sign-in')
       return { id: 'preview-user', provider }
     }
-    // The backend hands back the provider's authorize URL; going there is
-    // the app's business, not the runtime's.
-    return backend('/auth/oauth', { method: 'POST', json: { provider } })
+    const redirect = typeof location !== 'undefined' ? location.href : ''
+    const request = wire.oauth(provider, redirect)
+    // Most backends answer with the provider's authorize URL; some
+    // build it from the address alone. Going there is the app's
+    // business, not the runtime's.
+    if (request.url) return { url: request.url, provider }
+    return ask(request)
   },
   session: async () => {
     if (!BACKEND) return { id: 'preview-user', email: 'ada@example.com' }
     if (!AUTH_TOKEN) return {}
-    return (await backend('/auth/session')).user || {}
+    try {
+      return accept(await ask(wire.session()))
+    } catch {
+      // An expired token is "nobody is signed in", not a failure the
+      // app should have to handle.
+      AUTH_TOKEN = null
+      return {}
+    }
   },
   signOut: async () => {
-    if (BACKEND && AUTH_TOKEN) await backend('/auth/sign-out', { method: 'POST' })
+    const request = BACKEND && AUTH_TOKEN ? wire.signOut() : null
+    if (request) await ask(request)
     AUTH_TOKEN = null
   },
 }
@@ -558,12 +754,8 @@ const storage = {
       log('storage.upload("' + bucket + '") — preview only')
       return 'https://preview.local/' + bucket + '/file'
     }
-    const reply = await backend('/storage/' + bucket, {
-      method: 'POST',
-      body: file instanceof Blob ? file : new Blob([String(file == null ? '' : file)]),
-      headers: { 'x-file-name': (file && file.name) || 'upload' },
-    })
-    return reply.url || ''
+    const reply = await ask(wire.upload(bucket, file))
+    return wire.uploaded(reply, bucket, nameOf(file))
   },
 }
 
@@ -626,6 +818,15 @@ export type PreviewOptions = {
    * page sets one, wins over whatever is baked in here.
    */
   api?: string
+  /**
+   * The backend the built app should speak to, as data.
+   *
+   * Absent inside the IDE and in a project with no backend configured,
+   * which is why the runtime still knows the generated service's routes:
+   * they are the `tungsten` dialect, and the fallback when nothing else
+   * is baked in.
+   */
+  profile?: RuntimeProfile
 }
 
 /**
@@ -635,7 +836,7 @@ export type PreviewOptions = {
  * network and no same-origin access, so there is nothing for it to fetch and
  * nothing it can reach if it tried.
  */
-export function previewHtml({ document: ui, code, screen = 'home', api = '' }: PreviewOptions): string {
+export function previewHtml({ document: ui, code, screen = 'home', api = '', profile }: PreviewOptions): string {
   const body = [...PREAMBLE, ...code.split('\n')].join('\n')
 
   return `<!doctype html>
@@ -654,6 +855,7 @@ export function previewHtml({ document: ui, code, screen = 'home', api = '' }: P
       const PREAMBLE_LINES = ${PREVIEW_PREAMBLE_LINES};
       const INITIAL_SCREEN = ${JSON.stringify(screen)};
       const API_BASE = ${JSON.stringify(api)};
+      const BAKED_PROFILE = ${profile ? JSON.stringify(profile) : 'null'};
       ${RUNTIME}
       try {
         const program = new Function(

@@ -298,14 +298,61 @@ what the adapter has, and `no replay, no transforms` for what it does
 not. A backend's limits are cheaper to read here than to discover after
 a feature is built on them.
 
-## 6. What is next
+## 6. What a built app talks to
+
+Everything above is TypeScript the IDE imports. An exported app has no
+IDE in it, and until recently it always called the routes of Tungsten's
+own Node service — so a project on Supabase shipped an app calling
+addresses nobody was serving.
+
+`src/backend/runtimeProfile.ts` closes that. A **profile** is the
+adapter's wire protocol reduced to JSON:
+
+```ts
+{ adapter, label, dialect, base, headers, token: { header, prefix }, users?, withheld }
+```
+
+`compile({ …, backend })` bakes it into `index.html`, and the runtime in
+`previewRuntime.ts` carries one small encoder per dialect:
+
+| Dialect | Reads rows with | Rows arrive as |
+| --- | --- | --- |
+| `tungsten` | `GET /data/:table?col=value` | `{ rows }` |
+| `postgrest` | `GET /rest/v1/:table?select=*&col=eq.value` | a bare array |
+| `pocketbase` | `GET /api/collections/:t/records?filter=col='v'` | `{ items }` |
+| `vortex` | `POST /v1/data/:t/query` with a filter tree | `{ rows }` |
+
+Three things this deliberately does:
+
+- **Ships publishable credentials only.** A Supabase service-role key or
+  a PocketBase superuser token in a page anyone can view-source is a
+  database anyone can empty. Those fields are dropped from the profile
+  and named in `withheld`, which the Backend panel prints in a sentence
+  under the capability grid.
+- **Stays silent when the project is half configured.** No profile is
+  baked in, the emitted app falls back to the local Node service, and
+  nothing fails at build time over a field somebody has not typed yet.
+- **Leaves the preview alone.** Inside the IDE there is still no server
+  and must not be one: the blocks simulate and say so in the log. The
+  profile only reaches a build.
+
+`window.TUNGSTEN_BACKEND` overrides the baked profile, so a built app
+can be pointed at staging without a rebuild — the same escape hatch
+`window.TUNGSTEN_API` has always been.
+
+The tests in `src/builder/backendRuntime.test.ts` run the emitted page
+in a real DOM with a recording `fetch`, so "a Supabase build calls
+PostgREST" is a request that has happened rather than a claim about a
+string. Android, iOS and Flutter still emit the generated service's
+routes; they are next.
+
+## 7. What is next
 
 In order:
 
-1. **The blocks on the contract** — the canvas's `db.*`, `auth.*` and
-   `storage.*` blocks call the active adapter instead of the generated
-   service's routes directly. The generated runtimes get the same
-   treatment, one language at a time.
+1. **The native runtimes** — Kotlin, Swift and Dart still hard-code the
+   generated service's routes. The web runtime now reads a profile; the
+   other three need the same table, one language at a time.
 2. **Firebase, then Appwrite.** PocketBase shipped; its realtime waits
    on a Server-Sent Events transport beside `HttpSend` and
    `SocketOpen`, which is a contract change, not an adapter one.

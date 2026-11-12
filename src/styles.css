@@ -2461,6 +2461,11 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .backend-health { margin: 0; display: flex; align-items: center; gap: 5px; font-size: 11px; }
 .backend-health.ok { color: var(--accent); }
 .backend-health.failed { color: var(--danger); }
+.backend-shipped {
+  margin: 0; display: flex; align-items: flex-start; gap: 5px; font-size: 11px; line-height: 1.5;
+  color: var(--muted); padding-top: 6px; border-top: 1px solid var(--border);
+}
+.backend-shipped svg { flex: none; margin-top: 3px; }
 .backend-capabilities { width: 100%; border-collapse: collapse; font-size: 10.5px; }
 .backend-capabilities th {
   width: 70px; padding: 3px 8px 3px 0; text-align: left; font-weight: 500; color: var(--faint);

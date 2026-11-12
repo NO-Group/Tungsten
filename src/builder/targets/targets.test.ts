@@ -727,7 +727,11 @@ describe('the generated runtimes call the generated backend', () => {
     expect(kotlin()).toContain('"Bearer " + it')
     expect(swift()).toContain('"Bearer " + token')
     expect(dart()).toContain("'Bearer ' + token")
-    expect(web()).toContain("'Bearer ' + AUTH_TOKEN")
+    // The web runtime reads the header and prefix from the backend
+    // profile, because PocketBase takes a bare token. With no profile
+    // baked in it is a bearer token like everywhere else.
+    expect(web()).toContain("{ header: 'authorization', prefix: 'Bearer ' }")
+    expect(web()).toContain('TOKEN_SLOT.prefix + AUTH_TOKEN')
   })
 
   it('knows that an emulator cannot see localhost', () => {
