@@ -173,3 +173,56 @@ export function sleepSavingMb(tier: Tier): number {
   if (tier.sleepsAfterDays === undefined) return 0
   return tier.awakeRamMb - tier.asleepRamMb
 }
+
+/* ------------------------------------------------- more than one box */
+
+/**
+ * The bug that arrives with the second machine.
+ *
+ * `take()` holds its buckets in process memory, which is exactly right
+ * for one box and quietly wrong for nine: N instances each enforcing a
+ * limit of L admit N×L between them. At fifty thousand free projects
+ * `fleet.ts` says nine boxes, so the 120-per-minute free quota becomes
+ * 1,080 per minute — and nothing anywhere reports it, because every
+ * box believes it is doing its job.
+ *
+ * This is stated in code rather than in a comment so a test can fail
+ * when somebody scales the fleet without scaling the limiter.
+ */
+export function effectiveLimit(tier: Tier, boxes: number): number {
+  return tier.quota.requestsPerMinute * Math.max(1, Math.floor(boxes))
+}
+
+/** Does this fleet still enforce the quota it advertises? */
+export function limitIsHonest(tier: Tier, boxes: number): boolean {
+  return effectiveLimit(tier, boxes) === tier.quota.requestsPerMinute
+}
+
+/**
+ * The two-tier shape, for when it stops being honest.
+ *
+ * A local bucket in every box absorbs bursts with no network hop and
+ * sheds obvious abuse; a global tier holds the exact quota. The local
+ * limit is deliberately *more* permissive than the real one — its job
+ * is to keep spikes off the global tier, not to be the limiter. Which
+ * store backs the global tier is an implementation detail this
+ * interface refuses to care about: Redis with an atomic script, or a
+ * Durable Object per tenant at the edge.
+ */
+export type GlobalLimiter = {
+  /** Spends against the cluster-wide quota. */
+  take: (tenantId: string, cost: number, now: number) => Promise<Decision>
+}
+
+/** How much slack a per-box bucket gets before the global tier decides. */
+export const LOCAL_SLACK = 2
+
+/** The per-box bucket, sized as a backstop rather than as the quota. */
+export function localBudget(tier: Tier, boxes: number): { perSecond: number; burst: number } {
+  const share = Math.max(1, Math.floor(boxes))
+  const budget = burstBudget(tier)
+  return {
+    perSecond: (budget.perSecond / share) * LOCAL_SLACK,
+    burst: Math.ceil((budget.burst / share) * LOCAL_SLACK),
+  }
+}

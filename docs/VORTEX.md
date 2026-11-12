@@ -293,7 +293,90 @@ sells itself.
 
 ---
 
-## 9. Not built yet
+## 9. Should Vortex run Redis?
+
+Asked directly, so answered directly: **not on one box, and when it
+does, not as a cache.** The arithmetic is in `cache.ts` and the tests
+enforce it.
+
+### The break-even nobody computes
+
+On a cache hit you still pay the round trip. On a miss you pay the
+round trip, *then* the database, *then* the write-back. Setting that
+equal to the uncached cost gives the hit rate a cache must beat:
+
+```
+breakEven = (cache + writeBack) / (database + writeBack)
+```
+
+For a managed Redis in the same region (~0.8 ms) in front of a warm
+primary-key lookup (~1.2 ms), that is **80%** — against the **60%**
+`offload.ts` already admits is the plausible hit rate for caches of
+this shape. At 60% the expected latency is **1.6 ms against 1.2 ms**:
+the cache is 400 µs *slower* than no cache, before the tail.
+
+### The honest nuance
+
+Redis over loopback on the same box is ~250 µs, which breaks even at a
+**35%** hit rate and therefore genuinely wins on speed. A test asserts
+this, so the "no" cannot be quoted without it.
+
+It loses anyway — on memory. `fleet.ts` reports `binding: 'memory'` at
+every population, and Redis is a RAM-resident database. `displacedBy()`
+prices a cache tier in the only currency that matters here: **150 free
+projects per gigabyte**. An 8 GB Redis costs **1,201 free tenants**, or
+another $49 machine to put them back. Adding a RAM store to a
+memory-bound fleet to make it faster is adding passengers to make the
+car lighter.
+
+### And the thing actually worth optimising
+
+A warm query is 1.2 ms. Waking a sleeping free tenant is **900 ms** —
+**750×** larger. Optimising the 1.2 ms while the 900 ms stands is
+motion, not progress.
+
+### Where it does earn its place
+
+Judged per job, not bought wholesale (`CACHE_VERDICTS`):
+
+| Job | Verdict | Instead |
+|---|---|---|
+| Caching tenant rows | already-cached | Give the RAM to `shared_buffers` |
+| Sessions and tokens | **never** | A cached authorisation is a revocation that did not happen |
+| Rate limiting across boxes | cheaper-elsewhere | A Durable Object per tenant, on the Workers plan already in the fixed costs |
+| Realtime fan-out across boxes | cheaper-elsewhere | Pin a tenant's sockets to the box its schema lives on |
+| The awake/asleep routing table | cheaper-elsewhere | A table in the control-plane database |
+| Background jobs | cheaper-elsewhere | `SELECT ... FOR UPDATE SKIP LOCKED` |
+| **Per-tenant usage counters** | **worth it** | High-frequency integer increments are the one thing Postgres is bad at — each is a row version, and the vacuum bill lands on every tenant sharing the box |
+| **Flattening p99 under write load** | **worth it** | A warm read is ~1.2 ms at p50 but ~19 ms at p99 when WAL flushes, the checkpointer and buffer-header contention collide. Redis has no planner, no MVCC, no vacuum |
+
+Note the pattern: where a cache tier wins, it wins on **shared state
+and tail latency**, never on "Redis is faster than Postgres".
+
+### The bug that arrives with the second machine
+
+`take()` keeps its buckets in process memory. Correct for one box,
+quietly wrong for nine: **N boxes each enforcing L admit N×L**, so the
+120-per-minute free quota becomes 1,080 across the nine boxes
+`fleet.ts` reaches at fifty thousand free projects — and nothing
+reports it, because every box believes it is doing its job.
+
+`effectiveLimit()` and `limitIsHonest()` state that in code so a test
+fails when somebody scales the fleet without scaling the limiter, and
+`localBudget()` gives the two-tier shape for when it happens: a
+generous per-box bucket that absorbs bursts with no network hop, and a
+global tier holding the exact quota. Which store backs the global tier
+— Redis with an atomic script, or a Durable Object — is an
+implementation detail `GlobalLimiter` deliberately refuses to care
+about.
+
+Redis buys **correctness across machines**, not speed. That is a good
+reason to adopt it, and a different one from the reason it is usually
+adopted.
+
+---
+
+## 10. Not built yet
 
 This is a cost model and a policy, not a running control plane. The limiter,
 the sleep policy, the cache rules and the upgrade triggers are real
