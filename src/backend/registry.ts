@@ -2,7 +2,7 @@
  * The backend dropdown.
  *
  * Every backend Tungsten knows about, in the order a user should see
- * them, with the three that work implemented and the three that are
+ * them, with the four that work implemented and the two that are
  * next declared rather than hidden. A planned adapter that appears in
  * the list with a date is a roadmap; a planned adapter that appears and
  * then throws a stack trace is a bug report, so `create` on an
@@ -24,6 +24,7 @@ import {
 import { supabaseAdapter } from './adapters/supabase'
 import { vortexAdapter } from './adapters/vortex'
 import { selfHostedAdapter } from './adapters/selfHosted'
+import { pocketbaseAdapter } from './adapters/pocketbase'
 
 /** An adapter that is on the roadmap and honest about it. */
 function planned(id: string, label: string, summary: string, fields: AdapterInfo['fields']): BackendAdapter {
@@ -60,16 +61,6 @@ export const appwriteAdapter = planned(
   ],
 )
 
-export const pocketbaseAdapter = planned(
-  'pocketbase',
-  'PocketBase',
-  'One Go binary with SQLite, auth, files and realtime.',
-  [
-    { key: 'url', label: 'Server URL', placeholder: 'http://127.0.0.1:8090' },
-    { key: 'adminToken', label: 'Admin token', secret: true, optional: true },
-  ],
-)
-
 /**
  * The catalogue.
  *
@@ -81,9 +72,9 @@ export const ADAPTERS: BackendAdapter[] = [
   vortexAdapter,
   supabaseAdapter,
   selfHostedAdapter,
+  pocketbaseAdapter,
   firebaseAdapter,
   appwriteAdapter,
-  pocketbaseAdapter,
 ]
 
 /** The backend a new project gets. */

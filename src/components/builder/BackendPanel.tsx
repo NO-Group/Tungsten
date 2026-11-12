@@ -1,15 +1,15 @@
 /**
  * The project's backend.
  *
- * Everything under `src/backend/` — the contract, the three working
+ * Everything under `src/backend/` — the contract, the working
  * adapters, the blueprint and the schema planner — existed with sixty
  * tests and no way to reach it from the product. This panel is the
  * missing half: pick a backend, paste what it needs, press Test
  * Connection, and the architect's plan and apply have something real
  * to run against.
  *
- * Two things it deliberately does not do. It does not hide the three
- * adapters that are not built; it lists them with what they will need
+ * Two things it deliberately does not do. It does not hide the
+ * adapters that are not built yet; it lists them with what they will need
  * and refuses to select them, because a dropdown that silently omits
  * Firebase answers "does Tungsten support Firebase?" with nothing at
  * all. And it does not claim a capability an adapter does not have:

@@ -199,3 +199,54 @@ export function orderToParam(order: SortOrder[] | undefined): string | undefined
   if (!order?.length) return undefined
   return order.map((entry) => `${entry.column}.${entry.direction ?? 'asc'}`).join(',')
 }
+
+/* -------------------------------------------------------------- uploads */
+
+export type MultipartPart =
+  | { name: string; value: string }
+  | { name: string; filename: string; data: Uint8Array; contentType?: string }
+
+/**
+ * A `multipart/form-data` body, built by hand.
+ *
+ * Two backends in the catalogue take file uploads only as form data,
+ * and `FormData` is not something an adapter can rely on: these run in
+ * a worker, in Node during tests, and in a generated app's runtime.
+ * Building the bytes here keeps the adapters transport-agnostic and,
+ * more usefully, keeps the boundary deterministic so a test can read
+ * the body it produced.
+ */
+export function multipartBody(parts: MultipartPart[], boundary = `tungsten${'-'.repeat(8)}${parts.length}`): {
+  body: Uint8Array
+  contentType: string
+} {
+  const encoder = new TextEncoder()
+  const chunks: Uint8Array[] = []
+
+  for (const part of parts) {
+    const disposition = 'filename' in part
+      ? `form-data; name="${part.name}"; filename="${part.filename}"`
+      : `form-data; name="${part.name}"`
+    const type = 'filename' in part ? `\r\nContent-Type: ${part.contentType ?? 'application/octet-stream'}` : ''
+    chunks.push(encoder.encode(`--${boundary}\r\nContent-Disposition: ${disposition}${type}\r\n\r\n`))
+    chunks.push('filename' in part ? part.data : encoder.encode(part.value))
+    chunks.push(encoder.encode('\r\n'))
+  }
+  chunks.push(encoder.encode(`--${boundary}--\r\n`))
+
+  const size = chunks.reduce((total, chunk) => total + chunk.length, 0)
+  const body = new Uint8Array(size)
+  let offset = 0
+  for (const chunk of chunks) {
+    body.set(chunk, offset)
+    offset += chunk.length
+  }
+  return { body, contentType: `multipart/form-data; boundary=${boundary}` }
+}
+
+/** Upload data of any accepted shape as bytes. */
+export async function toBytes(data: Uint8Array | Blob | string): Promise<Uint8Array> {
+  if (typeof data === 'string') return new TextEncoder().encode(data)
+  if (data instanceof Uint8Array) return data
+  return new Uint8Array(await data.arrayBuffer())
+}

@@ -19,10 +19,10 @@ never knew which one it was talking to.
 │ schema & policies         │
 └───────────┬───────────────┘
             │
-   ┌────────┴─────────┬──────────────┬───────────┬───────────┐
-   ▼                  ▼              ▼           ▼           ▼
- Vortex           Supabase      Self-hosted   Firebase    Appwrite
- (preview)        (default)      (ready)      (planned)   (planned)
+   ┌────────┴─────────┬──────────────┬────────────┬───────────┐
+   ▼                  ▼              ▼            ▼           ▼
+ Vortex           Supabase      Self-hosted   PocketBase   Firebase
+ (preview)        (default)      (ready)        (ready)    (planned)
 ```
 
 ## 1. The Universal Data Contract
@@ -132,7 +132,7 @@ until a human has seen it.
 
 ## 3. The adapters
 
-`src/backend/registry.ts` is the dropdown. Three work today; three are
+`src/backend/registry.ts` is the dropdown. Four work today; two are
 declared, listed and honest about not being built.
 
 | Adapter | Status | Notes |
@@ -140,9 +140,9 @@ declared, listed and honest about not being built.
 | **Vortex** | `preview` | Our own. `/v1/sql`, compiled row policies, durable realtime with replay, R2 storage behind a signed-upload gateway. Flip to `default` the day the fleet is live — one line in `registry.ts`. |
 | **Supabase** | `default` | Launch backend. PostgREST, GoTrue, Storage, Phoenix channels, `/functions/v1` — spoken over the wire, no `@supabase/supabase-js`. |
 | **Self-hosted** | `ready` | The Node + SQLite service Tungsten itself generates (`Build the Backend Service`). localhost or a VPS; no account anywhere. |
+| **PocketBase** | `ready` | One Go binary with SQLite inside it. Collections API, file fields, superuser-token schema. No realtime here: PocketBase streams over Server-Sent Events, which these transports do not carry. |
 | Firebase | `planned` | Firestore, Firebase Auth, Cloud Functions. |
 | Appwrite | `planned` | Open source, self-hostable. |
-| PocketBase | `planned` | One Go binary, SQLite, realtime. |
 
 A planned adapter throws a sentence naming what to use instead, never a
 stack trace.
@@ -158,6 +158,19 @@ interface:
   self-hosted service understands equality only, so `splitFilter` sends
   what it can and applies the rest to the rows that come back —
   documented, because at a million rows that would be the wrong trade.
+  PocketBase is the awkward one: its filter is a **string expression**
+  with no parameter binding on the wire, so `pocketbaseFilter` renders
+  the literals itself and `pocketbaseLiteral` escapes quotes and
+  backslashes. That escaping has its own tests, because it is the one
+  place in the layer where something a user typed becomes syntax.
+- **Paging.** PocketBase pages by number, not offset. An offset that
+  lands on a page boundary becomes `page=N`; anything else is read from
+  the top and sliced, which is slower and correct, rather than rounded
+  to the nearest page and wrong.
+- **Buckets.** In PocketBase a file is a field on a record, so a bucket
+  is a collection and a path is `recordId/filename`. Creating one is a
+  schema change, not a storage call, and `createBucket` says so instead
+  of inventing a folder.
 - **DDL.** Vortex has `/v1/sql`, so `schema.apply` runs. Supabase has no
   public DDL endpoint, so the plan comes back in `script` mode — the SQL
   to paste into the editor — unless the project has installed Tungsten's
@@ -268,10 +281,10 @@ the architect reviews without a plan.
 
 Three things the panel refuses to do:
 
-- **Hide what is not built.** Firebase, Appwrite and PocketBase are
-  listed, disabled, with the fields they will need. A dropdown that
-  silently omits Firebase answers "does Tungsten support Firebase?"
-  with nothing at all.
+- **Hide what is not built.** Firebase and Appwrite are listed,
+  disabled, with the fields they will need. A dropdown that silently
+  omits Firebase answers "does Tungsten support Firebase?" with
+  nothing at all.
 - **Keep credentials across a change of backend.** Switching adapter
   clears the config. Carrying a Supabase service key into another
   vendor's field is useless and a way to paste it somewhere it does not
@@ -293,7 +306,9 @@ In order:
    `storage.*` blocks call the active adapter instead of the generated
    service's routes directly. The generated runtimes get the same
    treatment, one language at a time.
-2. **Firebase, Appwrite, PocketBase**, in that order.
+2. **Firebase, then Appwrite.** PocketBase shipped; its realtime waits
+   on a Server-Sent Events transport beside `HttpSend` and
+   `SocketOpen`, which is a contract change, not an adapter one.
 3. **The migration assistant** — `inspect()` on the old backend,
    `plan()` on the new one, and a diff in between. The shape is already
    there: both ends speak blueprints.
