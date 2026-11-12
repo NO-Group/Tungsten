@@ -85,7 +85,12 @@ describe('the backend picker', () => {
     const note = container.querySelector('.backend-planned')?.textContent ?? ''
     expect(note).toContain('Not built yet')
     expect(note).toContain('Project ID')
-    expect(note).toContain('Supabase')
+    // The list of what works is read off the registry, so shipping an
+    // adapter updates this sentence instead of leaving it lying.
+    for (const choice of CHOICES.filter((entry) => entry.status !== 'planned')) {
+      expect(note).toContain(choice.label)
+    }
+    expect(note).not.toContain('Firebase ')
   })
 
   it('collects credentials and will not test until it has them', () => {
@@ -146,6 +151,17 @@ describe('the backend picker', () => {
     // policy is not going into a page anyone can view-source.
     expect(shipped).toContain('Service role key')
     expect(shipped).toContain('stays in the IDE')
+  })
+
+  it('distinguishes “not configured” from “the runtimes cannot speak it yet”', () => {
+    // Appwrite works in the IDE and has nothing missing, so telling the
+    // user the project “has no complete backend yet” would send them
+    // looking for a field they already filled in.
+    mount({ adapter: 'appwrite', config: { url: 'https://cloud.appwrite.io/v1', projectId: 'proj1' } })
+    const shipped = container.querySelector('.backend-shipped')?.textContent ?? ''
+    expect(shipped).toContain('cannot speak Appwrite yet')
+    expect(shipped).toContain('The IDE talks to Appwrite either way')
+    expect(shipped).not.toContain('no complete backend yet')
   })
 
   it('does not promise a built app an address that is half typed in', () => {

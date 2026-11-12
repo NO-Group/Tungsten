@@ -49,6 +49,12 @@ const GROUPS: Array<{ key: keyof Capabilities; label: string }> = [
   { key: 'schema', label: 'Schema' },
 ]
 
+/** `a, b and c` — an Oxford-comma-free list, for prose. */
+function listed(items: string[]): string {
+  if (items.length <= 1) return items[0] ?? 'Nothing'
+  return `${items.slice(0, -1).join(', ')} and ${items[items.length - 1]}`
+}
+
 /** `cursorPaging` reads badly in a table; `cursor paging` does not. */
 function words(key: string): string {
   return key.replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
@@ -62,7 +68,11 @@ export function BackendPanel({ choices, settings, onChange, onTest }: BackendPan
   // What a *built* app will do, which is a different question from
   // what the IDE can reach: a server credential is usable here and
   // must not be shipped in a page anyone can read.
-  const shipped = describeRuntimeProfile(runtimeProfileFor(settings))
+  const shipped = describeRuntimeProfile(runtimeProfileFor(settings), settings)
+  // Named from the registry rather than typed into the sentence: a
+  // hard-coded "Supabase and the self-hosted service work today" goes
+  // stale the moment an adapter ships, and nothing fails when it does.
+  const working = choices.filter((choice) => choice.status !== 'planned').map((choice) => choice.label)
 
   const choose = (id: string) => {
     setTest({ kind: 'idle' })
@@ -109,7 +119,7 @@ export function BackendPanel({ choices, settings, onChange, onTest }: BackendPan
           {planned ? (
             <p className="backend-planned">
               <ShieldQuestion size={12} /> Not built yet. It will need {selected.fields.map((field) => field.label).join(', ')}.
-              Supabase and the self-hosted service work today, and the canvas does not change when you move between them.
+              {' '}{listed(working)} work today, and the canvas does not change when you move between them.
             </p>
           ) : (
             <>

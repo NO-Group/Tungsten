@@ -2,8 +2,8 @@
  * The backend dropdown.
  *
  * Every backend Tungsten knows about, in the order a user should see
- * them, with the four that work implemented and the two that are
- * next declared rather than hidden. A planned adapter that appears in
+ * them, with the five that work implemented and the one that is still
+ * to come declared rather than hidden. A planned adapter that appears in
  * the list with a date is a roadmap; a planned adapter that appears and
  * then throws a stack trace is a bug report, so `create` on an
  * unbuilt adapter refuses with a sentence naming what to use instead.
@@ -25,6 +25,7 @@ import { supabaseAdapter } from './adapters/supabase'
 import { vortexAdapter } from './adapters/vortex'
 import { selfHostedAdapter } from './adapters/selfHosted'
 import { pocketbaseAdapter } from './adapters/pocketbase'
+import { appwriteAdapter } from './adapters/appwrite'
 
 /** An adapter that is on the roadmap and honest about it. */
 function planned(id: string, label: string, summary: string, fields: AdapterInfo['fields']): BackendAdapter {
@@ -47,17 +48,6 @@ export const firebaseAdapter = planned(
   [
     { key: 'projectId', label: 'Project ID' },
     { key: 'apiKey', label: 'Web API key', secret: true },
-  ],
-)
-
-export const appwriteAdapter = planned(
-  'appwrite',
-  'Appwrite',
-  'Open source, self-hostable, with databases, auth, storage and functions.',
-  [
-    { key: 'url', label: 'Endpoint', placeholder: 'https://cloud.appwrite.io/v1' },
-    { key: 'projectId', label: 'Project ID' },
-    { key: 'apiKey', label: 'API key', secret: true, optional: true },
   ],
 )
 

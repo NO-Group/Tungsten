@@ -44,7 +44,6 @@ import {
   type SchemaOperation,
   type SchemaPlan,
   type SelectOptions,
-  type Socket,
   type Subscription,
   type TableChange,
   type TableSubscribeOptions,
@@ -54,7 +53,7 @@ import {
   type UploadInput,
 } from '../contract'
 import { sqlForBlueprint } from '../sql'
-import { callJson, defaultSend, field, isTest, join, orderToParam } from './http'
+import { callJson, defaultSend, defaultSocket, field, isTest, join, orderToParam } from './http'
 
 export const SUPABASE_INFO: AdapterInfo = {
   id: 'supabase',
@@ -811,15 +810,6 @@ function parseFrame(data: unknown): { topic: string; event: string; payload: Rec
   } catch {
     return undefined
   }
-}
-
-/** The browser's WebSocket, or a refusal that explains itself. */
-function defaultSocket() {
-  const Constructor = (globalThis as unknown as { WebSocket?: new (url: string) => Socket }).WebSocket
-  if (!Constructor) {
-    return () => { throw new BackendError('offline', 'This build has no WebSocket, so realtime is unavailable.') }
-  }
-  return (endpoint: string) => new Constructor(endpoint)
 }
 
 export const supabaseAdapter: BackendAdapter = { info: SUPABASE_INFO, create }

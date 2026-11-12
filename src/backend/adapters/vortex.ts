@@ -45,7 +45,6 @@ import {
   type Row,
   type SchemaPlan,
   type SelectOptions,
-  type Socket,
   type Subscription,
   type TableChange,
   type TableSubscribeOptions,
@@ -54,7 +53,7 @@ import {
   type TungstenUser,
 } from '../contract'
 import { sqlForBlueprint } from '../sql'
-import { callJson, defaultSend, field, join } from './http'
+import { callJson, defaultSend, defaultSocket, field, join } from './http'
 
 /** Where a Vortex project lives until the user says otherwise. */
 export const VORTEX_DEFAULT_URL = 'https://api.vortex.dev'
@@ -594,14 +593,6 @@ function openVortexChannel(
       }
     },
   }
-}
-
-function defaultSocket() {
-  const Constructor = (globalThis as unknown as { WebSocket?: new (url: string) => Socket }).WebSocket
-  if (!Constructor) {
-    return () => { throw new BackendError('offline', 'This build has no WebSocket, so realtime is unavailable.') }
-  }
-  return (endpoint: string) => new Constructor(endpoint)
 }
 
 export const vortexAdapter: BackendAdapter = { info: VORTEX_INFO, create }

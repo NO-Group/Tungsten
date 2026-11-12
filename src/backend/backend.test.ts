@@ -99,13 +99,15 @@ const SELF = { adapter: 'self-hosted', config: { url: 'http://localhost:8787' } 
 /* -------------------------------------------------------- the catalogue */
 
 describe('the backend catalogue', () => {
-  it('offers six backends, four of them working today', () => {
+  it('offers six backends, five of them working today', () => {
     const choices = backendChoices()
     expect(choices.map((choice) => choice.id)).toEqual([
       'vortex', 'supabase', 'self-hosted', 'pocketbase', 'firebase', 'appwrite',
     ])
     const working = choices.filter((choice) => choice.status !== 'planned')
-    expect(working.map((choice) => choice.id)).toEqual(['vortex', 'supabase', 'self-hosted', 'pocketbase'])
+    expect(working.map((choice) => choice.id)).toEqual([
+      'vortex', 'supabase', 'self-hosted', 'pocketbase', 'appwrite',
+    ])
   })
 
   it('launches on Supabase, with Vortex waiting in preview', () => {

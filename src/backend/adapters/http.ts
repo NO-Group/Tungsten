@@ -14,6 +14,8 @@ import {
   type FilterTest,
   type HttpReply,
   type HttpSend,
+  type Socket,
+  type SocketOpen,
   type SortOrder,
 } from '../contract'
 
@@ -36,6 +38,21 @@ export function defaultSend(): HttpSend {
     return () => Promise.reject(new BackendError('offline', 'This build has no fetch, so it cannot reach a backend.'))
   }
   return (url, init) => global(url, init)
+}
+
+/**
+ * The WebSocket an adapter uses when the config did not inject one.
+ *
+ * Three adapters open realtime channels and all three need the same
+ * two lines; a build without `WebSocket` -- a worker, a test, Node
+ * before 22 -- gets a sentence rather than a ReferenceError.
+ */
+export function defaultSocket(): SocketOpen {
+  const Constructor = (globalThis as unknown as { WebSocket?: new (url: string) => Socket }).WebSocket
+  if (!Constructor) {
+    return () => { throw new BackendError('offline', 'This build has no WebSocket, so realtime is unavailable.') }
+  }
+  return (endpoint: string) => new Constructor(endpoint)
 }
 
 /** Maps a status onto the contract's vocabulary. */

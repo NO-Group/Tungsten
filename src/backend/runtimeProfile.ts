@@ -127,6 +127,9 @@ export function runtimeProfileFor(settings: BackendSettings): RuntimeProfile | u
         withheld: token ? [...withheld, 'Session token'] : withheld,
       }
     }
+    // Appwrite and anything added after it: the IDE speaks them
+    // through an adapter, but the four runtimes a build emits do not
+    // have the dialect yet, so nothing is baked in.
     default:
       return undefined
   }
@@ -139,8 +142,19 @@ export function runtimeProfileFor(settings: BackendSettings): RuntimeProfile | u
  * it is which address the app will call and which credential was left
  * out of it.
  */
-export function describeRuntimeProfile(profile: RuntimeProfile | undefined): string {
+export function describeRuntimeProfile(
+  profile: RuntimeProfile | undefined,
+  settings?: BackendSettings,
+): string {
   if (!profile) {
+    // Two different nothings. A backend that is configured and working
+    // in the IDE, but that the generated runtimes cannot speak yet, is
+    // not "no backend yet" -- and telling a user it is would send them
+    // looking for a field they have already filled in.
+    const adapter = settings ? adapterById(settings.adapter) : undefined
+    if (adapter && adapter.info.status !== 'planned' && settings && !missingFields(settings).length) {
+      return `Built apps cannot speak ${adapter.info.label} yet, so they will call the local Node service instead. The IDE talks to ${adapter.info.label} either way: the Data tab, the schema and the connection test all go to it.`
+    }
     return 'Built apps will call the local Node service on their own machine, because this project has no complete backend yet.'
   }
   const host = hostOf(profile.base)

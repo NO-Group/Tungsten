@@ -19,10 +19,10 @@ never knew which one it was talking to.
 │ schema & policies         │
 └───────────┬───────────────┘
             │
-   ┌────────┴─────────┬──────────────┬────────────┬───────────┐
-   ▼                  ▼              ▼            ▼           ▼
- Vortex           Supabase      Self-hosted   PocketBase   Firebase
- (preview)        (default)      (ready)        (ready)    (planned)
+   ┌──────────┬───────────┴──┬─────────────┬──────────┬──────────┐
+   ▼          ▼              ▼             ▼          ▼          ▼
+ Vortex    Supabase    Self-hosted    PocketBase   Appwrite   Firebase
+(preview)  (default)     (ready)        (ready)     (ready)   (planned)
 ```
 
 ## 1. The Universal Data Contract
@@ -132,7 +132,7 @@ until a human has seen it.
 
 ## 3. The adapters
 
-`src/backend/registry.ts` is the dropdown. Four work today; two are
+`src/backend/registry.ts` is the dropdown. Five work today; one is
 declared, listed and honest about not being built.
 
 | Adapter | Status | Notes |
@@ -141,8 +141,8 @@ declared, listed and honest about not being built.
 | **Supabase** | `default` | Launch backend. PostgREST, GoTrue, Storage, Phoenix channels, `/functions/v1` — spoken over the wire, no `@supabase/supabase-js`. |
 | **Self-hosted** | `ready` | The Node + SQLite service Tungsten itself generates (`Build the Backend Service`). localhost or a VPS; no account anywhere. |
 | **PocketBase** | `ready` | One Go binary with SQLite inside it. Collections API, file fields, superuser-token schema. No realtime here: PocketBase streams over Server-Sent Events, which these transports do not carry. |
+| **Appwrite** | `ready` | Open source and self-hostable. Databases of collections, accounts and sessions, buckets with image previews, functions, and realtime over a WebSocket. Creating collections and attributes needs a server API key, which stays in the IDE. |
 | Firebase | `planned` | Firestore, Firebase Auth, Cloud Functions. |
-| Appwrite | `planned` | Open source, self-hostable. |
 
 A planned adapter throws a sentence naming what to use instead, never a
 stack trace.
@@ -185,6 +185,24 @@ interface:
 - **Row-level security.** Postgres gets `enable row level security` and
   a dropped-and-recreated policy per action. SQLite has none, so the
   plan says so in a comment instead of pretending.
+- **Documents versus rows.** Appwrite namespaces its own fields with a
+  `$` and puts a write's fields inside `data`, so `rowFromDocument` and
+  `documentData` translate both ways: the canvas keeps saying `row.id`,
+  and a read-edit-save round trip does not fail on the fields the
+  backend added itself.
+- **Negation.** Appwrite's query language has no `not`. A negated test
+  is inverted operator by operator — `eq` becomes `notEqual`, `lt`
+  becomes `greaterThanEqual` — and refuses out loud when there is no
+  opposite to use, because sending the un-negated query would return
+  precisely the rows the user asked to exclude.
+- **Two kinds of credential.** An Appwrite session secret acts as the
+  signed-in person and an API key acts as the server; sent together the
+  key wins, and `GET /account` then answers “missing scope” for someone
+  who is in fact signed in. Every call picks one and sends only that.
+- **Realtime without a filter.** Appwrite's channels are per
+  collection, so `kinds` and `where` are applied as events arrive — the
+  rows still travel — and `since` is refused, because there is no
+  change log to replay from.
 
 ### The SQL
 
@@ -281,10 +299,9 @@ the architect reviews without a plan.
 
 Three things the panel refuses to do:
 
-- **Hide what is not built.** Firebase and Appwrite are listed,
-  disabled, with the fields they will need. A dropdown that silently
-  omits Firebase answers "does Tungsten support Firebase?" with
-  nothing at all.
+- **Hide what is not built.** Firebase is listed, disabled, with the
+  fields it will need. A dropdown that silently omits Firebase answers
+  “does Tungsten support Firebase?” with nothing at all.
 - **Keep credentials across a change of backend.** Switching adapter
   clears the config. Carrying a Supabase service key into another
   vendor's field is useless and a way to paste it somewhere it does not
@@ -382,13 +399,37 @@ tests, and `wire.test.ts` asserts the same facts against the Dart, the
 Kotlin and the Swift — so an Android build and an iOS build of one
 project cannot drift apart about the backend they share.
 
+### When a backend has no dialect
+
+The adapter list and the dialect table are not the same list, and
+Appwrite is currently in the first but not the second. The IDE talks to
+an Appwrite project in full; a build of that project falls back to the
+generated Node service, because emitting a runtime that calls routes
+no one implemented would be worse than emitting one that works.
+`runtimeProfileFor` returns `undefined` for it, and the Backend panel
+says which of the two is happening — *“built apps cannot speak Appwrite
+yet”*, not *“this project has no complete backend”*, which would send
+someone hunting for a field they have already filled in.
+
 ## 7. What is next
 
 In order:
 
-1. **Firebase, then Appwrite.** PocketBase shipped; its realtime waits
-   on a Server-Sent Events transport beside `HttpSend` and
-   `SocketOpen`, which is a contract change, not an adapter one.
-2. **The migration assistant** — `inspect()` on the old backend,
+1. **The Appwrite dialect for built apps.** The adapter shipped, so the
+   IDE — the Data tab, the schema, the connection test — talks to
+   Appwrite today. What a *built* app speaks is the separate table in
+   `src/builder/targets/wire.ts`, which has no Appwrite entry yet, so a
+   build still calls the generated Node service and the Backend panel
+   says that in those words rather than implying the project is
+   unfinished. Adding it is a filter style, a `data` wrapper on writes,
+   a `documentId` field, and a two-step magic-link sign-in.
+2. **Firebase.** The last planned adapter. Firestore has no schema to
+   apply and its REST filters are structured queries, so it will cover
+   less of the contract than the others — declared honestly in
+   `capabilities`, rather than stubbed.
+3. **PocketBase realtime**, which waits on a Server-Sent Events
+   transport beside `HttpSend` and `SocketOpen`: a contract change, not
+   an adapter one.
+4. **The migration assistant** — `inspect()` on the old backend,
    `plan()` on the new one, and a diff in between. The shape is already
    there: both ends speak blueprints.

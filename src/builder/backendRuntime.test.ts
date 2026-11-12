@@ -26,7 +26,7 @@ import { generateProgram } from './codeGenerator'
 import { schemaFromGraph } from './uiSchema'
 import { previewHtml, PREVIEW_CHANNEL, type PreviewMessage } from './previewRuntime'
 import { compile } from './compile'
-import { runtimeProfileFor, type RuntimeProfile } from '../backend/runtimeProfile'
+import { describeRuntimeProfile, runtimeProfileFor, type RuntimeProfile } from '../backend/runtimeProfile'
 import type { BackendSettings } from '../backend/registry'
 
 const registry = createRegistry(builtinBlocks)
@@ -147,6 +147,22 @@ describe('the backend profile', () => {
   it('says nothing about a backend that is not configured yet', () => {
     expect(runtimeProfileFor({ adapter: 'supabase', config: { url: 'https://x.supabase.co' } })).toBeUndefined()
     expect(runtimeProfileFor({ adapter: 'firebase', config: { projectId: 'p', apiKey: 'k' } })).toBeUndefined()
+  })
+
+  it('separates a backend it cannot emit from one that is half filled in', () => {
+    // Appwrite's adapter is built and nothing is missing from the
+    // settings, but no runtime speaks its dialect yet, so a build
+    // falls back to the generated service rather than calling routes
+    // that do not exist.
+    const appwrite = { adapter: 'appwrite', config: { url: 'https://cloud.appwrite.io/v1', projectId: 'proj1' } }
+    expect(runtimeProfileFor(appwrite)).toBeUndefined()
+
+    const told = describeRuntimeProfile(undefined, appwrite)
+    expect(told).toContain('cannot speak Appwrite yet')
+    expect(told).toContain('local Node service')
+    // The other nothing: a field is genuinely missing.
+    const half = { adapter: 'supabase', config: { url: 'https://x.supabase.co' } }
+    expect(describeRuntimeProfile(undefined, half)).toContain('no complete backend yet')
   })
 
   it('normalises the address and fills in the defaults each backend has', () => {
