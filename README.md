@@ -699,6 +699,53 @@ whenever a JWT happens to expire.
 The engine, the arithmetic and the invariants are in `src/ai/`, and the
 full design is in [docs/CREDITS.md](docs/CREDITS.md).
 
+## What the free tier costs, also enforced in code
+
+Vortex is Tungsten's own managed backend. Hosting people who pay
+nothing is a real invoice, so `src/vortex/` prices it from a dated
+November 2026 rate card and `src/vortex/vortex.test.ts` keeps the
+arithmetic honest.
+
+Two 2026 prices decide the whole architecture. Hetzner's June
+adjustment pushed dedicated-vCPU cloud up about 170% while bare metal
+barely moved — an 8 GB CCX13 is now ~$50.49 a month and a 64 GB AX42 is
+~$49, a 7.5x gap per gigabyte of RAM — so an instance per free project
+went from generous to absurd. And Cloudflare R2 charges **nothing** for
+egress against ~$0.09/GB on S3, which removes the line item that
+usually kills bootstrapped infrastructure instead of rationing it.
+
+So free tenants share one cluster on owned metal: a schema each, a
+database role each with a forced `search_path`, compiled row-level
+security, a tenant id checked at the gateway, no raw SQL, statement
+timeouts, nightly per-schema dumps. Seven layers, each recorded in
+`ISOLATION_CONTROLS` with the specific failure it survives, because
+"we use RLS" is a sentence and this is a checklist.
+
+Idle free projects sleep after seven days: 90 MB awake, 2 MB asleep,
+~900 ms to wake. A typical free project is awake forty hours a month,
+which averages 6.8 MB — a 13x reduction in the resource that actually
+binds the fleet.
+
+| Free projects | Boxes | Per month | Per project | One instance each |
+| --- | --- | --- | --- | --- |
+| 1,000 | 1 | $81.78 | $0.052 | $50,490 |
+| 5,000 | 1 | $105.65 | $0.015 | $252,450 |
+| 20,000 | 4 | $357.34 | $0.016 | $1,009,800 |
+| 50,000 | 9 | $811.73 | $0.016 | $2,524,500 |
+
+Five thousand free projects fit on one $49 machine at about a penny
+and a half each, and **twelve Core subscribers pay for all of them** in
+the worst month anyone can construct — a 0.24% break-even conversion
+rate, against the 1-3% self-serve developer tools actually convert at.
+A test asserts the fleet fits inside the hosting allowance the plans
+already budget, so the two files cannot drift apart.
+
+Breaching a quota never deletes data and never takes a project
+offline: the database ceiling blocks writes while reads keep serving,
+full storage blocks uploads while existing files still download, and
+traffic limits throttle rather than cut. The reasoning is in
+[docs/VORTEX.md](docs/VORTEX.md).
+
 ## Extending Tungsten
 
 Four extension points, all read from the workspace you have open:
