@@ -194,3 +194,56 @@ ${blocks.join('\n\n')}
 export function tableNames(schema: DataSchema): string[] {
   return schema.tables.map((table) => table.name)
 }
+
+export type SchemaMerge = {
+  schema: DataSchema
+  /** Tables that did not exist before. */
+  added: string[]
+  /** Tables that existed and gained columns. */
+  extended: string[]
+}
+
+/**
+ * Folds an incoming schema into the drawn one, additively.
+ *
+ * Additive is the whole point. The architect's gate is where removing
+ * a column gets discussed and approved; by the time a blueprint lands
+ * on the canvas it has been approved for what it adds. So a table that
+ * already exists keeps its name, its column order and every column it
+ * has — including ones the incoming schema never heard of — and simply
+ * gains the new ones on the end. A column that exists under the same
+ * name is left alone rather than retyped, because silently turning a
+ * `text` column into a `number` is how drawn work disappears.
+ */
+export function mergeSchema(current: DataSchema, incoming: DataSchema): SchemaMerge {
+  const tables = current.tables.map((table) => ({ ...table, columns: [...table.columns] }))
+  const added: string[] = []
+  const extended: string[] = []
+
+  for (const table of incoming.tables) {
+    const existing = tables.find((entry) => entry.name === table.name)
+    if (!existing) {
+      tables.push({ ...table, columns: table.columns.map((column) => ({ ...column })) })
+      added.push(table.name)
+      continue
+    }
+    let grew = false
+    for (const column of table.columns) {
+      if (existing.columns.some((entry) => entry.name === column.name)) continue
+      existing.columns.push({ ...column })
+      grew = true
+    }
+    if (grew) extended.push(table.name)
+  }
+
+  return { schema: { tables }, added, extended }
+}
+
+/** What `mergeSchema` did, for the notification line. */
+export function describeMerge(merge: SchemaMerge): string {
+  const parts: string[] = []
+  if (merge.added.length) parts.push(`Added ${merge.added.join(', ')}.`)
+  if (merge.extended.length) parts.push(`Extended ${merge.extended.join(', ')}.`)
+  if (!parts.length) return 'Nothing to add; the canvas already has all of it.'
+  return parts.join(' ')
+}

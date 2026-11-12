@@ -185,20 +185,86 @@ trusts. Identifiers go through `quoteIdentifier`, which throws rather
 than emits anything that is not an identifier; values are bound, never
 inlined.
 
-## 4. What is next
+## 4. The AI Architect
+
+`src/backend/architect.ts` and the **Architect** tab in the builder.
+You describe the app in English; it returns a blueprint; you read what
+applying it would do and approve or discard. It is deliberately boring
+in four specific ways, each of which is a test.
+
+**A missing policy fails closed.** `secureDefaults` fills an absent
+`policies` block with `PRIVATE_POLICIES` and an absent `bucket.public`
+with `false`. It only ever *adds* restrictions — a blueprint that
+explicitly declares `read: 'public'` or a public bucket keeps it, so
+`summariseBlueprint` can raise a caution about it. Silently locking
+down something the model deliberately opened would be a lie of the same
+family as silently opening it.
+
+**An unparseable reply is a refusal, not a guess.** `extractJson`
+pulls the one JSON object out of a reply that may be wrapped in prose
+or a fenced block, and `parseBlueprint` validates it. If either fails,
+the panel says the model replied with something that is not a
+blueprint. A blueprint is a security document; repairing half-written
+JSON into something plausible is how a `nobody` policy becomes a
+`public` one.
+
+**It works with no gateway at all.** With no AI configured,
+`offlineDraft` runs the deterministic `planSchema` from the builder —
+the same code path behind the Data tab's draft box — and labels the
+result `offline`. The tab says `offline` rather than disappearing,
+because a backend designer that only exists for people who have paid
+for credits is a sales page, not a feature.
+
+**It never applies anything.** `createArchitect().draft()` returns a
+blueprint and spends credits; `apply()` exists but the panel calls it
+only from the approve button, and only with the blueprint the user was
+shown. `review(blueprint, plan?)` builds what the gate renders:
+
+| Field | What it holds | Effect |
+| --- | --- | --- |
+| `destructive` | Operations flagged `destructive` by the adapter | Rendered first, in their own red block |
+| `blockers` | `plan.problems`, or a blueprint with no tables | Approve is **disabled** |
+| `cautions` | `summariseBlueprint` warnings, `mode: 'script'`, destructive work | Shown; approve stays enabled |
+| `approvable` | `blockers.length === 0` | The button |
+
+The split between blocker and caution is the only judgement call in the
+file, and it goes this way on purpose: a gate that refuses judgement
+calls — that blocks on anything mildly alarming — is a gate people
+learn to route around. Destructive work is *shown loudly and allowed*,
+because dropping a column is sometimes exactly the migration you asked
+for. A plan the backend itself rejected is not approvable, because
+there is nothing to approve.
+
+Destructive operations are also pulled **out** of the collapsed
+statement list and shown above the schema table. A `drop column` at
+line 14 of a `<details>` nobody opened is a thing people approve by
+accident exactly once.
+
+### Landing it on the canvas
+
+Approval calls `schema.apply` when a backend is configured, then
+`adoptBlueprint` on the builder, which merges through
+`mergeSchema` in `src/builder/dataSchema.ts`. The merge is **additive**:
+an existing table keeps its name, its column order and every column it
+has — including ones drawn by hand that the blueprint never mentioned —
+and gains the new columns on the end. An existing column is not
+retyped. Removal and renaming are discussed in the gate, in words, or
+they do not happen.
+
+## 5. What is next
 
 In order:
 
 1. **The project backend picker** — the dropdown, the credential fields,
    a Test Connection button, and `BackendSettings` saved with the
-   project.
+   project. Until it exists the architect's `plan()` and `apply()` have
+   no adapter to call, so the gate runs without a plan and the draft
+   lands on the canvas only.
 2. **The blocks on the contract** — the canvas's `db.*`, `auth.*` and
    `storage.*` blocks call the active adapter instead of the generated
    service's routes directly. The generated runtimes get the same
    treatment, one language at a time.
-3. **The AI Architect panel** — prompt → blueprint → the approval gate →
-   `schema.apply`, with the plan on screen before anything runs.
-4. **Firebase, Appwrite, PocketBase**, in that order.
-5. **The migration assistant** — `inspect()` on the old backend,
+3. **Firebase, Appwrite, PocketBase**, in that order.
+4. **The migration assistant** — `inspect()` on the old backend,
    `plan()` on the new one, and a diff in between. The shape is already
    there: both ends speak blueprints.

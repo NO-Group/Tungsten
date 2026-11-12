@@ -47,7 +47,15 @@ import {
   type TargetKind,
   type Toolchain,
 } from '../project/targets'
-import { EMPTY_SCHEMA, type Column, type DataSchema, type Table } from './dataSchema'
+import {
+  EMPTY_SCHEMA,
+  describeMerge,
+  mergeSchema,
+  type Column,
+  type DataSchema,
+  type Table,
+} from './dataSchema'
+import { schemaFromBlueprint, type Blueprint } from '../backend/blueprint'
 import { applyPlan, describePlan, planSchema } from './schemaPlanner'
 import { scaffoldFor } from './tableScaffold'
 import { previewHtml } from './previewRuntime'
@@ -267,6 +275,8 @@ export type BuilderState = {
   setBackend: (url: string) => void
   /** Drafts tables from a plain-English description of the app. */
   draftSchema: (description: string) => void
+  /** Lands an approved blueprint on the canvas schema. Additive only. */
+  adoptBlueprint: (blueprint: Blueprint) => void
   /** Builds a heading, a form and a list for one drawn table. */
   scaffoldTable: (index: number) => void
   /** A line the preview logged. */
@@ -933,6 +943,26 @@ export function useBuilder(host: BuilderHost): BuilderState {
    * than a request: the user types what the app is about, the tables
    * appear, and everything they already drew is left exactly as it was.
    */
+  /**
+   * Lands an approved blueprint on the drawn schema.
+   *
+   * Additive, deliberately: a table that is already there keeps its
+   * name and gains whatever columns the blueprint adds, and nothing is
+   * renamed or removed. The architect's gate is where destruction is
+   * discussed; by the time a blueprint reaches here it has been
+   * approved for what it adds, not for what it might quietly take away.
+   */
+  const adoptBlueprint = useCallback((blueprint: Blueprint) => {
+    const incoming = schemaFromBlueprint(blueprint)
+    let message = ''
+    setSchema((current) => {
+      const merge = mergeSchema(current, incoming)
+      message = describeMerge(merge)
+      return merge.schema
+    })
+    notify(message)
+  }, [notify])
+
   const draftSchema = useCallback((description: string) => {
     const plan = planSchema(description)
     let outcome = { added: [] as string[], skipped: [] as string[] }
@@ -1172,6 +1202,7 @@ export function useBuilder(host: BuilderHost): BuilderState {
     removeVariable,
     addTable,
     draftSchema,
+    adoptBlueprint,
     scaffoldTable,
     renameTable,
     removeTable,

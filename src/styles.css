@@ -2282,3 +2282,53 @@ kbd { font-family: 'JetBrains Mono', monospace; }
 .targets-list button:disabled { opacity: .4; cursor: default; }
 .targets-list li.enabled button { color: var(--accent); }
 .targets-summary { margin: 8px 0 0; font-size: 11px; color: var(--faint); }
+
+/* The AI Architect, and the gate in front of it. */
+.architect { overflow-y: auto; padding: 10px 12px 14px; display: grid; gap: 12px; align-content: start; }
+.architect-ask { display: grid; gap: 7px; }
+.architect-ask textarea {
+  width: 100%; padding: 8px 9px; resize: vertical; font: inherit; font-size: 11.5px; line-height: 1.5;
+  background: var(--raised); border: 1px solid var(--border); border-radius: 6px; color: var(--text);
+}
+.architect-ask textarea:focus { outline: none; border-color: var(--accent); }
+.architect-ask-row { display: flex; align-items: center; gap: 10px; }
+.architect-ask-row button { display: inline-flex; align-items: center; gap: 5px; }
+.architect-credits { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--cyan); }
+.architect-existing { font-size: 10.5px; color: var(--muted); }
+.architect-failed { margin: 0; font-size: 11px; color: var(--danger); }
+.architect-done { margin: 0; display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--accent); }
+.architect-gate {
+  display: grid; gap: 10px; padding: 10px 11px;
+  background: var(--raised); border: 1px solid var(--border); border-radius: 7px;
+}
+.architect-gate > header { display: flex; align-items: center; gap: 6px; color: var(--accent); }
+.architect-gate > header strong { font-size: 11.5px; color: var(--text-strong); }
+.architect-source { margin-left: auto; font-size: 10.5px; color: var(--muted); }
+.architect-blockers, .architect-cautions, .architect-notes {
+  list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; font-size: 11px;
+}
+.architect-blockers li { color: var(--danger); }
+.architect-cautions li { color: var(--warning); }
+.architect-notes li { color: var(--muted); }
+.architect-destructive {
+  padding: 8px 9px; border: 1px solid var(--danger); border-radius: 6px; background: var(--bg);
+}
+.architect-destructive p {
+  margin: 0 0 5px; display: flex; align-items: center; gap: 5px; font-size: 11px; color: var(--danger);
+}
+.architect-destructive ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 3px; font-size: 10.5px; }
+.architect-tables { width: 100%; border-collapse: collapse; font-size: 11px; }
+.architect-tables th {
+  padding: 0 8px 4px 0; text-align: left; font-size: 9.5px; font-weight: 500;
+  letter-spacing: .08em; text-transform: uppercase; color: var(--faint);
+}
+.architect-tables td { padding: 4px 8px 4px 0; vertical-align: top; border-top: 1px solid var(--border); }
+.architect-tables td:first-child { color: var(--text-strong); white-space: nowrap; }
+.architect-columns { font-family: var(--mono); font-size: 10.5px; color: var(--text); }
+.architect-policies { color: var(--muted); }
+.architect-extras { margin: 0; font-size: 10.5px; color: var(--muted); }
+.architect-sql summary { font-size: 10.5px; color: var(--cyan); cursor: pointer; }
+.architect-sql ol { margin: 6px 0 0; padding-left: 18px; display: grid; gap: 4px; }
+.architect-sql code { font-size: 10px; color: var(--text); overflow-wrap: anywhere; }
+.architect-actions { display: flex; gap: 8px; }
+.architect-actions button { display: inline-flex; align-items: center; gap: 5px; }

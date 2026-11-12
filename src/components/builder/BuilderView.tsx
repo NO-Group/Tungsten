@@ -28,6 +28,11 @@ import { targetInfo, type Project } from '../../project/targets'
 import { TargetsPanel } from './TargetsPanel'
 import { AiUsagePanel } from './AiUsagePanel'
 import { useAiWallet, type AiWallet } from '../../ai/useAiWallet'
+import { createArchitect } from '../../backend/architect'
+import type { Gateway } from '../../ai/gateway'
+import type { TungstenSchema } from '../../backend/contract'
+import { blueprintFromSchema } from '../../backend/blueprint'
+import { ArchitectPanel } from './ArchitectPanel'
 import { formatCredits, type EngineId } from '../../ai'
 import type { BuilderState } from '../../builder/useBuilder'
 import { BUILDER_SYNC_PATH } from '../../builder/fileSync'
@@ -58,6 +63,10 @@ export type BuilderViewProps = {
    * same browser store.
    */
   wallet?: AiWallet
+  /** The metered gateway, when one is configured. Without it the architect works offline. */
+  gateway?: Gateway
+  /** The configured backend's schema surface, for plan and apply. */
+  schema?: TungstenSchema
   /** The engine the whole workbench will spend on, when it is lifted. */
   engine?: EngineId
   onEngineChange?: (engine: EngineId) => void
@@ -83,6 +92,12 @@ function quickTargets(project: Project): Array<{ id: CompileTarget; label: strin
   ]
 }
 
+/**
+ * The offline architect. One instance: it holds no state worth keeping
+ * apart, and a new one per render would be a new object per keystroke.
+ */
+const OFFLINE_ARCHITECT = createArchitect()
+
 export function BuilderView(props: BuilderViewProps) {
   const { builder, editorOptions, theme, onExport, onOpenFile, onBuild, onRunServer, onClose } = props
   const { graph, registry, report, program, code, parseError } = builder
@@ -92,7 +107,9 @@ export function BuilderView(props: BuilderViewProps) {
   const [tool, setTool] = useState<ToolId>('pick')
   const [inspectorOpen, setInspectorOpen] = useState(true)
   const [rightPane, setRightPane] = useState<'code' | 'preview'>('code')
-  const [bottomPane, setBottomPane] = useState<'integrity' | 'data' | 'state' | 'targets' | 'ai'>('integrity')
+  const [bottomPane, setBottomPane] = useState<
+    'integrity' | 'data' | 'state' | 'targets' | 'ai' | 'architect'
+  >('integrity')
   // The wallet the assistant spends from, and the engine it will use
   // next. Both live here rather than in `useBuilder` because neither
   // belongs in a saved project file: one is an account, one is a
@@ -102,6 +119,16 @@ export function BuilderView(props: BuilderViewProps) {
   // fallback cannot disagree with the real one — it simply goes unused.
   const ownWallet = useAiWallet()
   const aiWallet = props.wallet ?? ownWallet
+  // The architect spends from the same wallet the assistant does, and
+  // always on Precise: schema design is the archetypal case for the
+  // engine whose summary reads "architecture, migrations, nasty bugs",
+  // and it is not the place to save three credits. With no gateway
+  // there is nothing to call, so the deterministic planner drafts
+  // instead and the tab says `offline` rather than disappearing.
+  const architect = useMemo(
+    () => (props.gateway ? createArchitect({ gateway: props.gateway, schema: props.schema }) : undefined),
+    [props.gateway, props.schema],
+  )
   const [ownEngine, setOwnEngine] = useState<EngineId>('balanced')
   const engine = props.engine ?? ownEngine
   const setEngine = props.onEngineChange ?? setOwnEngine
@@ -457,6 +484,13 @@ export function BuilderView(props: BuilderViewProps) {
                 Targets
                 <span className="builder-problem-counts">{builder.project.targets.length}</span>
               </button>
+              <button
+                className={bottomPane === 'architect' ? 'active' : ''}
+                onClick={() => setBottomPane('architect')}
+              >
+                Architect
+                <span className="builder-problem-counts">{architect ? 'AI' : 'offline'}</span>
+              </button>
               <button className={bottomPane === 'ai' ? 'active' : ''} onClick={() => setBottomPane('ai')}>
                 AI
                 <span className="builder-problem-counts">{formatCredits(aiWallet.balance.total)} credits</span>
@@ -521,6 +555,23 @@ export function BuilderView(props: BuilderViewProps) {
                 onChangeToolchain={builder.setToolchain}
                 onBuild={onBuild}
                 onRunServer={onRunServer}
+              />
+            ) : bottomPane === 'architect' ? (
+              <ArchitectPanel
+                onDraft={(description) =>
+                  (architect ?? OFFLINE_ARCHITECT).draft({
+                    description,
+                    name: builder.project.name,
+                    existing: blueprintFromSchema(builder.schema, { name: builder.project.name }),
+                  })
+                }
+                onPlan={architect ? (blueprint) => architect.plan(blueprint) : undefined}
+                onApply={async (gate) => {
+                  if (architect) await architect.apply(gate.blueprint)
+                  builder.adoptBlueprint(gate.blueprint)
+                }}
+                credits={architect ? aiWallet.balance.total : undefined}
+                existingTables={builder.schema.tables.map((table) => table.name)}
               />
             ) : (
               <DataSchemaPanel

@@ -2176,6 +2176,7 @@ export default function App({ onReady }: AppProps = {}) {
                 wallet={aiWallet}
                 engine={aiEngine}
                 onEngineChange={setAiEngine}
+                gateway={aiGateway}
                 onClose={() => setBuilderOpen(false)}
               />
             ) : (
