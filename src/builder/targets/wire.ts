@@ -1,7 +1,7 @@
 /**
  * One backend's wire protocol, as data the emitters can read.
  *
- * The web runtime carries all four dialects and picks one at run time,
+ * The web runtime carries every dialect and picks one at run time,
  * because the same page is also the preview and the preview can be
  * repointed. A generated Kotlin, Swift or Dart app is nothing of the
  * sort: it is built for one project, whose backend is known at emit
@@ -31,12 +31,31 @@ export type FilterStyle =
   | 'pocketbase'
   /** A filter tree in the body of a POST. */
   | 'tree'
+  /** `?queries[0]={"method":"equal",…}`: one JSON document per test. */
+  | 'queries'
 
 /** Where the rows are in a reply. `array` means the reply *is* the rows. */
-export type ListEnvelope = 'rows' | 'items' | 'array'
+export type ListEnvelope = 'rows' | 'items' | 'array' | 'documents'
 
 /** Where one row is. `self` means the reply is the row; `first` takes [0]. */
 export type RowEnvelope = 'row' | 'self' | 'first'
+
+/** A write: the body, how it is wrapped, and what comes back. */
+export type WriteStep = {
+  method: 'POST' | 'PATCH'
+  path: string
+  /** The key the fields are nested under, when they are. */
+  wrap: string | null
+  /**
+   * An id the *client* generates, sent beside the body.
+   *
+   * Appwrite wants `documentId` on every create and takes `unique()`
+   * as “you pick one”. Everyone else lets the server decide.
+   */
+  idField: { key: string; value: string } | null
+  prefer: string | null
+  envelope: RowEnvelope
+}
 
 export type WirePlan = {
   dialect: RuntimeProfile['dialect']
@@ -47,18 +66,39 @@ export type WirePlan = {
   token: { header: string; prefix: string }
 
   list: { method: 'GET' | 'POST'; path: string; filter: FilterStyle; envelope: ListEnvelope }
-  create: { method: 'POST'; path: string; wrap: string | null; prefer: string | null; envelope: RowEnvelope }
-  modify: { method: 'PATCH'; path: string; wrap: string | null; prefer: string | null; envelope: RowEnvelope }
+  create: WriteStep & { method: 'POST' }
+  modify: WriteStep & { method: 'PATCH' }
   destroy: { method: 'DELETE'; path: string }
 
-  /** `record` is PocketBase's: a confirmed password, and no session back. */
-  signUp: { path: string; body: 'credentials' | 'record'; thenSignIn: boolean }
-  signIn: { path: string; identity: 'email' | 'identity' }
+  /**
+   * Fields this backend names differently from the canvas.
+   *
+   * Appwrite calls a row's id `$id`; every block a person drew says
+   * `row.id`. The pairs are `[on the wire, in the app]`, applied to
+   * every row coming back and reversed — dropped, rather than
+   * renamed — on the way out, because a document cannot be written
+   * with the fields the backend owns. Empty for everyone else, and the
+   * emitters then generate nothing at all.
+   */
+  renames: Array<[string, string]>
+
+  /**
+   * `record` is PocketBase's: a confirmed password, and no session
+   * back. `account` is Appwrite's: a `userId` the client invents, and
+   * no session back either.
+   */
+  signUp: { path: string; body: 'credentials' | 'record' | 'account'; thenSignIn: boolean }
+  /**
+   * `then: 'session'` is for backends whose sign-in reply is a
+   * *session* rather than a user — it carries the token and nothing
+   * the app can display, so the runtime reads the account afterwards.
+   */
+  signIn: { path: string; identity: 'email' | 'identity'; then: 'session' | null }
   session: { method: 'GET' | 'POST'; path: string }
   /** Null where signing out is a local act only. */
-  signOut: { method: 'POST'; path: string } | null
+  signOut: { method: 'POST' | 'DELETE'; path: string } | null
   /** `post` asks the backend for the authorize URL; `url` builds it. */
-  oauth: { kind: 'post' | 'url'; path: string }
+  oauth: { kind: 'post' | 'url'; path: string; suffix: string }
   tokenKey: string
   /** Empty means the reply is the user. */
   userKey: string
@@ -74,26 +114,56 @@ export type WirePlan = {
     publicPath: string | null
     /** The uploaded record's id goes in the URL, PocketBase style. */
     idInPath: boolean
+    /** Where that id is in the reply. */
+    idKey: string
+    /** Where the stored *filename* is, when the URL needs that too. */
+    nameKey: string | null
+    /** Text parts sent beside the file in a multipart body. */
+    fields: Array<[string, string]>
   }
 }
 
 /** The generated Node + SQLite service: the fallback, and the original. */
 const TUNGSTEN: Omit<WirePlan, 'base' | 'headers' | 'token' | 'dialect'> = {
   list: { method: 'GET', path: '/data/{table}', filter: 'pairs', envelope: 'rows' },
-  create: { method: 'POST', path: '/data/{table}', wrap: null, prefer: null, envelope: 'row' },
-  modify: { method: 'PATCH', path: '/data/{table}/{id}', wrap: null, prefer: null, envelope: 'row' },
+  create: { method: 'POST', path: '/data/{table}', wrap: null, idField: null, prefer: null, envelope: 'row' },
+  modify: { method: 'PATCH', path: '/data/{table}/{id}', wrap: null, idField: null, prefer: null, envelope: 'row' },
   destroy: { method: 'DELETE', path: '/data/{table}/{id}' },
+  renames: [],
   signUp: { path: '/auth/sign-up', body: 'credentials', thenSignIn: false },
-  signIn: { path: '/auth/sign-in', identity: 'email' },
+  signIn: { path: '/auth/sign-in', identity: 'email', then: null },
   session: { method: 'GET', path: '/auth/session' },
   signOut: { method: 'POST', path: '/auth/sign-out' },
-  oauth: { kind: 'post', path: '/auth/oauth' },
+  oauth: { kind: 'post', path: '/auth/oauth', suffix: '' },
   tokenKey: 'token',
   userKey: 'user',
-  upload: { method: 'POST', path: '/storage/{bucket}', form: false, urlKey: 'url', publicPath: null, idInPath: false },
+  upload: {
+    method: 'POST',
+    path: '/storage/{bucket}',
+    form: false,
+    urlKey: 'url',
+    publicPath: null,
+    idInPath: false,
+    idKey: 'id',
+    nameKey: null,
+    fields: [],
+  },
 }
 
 const DEFAULT_TOKEN = { header: 'authorization', prefix: 'Bearer ' }
+
+/**
+ * Appwrite's own fields, and what the canvas calls them.
+ *
+ * A block drawn against a table says `row.id` and `row.created_at`
+ * whatever the backend underneath is; these three renames are the whole
+ * of keeping that promise here.
+ */
+const APPWRITE_FIELDS: Array<[string, string]> = [
+  ['$id', 'id'],
+  ['$createdAt', 'created_at'],
+  ['$updatedAt', 'updated_at'],
+]
 
 /**
  * The plan for a project's backend.
@@ -117,14 +187,15 @@ export function wirePlan(profile: RuntimeProfile | undefined): WirePlan {
         list: { method: 'GET', path: '/rest/v1/{table}', filter: 'postgrest', envelope: 'array' },
         // Without `return=representation` PostgREST answers 201 with an
         // empty body, and the block's "saved row" output is nothing.
-        create: { method: 'POST', path: '/rest/v1/{table}', wrap: null, prefer: 'return=representation', envelope: 'first' },
-        modify: { method: 'PATCH', path: '/rest/v1/{table}?id=eq.{id}', wrap: null, prefer: 'return=representation', envelope: 'first' },
+        create: { method: 'POST', path: '/rest/v1/{table}', wrap: null, idField: null, prefer: 'return=representation', envelope: 'first' },
+        modify: { method: 'PATCH', path: '/rest/v1/{table}?id=eq.{id}', wrap: null, idField: null, prefer: 'return=representation', envelope: 'first' },
         destroy: { method: 'DELETE', path: '/rest/v1/{table}?id=eq.{id}' },
+        renames: [],
         signUp: { path: '/auth/v1/signup', body: 'credentials', thenSignIn: false },
-        signIn: { path: '/auth/v1/token?grant_type=password', identity: 'email' },
+        signIn: { path: '/auth/v1/token?grant_type=password', identity: 'email', then: null },
         session: { method: 'GET', path: '/auth/v1/user' },
         signOut: { method: 'POST', path: '/auth/v1/logout' },
-        oauth: { kind: 'url', path: '/auth/v1/authorize?provider=' },
+        oauth: { kind: 'url', path: '/auth/v1/authorize?provider=', suffix: '' },
         tokenKey: 'access_token',
         userKey: 'user',
         upload: {
@@ -134,6 +205,9 @@ export function wirePlan(profile: RuntimeProfile | undefined): WirePlan {
           urlKey: null,
           publicPath: '/storage/v1/object/public/{bucket}/{name}',
           idInPath: false,
+          idKey: 'id',
+          nameKey: null,
+          fields: [],
         },
       }
 
@@ -142,17 +216,18 @@ export function wirePlan(profile: RuntimeProfile | undefined): WirePlan {
         dialect: 'pocketbase',
         ...shared,
         list: { method: 'GET', path: '/api/collections/{table}/records', filter: 'pocketbase', envelope: 'items' },
-        create: { method: 'POST', path: '/api/collections/{table}/records', wrap: null, prefer: null, envelope: 'self' },
-        modify: { method: 'PATCH', path: '/api/collections/{table}/records/{id}', wrap: null, prefer: null, envelope: 'self' },
+        create: { method: 'POST', path: '/api/collections/{table}/records', wrap: null, idField: null, prefer: null, envelope: 'self' },
+        modify: { method: 'PATCH', path: '/api/collections/{table}/records/{id}', wrap: null, idField: null, prefer: null, envelope: 'self' },
         destroy: { method: 'DELETE', path: '/api/collections/{table}/records/{id}' },
+        renames: [],
         // Creating the record does not start a session, so the app signs
         // in straight afterwards rather than returning a user who cannot
         // read anything.
         signUp: { path: `/api/collections/${users}/records`, body: 'record', thenSignIn: true },
-        signIn: { path: `/api/collections/${users}/auth-with-password`, identity: 'identity' },
+        signIn: { path: `/api/collections/${users}/auth-with-password`, identity: 'identity', then: null },
         session: { method: 'POST', path: `/api/collections/${users}/auth-refresh` },
         signOut: null,
-        oauth: { kind: 'url', path: '/api/oauth2-redirect?provider=' },
+        oauth: { kind: 'url', path: '/api/oauth2-redirect?provider=', suffix: '' },
         tokenKey: 'token',
         userKey: 'record',
         upload: {
@@ -162,6 +237,12 @@ export function wirePlan(profile: RuntimeProfile | undefined): WirePlan {
           urlKey: null,
           publicPath: '/api/files/{bucket}/{id}/{name}',
           idInPath: true,
+          idKey: 'id',
+          // A PocketBase file field holds the *stored* name, which is
+          // not the name that was uploaded: it is suffixed to keep two
+          // files of the same name apart.
+          nameKey: 'file',
+          fields: [],
         },
       }
 
@@ -170,14 +251,15 @@ export function wirePlan(profile: RuntimeProfile | undefined): WirePlan {
         dialect: 'vortex',
         ...shared,
         list: { method: 'POST', path: '/v1/data/{table}/query', filter: 'tree', envelope: 'rows' },
-        create: { method: 'POST', path: '/v1/data/{table}', wrap: 'row', prefer: null, envelope: 'row' },
-        modify: { method: 'PATCH', path: '/v1/data/{table}/{id}', wrap: 'changes', prefer: null, envelope: 'row' },
+        create: { method: 'POST', path: '/v1/data/{table}', wrap: 'row', idField: null, prefer: null, envelope: 'row' },
+        modify: { method: 'PATCH', path: '/v1/data/{table}/{id}', wrap: 'changes', idField: null, prefer: null, envelope: 'row' },
         destroy: { method: 'DELETE', path: '/v1/data/{table}/{id}' },
+        renames: [],
         signUp: { path: '/v1/auth/sign-up', body: 'credentials', thenSignIn: false },
-        signIn: { path: '/v1/auth/sign-in', identity: 'email' },
+        signIn: { path: '/v1/auth/sign-in', identity: 'email', then: null },
         session: { method: 'GET', path: '/v1/auth/session' },
         signOut: { method: 'POST', path: '/v1/auth/sign-out' },
-        oauth: { kind: 'url', path: '/v1/auth/oauth/' },
+        oauth: { kind: 'url', path: '/v1/auth/oauth/', suffix: '' },
         tokenKey: 'token',
         userKey: 'user',
         upload: {
@@ -187,8 +269,69 @@ export function wirePlan(profile: RuntimeProfile | undefined): WirePlan {
           urlKey: 'url',
           publicPath: '/v1/storage/{bucket}/{name}',
           idInPath: false,
+          idKey: 'id',
+          nameKey: null,
+          fields: [],
         },
       }
+
+    case 'appwrite': {
+      // Two things live in the path rather than a header: the database
+      // a collection belongs to, and — for a URL opened outside the
+      // app, where no header can travel — the project.
+      const database = profile.database || 'default'
+      const documents = `/databases/${database}/collections/{table}/documents`
+      const project = profile.headers['x-appwrite-project'] ?? ''
+      const query = project ? `?project=${encodeURIComponent(project)}` : ''
+      return {
+        dialect: 'appwrite',
+        ...shared,
+        list: { method: 'GET', path: documents, filter: 'queries', envelope: 'documents' },
+        create: {
+          method: 'POST',
+          path: documents,
+          // The fields go under `data`; `unique()` is Appwrite's way of
+          // saying the server should pick the id after all.
+          wrap: 'data',
+          idField: { key: 'documentId', value: 'unique()' },
+          prefer: null,
+          envelope: 'self',
+        },
+        modify: {
+          method: 'PATCH',
+          path: `${documents}/{id}`,
+          wrap: 'data',
+          idField: null,
+          prefer: null,
+          envelope: 'self',
+        },
+        destroy: { method: 'DELETE', path: `${documents}/{id}` },
+        renames: APPWRITE_FIELDS,
+        signUp: { path: '/account', body: 'account', thenSignIn: true },
+        // The reply to this is a *session*, which carries the secret and
+        // nothing a screen can show, so the runtime reads the account
+        // straight afterwards.
+        signIn: { path: '/account/sessions/email', identity: 'email', then: 'session' },
+        session: { method: 'GET', path: '/account' },
+        signOut: { method: 'DELETE', path: '/account/sessions/current' },
+        oauth: { kind: 'url', path: '/account/sessions/oauth2/', suffix: query },
+        tokenKey: 'secret',
+        // `GET /account` answers with the account itself, and the
+        // session reply has no user in it to dig out.
+        userKey: '',
+        upload: {
+          method: 'POST',
+          path: '/storage/buckets/{bucket}/files',
+          form: true,
+          urlKey: null,
+          publicPath: `/storage/buckets/{bucket}/files/{id}/view${query}`,
+          idInPath: true,
+          idKey: '$id',
+          nameKey: null,
+          fields: [['fileId', 'unique()']],
+        },
+      }
+    }
 
     default:
       return { dialect: 'tungsten', ...shared, ...TUNGSTEN }

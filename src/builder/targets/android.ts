@@ -517,23 +517,73 @@ function kotlinBaseUrl(plan: WirePlan): string {
 
 /** The rows of a reply, wherever this backend keeps them. */
 function kotlinRows(plan: WirePlan): string {
-  return plan.list.envelope === 'array'
+  const found = plan.list.envelope === 'array'
     ? 'rowsOf(reply)'
     : `rowsOf(asMap(reply)[${kotlinString(plan.list.envelope)}])`
+  return plan.renames.length ? `${found}.map(::document)` : found
 }
 
 /** One row of a reply, wherever this backend keeps it. */
-function kotlinRow(step: WirePlan['create'] | WirePlan['modify']): string {
-  if (step.envelope === 'self') return 'asMap(reply)'
-  if (step.envelope === 'row') return 'asMap(asMap(reply)["row"])'
-  return 'rowsOf(reply).firstOrNull() ?: emptyMap()'
+function kotlinRow(plan: WirePlan, step: WirePlan['create'] | WirePlan['modify']): string {
+  const found = step.envelope === 'self'
+    ? 'asMap(reply)'
+    : step.envelope === 'row'
+      ? 'asMap(asMap(reply)["row"])'
+      : 'rowsOf(reply).firstOrNull() ?: emptyMap()'
+  return plan.renames.length ? `document(${found})` : found
 }
 
 /** The arguments a write needs: the body, wrapped, and any extra header. */
 function kotlinWrite(step: WirePlan['create'] | WirePlan['modify'], body: string): string {
-  const wrapped = step.wrap ? `JSONObject().put(${kotlinString(step.wrap)}, ${body})` : body
+  let wrapped = step.wrap ? `JSONObject().put(${kotlinString(step.wrap)}, ${body})` : body
+  if (step.idField) {
+    const id = `JSONObject().put(${kotlinString(step.idField.key)}, ${kotlinString(step.idField.value)})`
+    wrapped = step.wrap
+      ? `${id}.put(${kotlinString(step.wrap)}, ${body})`
+      : `${id}.also { for (key in ${body}.keys()) it.put(key, ${body}.get(key)) }`
+  }
   const prefer = step.prefer ? `, extraHeaders = mapOf("prefer" to ${kotlinString(step.prefer)})` : ''
   return `${kotlinString(step.method)}, ${wrapped}${prefer}`
+}
+
+/**
+ * Translating this backend's own field names, where it has them.
+ *
+ * Nothing at all for most backends: the generated file does not carry
+ * a function it would never call.
+ */
+function kotlinRenames(plan: WirePlan): string {
+  if (!plan.renames.length) return ''
+  const copies = plan.renames
+    .map(([wire, local]) => `    if (document.containsKey(${kotlinString(wire)})) row[${kotlinString(local)}] = document[${kotlinString(wire)}]`)
+    .join('\n')
+  const owned = plan.renames.map(([, local]) => kotlinString(local)).join(', ')
+  return `
+/**
+ * This backend's own fields, under the names the blocks use.
+ *
+ * A block drawn against a table says row.id whatever is underneath it,
+ * so the fields this backend prefixes are copied across and the
+ * prefixed originals left behind.
+ */
+private fun document(document: Map<String, Any?>): Map<String, Any?> {
+    val row = LinkedHashMap<String, Any?>()
+    for ((key, value) in document) if (!key.startsWith("\\$")) row[key] = value
+${copies}
+    return row
+}
+
+/**
+ * The other direction. The fields the backend owns cannot be written
+ * back to it: sending them is an error, not a no-op.
+ */
+private fun data(body: JSONObject): JSONObject {
+    val owned = setOf(${owned})
+    val kept = JSONObject()
+    for (key in body.keys()) if (!key.startsWith("\\$") && key !in owned) kept.put(key, body.get(key))
+    return kept
+}
+`
 }
 
 /** The filter encoder for this dialect, and nothing else. */
@@ -558,6 +608,24 @@ private fun query(where: Map<String, Any?>): String {
     }
     return "?filter=" + encode(tests)
 }`
+    case 'queries':
+      return `/**
+ * A filter as Appwrite queries.
+ *
+ * Each test is a JSON document of its own, in its own queries[]
+ * parameter: there is no column=value form to fall back on.
+ */
+private fun query(where: Map<String, Any?>): String {
+    if (where.isEmpty()) return ""
+    val parts = where.entries.mapIndexed { index, entry ->
+        val test = JSONObject()
+            .put("method", "equal")
+            .put("attribute", entry.key)
+            .put("values", JSONArray().put(entry.value))
+        "queries[" + index + "]=" + encode(test.toString())
+    }
+    return "?" + parts.joinToString("&")
+}`
     case 'tree':
       return `/** A filter as the tree this backend takes in the body of a query. */
 private fun whereBody(where: Map<String, Any?>): JSONObject {
@@ -581,7 +649,10 @@ private fun query(where: Map<String, Any?>): String {
 function kotlinAuth(plan: WirePlan): string {
   const credentials = plan.signUp.body === 'record'
     ? 'JSONObject().put("email", email).put("password", password).put("passwordConfirm", password)'
-    : 'JSONObject().put("email", email).put("password", password)'
+    : plan.signUp.body === 'account'
+      // "unique()" is this backend's way of saying the server picks.
+      ? 'JSONObject().put("userId", "unique()").put("email", email).put("password", password)'
+      : 'JSONObject().put("email", email).put("password", password)'
 
   const signUp = plan.signUp.thenSignIn
     ? `        // Creating the account does not start a session here, so the app
@@ -595,6 +666,7 @@ function kotlinAuth(plan: WirePlan): string {
     ? 'JSONObject().put("identity", email).put("password", password)'
     : 'JSONObject().put("email", email).put("password", password)'
 
+  const suffix = plan.oauth.suffix ? ` + ${kotlinString(plan.oauth.suffix)}` : ''
   const oauth = plan.oauth.kind === 'url'
     ? `    /**
      * The provider's address, built from the backend's own.
@@ -603,7 +675,7 @@ function kotlinAuth(plan: WirePlan): string {
      * that is a browser tab, a custom tab or a web view.
      */
     fun oauth(provider: String): Map<String, Any?> = mapOf(
-        "url" to Backend.baseUrl + ${kotlinString(plan.oauth.path)} + encode(provider),
+        "url" to Backend.baseUrl + ${kotlinString(plan.oauth.path)} + encode(provider)${suffix},
         "provider" to provider,
     )`
     : `    /** Starts a provider round trip. The reply carries the URL to open. */
@@ -621,8 +693,14 @@ function kotlinAuth(plan: WirePlan): string {
 ${signUp}
     }
 
-    suspend fun signIn(email: String, password: String): Map<String, Any?> =
+    suspend fun signIn(email: String, password: String): Map<String, Any?> {
+${plan.signIn.then === 'session'
+    ? `        // The reply to this is a session: it carries the secret and
+        // nothing a screen can show, so the account is read next.
         accept(call(${kotlinString(plan.signIn.path)}, "POST", ${identity}))
+        return accept(call(${kotlinString(plan.session.path)}, ${kotlinString(plan.session.method)}))`
+    : `        return accept(call(${kotlinString(plan.signIn.path)}, "POST", ${identity}))`}
+    }
 
 ${oauth}
 
@@ -675,10 +753,15 @@ function kotlinStorage(plan: WirePlan): string {
         ${close}`
 
   const address = upload.idInPath
-    ? `        // A file belongs to a record here, so its address needs the id
-        // the upload came back with.
-        val stored = (reply["file"] as? List<*>)?.firstOrNull()?.let { toText(it) } ?: toText(reply["file"])
-        return Backend.baseUrl + ${kotlinPath(upload.publicPath ?? '', { bucket: 'bucket', id: 'toText(reply["id"])', name: 'stored' })}`
+    ? `        // The stored file's address is built from what came back, not
+        // from the name that went up.
+${upload.nameKey
+      ? `        val stored = (reply[${kotlinString(upload.nameKey)}] as? List<*>)?.firstOrNull()?.let { toText(it) } ?: toText(reply[${kotlinString(upload.nameKey)}])\n`
+      : ''}        return Backend.baseUrl + ${kotlinPath(upload.publicPath ?? '', {
+        bucket: 'bucket',
+        id: `toText(reply[${kotlinString(upload.idKey)}])`,
+        name: upload.nameKey ? 'stored' : 'name',
+      })}`
     : upload.urlKey
       ? `        val url = toText(reply[${kotlinString(upload.urlKey)}])
         ${upload.publicPath
@@ -686,11 +769,20 @@ function kotlinStorage(plan: WirePlan): string {
         : 'return url'}`
       : `        return Backend.baseUrl + ${kotlinPath(upload.publicPath ?? '', { bucket: 'bucket', name: 'name' })}`
 
+  // Text parts some backends want beside the file -- an id they expect
+  // the client to invent, usually.
+  const parts = upload.fields
+    .map(([key, value]) => `        + "--" + boundary + "\\r\\n"
+        + "Content-Disposition: form-data; name=\\"${key}\\"\\r\\n\\r\\n"
+        + "${value}" + "\\r\\n"\n`)
+    .join('')
+
   const multipart = upload.form
     ? `
 /** A multipart body, by hand: a generated app should not need a library for one file. */
 private fun multipart(boundary: String, name: String, bytes: ByteArray): ByteArray {
-    val head = ("--" + boundary + "\\r\\n"
+    val head = (""
+${parts}        + "--" + boundary + "\\r\\n"
         + "Content-Disposition: form-data; name=\\"file\\"; filename=\\"" + name + "\\"\\r\\n"
         + "Content-Type: application/octet-stream\\r\\n\\r\\n").toByteArray()
     val tail = ("\\r\\n--" + boundary + "--\\r\\n").toByteArray()
@@ -725,6 +817,9 @@ ${address}
  * is the promise the rest of this generator makes too.
  */
 function runtime(identifier: string, plan: WirePlan): string {
+  // Where a backend owns some of a row's fields, the body of a write
+  // has to have them taken back out before it goes.
+  const written = plan.renames.length ? 'data(body)' : 'body'
   const constants = plan.headers
     .map(([key, value]) => `    connection.setRequestProperty(${kotlinString(key)}, ${kotlinString(value)})`)
     .join('\n')
@@ -832,12 +927,15 @@ private fun rowsOf(value: Any?): List<Map<String, Any?>> =
 private fun encode(value: Any?): String = URLEncoder.encode(toText(value), "UTF-8")
 
 ${kotlinFilter(plan)}
-
+${kotlinRenames(plan)}
 /** Keeps the token from a sign-in reply, and hands back the user. */
 private fun accept(reply: Any?): Map<String, Any?> {
     val map = asMap(reply)
     (map[${kotlinString(plan.tokenKey)}] as? String)?.let { if (it.isNotBlank()) Backend.token = it }
-    return asMap(map[${kotlinString(plan.userKey)}]).ifEmpty { map }
+${plan.userKey
+    ? `    return ${plan.renames.length ? 'document(asMap(map[' + kotlinString(plan.userKey) + ']).ifEmpty { map })' : 'asMap(map[' + kotlinString(plan.userKey) + ']).ifEmpty { map }'}`
+    : `    // The reply is the account itself here: there is nothing to dig out.
+    return ${plan.renames.length ? 'document(map)' : 'map'}`}
 }
 
 object Api {
@@ -855,8 +953,8 @@ object Api {
             is String -> runCatching { JSONObject(row) }.getOrElse { JSONObject().put("value", row) }
             else -> JSONObject().put("value", row)
         }
-        val reply = call(${kotlinPath(plan.create.path, { table: 'table' })}, ${kotlinWrite(plan.create, 'body')})
-        return ${kotlinRow(plan.create)}
+        val reply = call(${kotlinPath(plan.create.path, { table: 'table' })}, ${kotlinWrite(plan.create, written)})
+        return ${kotlinRow(plan, plan.create)}
     }
 
     suspend fun update(table: String, id: String, changes: Any?): Map<String, Any?> {
@@ -864,8 +962,8 @@ object Api {
             is Map<*, *> -> JSONObject(changes.entries.associate { toText(it.key) to it.value })
             else -> JSONObject().put("value", changes)
         }
-        val reply = call(${kotlinPath(plan.modify.path, { table: 'table', id: 'id' })}, ${kotlinWrite(plan.modify, 'body')})
-        return ${kotlinRow(plan.modify)}
+        val reply = call(${kotlinPath(plan.modify.path, { table: 'table', id: 'id' })}, ${kotlinWrite(plan.modify, written)})
+        return ${kotlinRow(plan, plan.modify)}
     }
 
     suspend fun remove(table: String, id: String) {

@@ -364,12 +364,12 @@ string.
 
 ### The same thing on a phone
 
-A page can carry four dialects and choose at run time, because it is
+A page can carry every dialect and choose at run time, because it is
 also the preview and the preview can be repointed. An installed app
 cannot and should not: it is built for one project, whose backend is
 known while it is being emitted.
 
-So `src/builder/targets/wire.ts` holds the same four protocols as
+So `src/builder/targets/wire.ts` holds the same five protocols as
 language-neutral data — paths with `{table}`/`{id}`/`{bucket}`
 placeholders, the envelope each backend wraps rows in, where the token
 goes — and each mobile emitter renders **only the chosen one**. A
@@ -399,37 +399,45 @@ tests, and `wire.test.ts` asserts the same facts against the Dart, the
 Kotlin and the Swift — so an Android build and an iOS build of one
 project cannot drift apart about the backend they share.
 
+### Where Appwrite made the plan grow
+
+Four backends agreed on more than they disagreed about. The fifth did
+not, and four fields were added to `WirePlan` rather than four
+`if (dialect === 'appwrite')` branches spread across three emitters:
+
+| Field | Why it exists |
+| --- | --- |
+| `renames` | `$id` → `id`, `$createdAt` → `created_at`. A block drawn against a table says `row.id` whatever is underneath it, and the pairs run both ways: applied to every row coming back, and *dropped* on the way out, because a document cannot be written with the fields the backend owns. Empty for everyone else, and the emitters then generate no translation function at all. |
+| `create.idField` | Appwrite wants a `documentId` on every create and takes `unique()` as “you pick one after all”. |
+| `signIn.then` | Its sign-in reply is a *session*: it carries the secret and nothing a screen can show, so the runtime reads `/account` straight afterwards. |
+| `oauth.suffix`, `upload.fields` | A URL the app opens in a browser carries none of the app's headers, so the project goes in the query string; a `fileId` part travels beside the file in the multipart body. |
+
+The last of these is the general rule this file keeps rediscovering:
+anything the emitters would otherwise each invent separately belongs
+here, as data, with one set of tests.
+
 ### When a backend has no dialect
 
-The adapter list and the dialect table are not the same list, and
-Appwrite is currently in the first but not the second. The IDE talks to
-an Appwrite project in full; a build of that project falls back to the
-generated Node service, because emitting a runtime that calls routes
-no one implemented would be worse than emitting one that works.
-`runtimeProfileFor` returns `undefined` for it, and the Backend panel
-says which of the two is happening — *“built apps cannot speak Appwrite
-yet”*, not *“this project has no complete backend”*, which would send
-someone hunting for a field they have already filled in.
+The adapter list and the dialect table are two lists, and if they ever
+disagree a project that works in the IDE would quietly build an app
+calling the local service instead. They agree today — every `ready`
+adapter has a profile, and `backendRuntime.test.ts` fails if one does
+not — but the Backend panel still distinguishes the two nothings,
+because the day a new adapter lands without its dialect, *“this project
+has no complete backend”* would send someone hunting for a field they
+have already filled in.
 
 ## 7. What is next
 
 In order:
 
-1. **The Appwrite dialect for built apps.** The adapter shipped, so the
-   IDE — the Data tab, the schema, the connection test — talks to
-   Appwrite today. What a *built* app speaks is the separate table in
-   `src/builder/targets/wire.ts`, which has no Appwrite entry yet, so a
-   build still calls the generated Node service and the Backend panel
-   says that in those words rather than implying the project is
-   unfinished. Adding it is a filter style, a `data` wrapper on writes,
-   a `documentId` field, and a two-step magic-link sign-in.
-2. **Firebase.** The last planned adapter. Firestore has no schema to
+1. **Firebase.** The last planned adapter. Firestore has no schema to
    apply and its REST filters are structured queries, so it will cover
    less of the contract than the others — declared honestly in
    `capabilities`, rather than stubbed.
-3. **PocketBase realtime**, which waits on a Server-Sent Events
+2. **PocketBase realtime**, which waits on a Server-Sent Events
    transport beside `HttpSend` and `SocketOpen`: a contract change, not
    an adapter one.
-4. **The migration assistant** — `inspect()` on the old backend,
+3. **The migration assistant** — `inspect()` on the old backend,
    `plan()` on the new one, and a diff in between. The shape is already
    there: both ends speak blueprints.

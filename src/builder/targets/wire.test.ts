@@ -1,7 +1,7 @@
 /**
  * The wire plan, and the Dart, Kotlin and Swift it turns into.
  *
- * The web runtime carries all four dialects and chooses at run time.
+ * The web runtime carries every dialect and chooses at run time.
  * A phone app cannot: it is built for one project, whose backend is
  * known while it is being emitted. So each mobile target writes the
  * code for that one backend — PostgREST paths for a Supabase project,
@@ -37,6 +37,10 @@ const SUPABASE: BackendSettings = {
 const POCKETBASE: BackendSettings = { adapter: 'pocketbase', config: { url: 'http://127.0.0.1:8090' } }
 const VORTEX: BackendSettings = { adapter: 'vortex', config: { projectKey: 'proj_1' } }
 const SELF: BackendSettings = { adapter: 'self-hosted', config: { url: 'https://api.example.com' } }
+const APPWRITE: BackendSettings = {
+  adapter: 'appwrite',
+  config: { url: 'https://cloud.appwrite.io/v1', projectId: 'proj1', databaseId: 'main', apiKey: 'server-key' },
+}
 
 const planFor = (settings?: BackendSettings) => wirePlan(settings ? runtimeProfileFor(settings) : undefined)
 
@@ -89,6 +93,31 @@ describe('the wire plan', () => {
     expect(planFor(POCKETBASE).list.envelope).toBe('items')
     expect(planFor(VORTEX).list.envelope).toBe('rows')
     expect(planFor(SELF).list.envelope).toBe('rows')
+    expect(planFor(APPWRITE).list.envelope).toBe('documents')
+  })
+
+  it('puts an Appwrite database in the path, where it lives', () => {
+    const plan = planFor(APPWRITE)
+    expect(plan.list.path).toBe('/databases/main/collections/{table}/documents')
+    expect(plan.list.filter).toBe('queries')
+    // The fields go under `data`, and the id is the client's to invent.
+    expect(plan.create.wrap).toBe('data')
+    expect(plan.create.idField).toEqual({ key: 'documentId', value: 'unique()' })
+    expect(plan.modify.idField).toBeNull()
+    // The project travels in a URL opened outside the app, where none
+    // of the app's headers go with it.
+    expect(plan.oauth.suffix).toBe('?project=proj1')
+  })
+
+  it('renames the fields Appwrite owns, and only for Appwrite', () => {
+    expect(planFor(APPWRITE).renames).toEqual([
+      ['$id', 'id'],
+      ['$createdAt', 'created_at'],
+      ['$updatedAt', 'updated_at'],
+    ])
+    for (const settings of [SUPABASE, POCKETBASE, VORTEX, SELF, undefined]) {
+      expect(planFor(settings).renames).toEqual([])
+    }
   })
 
   it('knows the two backends that do not hand a session straight back', () => {
@@ -99,6 +128,11 @@ describe('the wire plan', () => {
     // And one where signing out is a local act with nothing to call.
     expect(planFor(POCKETBASE).signOut).toBeNull()
     expect(planFor(SUPABASE).signOut).toMatchObject({ path: '/auth/v1/logout' })
+    // Appwrite does neither: creating an account starts no session and
+    // signing in answers with one rather than with a person.
+    expect(planFor(APPWRITE).signUp).toMatchObject({ body: 'account', thenSignIn: true })
+    expect(planFor(APPWRITE).signIn.then).toBe('session')
+    expect(planFor(APPWRITE).signOut).toMatchObject({ method: 'DELETE', path: '/account/sessions/current' })
   })
 
   it('asks PostgREST for the row it just wrote', () => {
@@ -131,7 +165,7 @@ describe('the wire plan', () => {
 /* ------------------------------------------------------------ the Dart */
 
 describe('the Flutter runtime', () => {
-  it('is written for one backend, not for all four', () => {
+  it('is written for one backend, not for every one of them', () => {
     const source = dart(SUPABASE)
     expect(source).toContain("'/rest/v1/' + Uri.encodeComponent(table)")
     // No dialect table, no branching on a profile: this app has one
@@ -207,12 +241,34 @@ describe('the Flutter runtime', () => {
   it('reports the sentence the backend chose, whichever key it used', () => {
     expect(dart(SUPABASE)).toContain("map['error'] ?? map['message'] ?? map['msg']")
   })
+
+  it('speaks Appwrite: JSON queries, a data wrapper, and row.id restored', () => {
+    const source = dart(APPWRITE)
+    expect(source).toContain("'/databases/main/collections/' + Uri.encodeComponent(table) + '/documents'")
+    expect(source).toContain("jsonEncode({'method': 'equal', 'attribute': key, 'values': [value]})")
+    expect(source).toContain("body: {'documentId': 'unique()', 'data': body}")
+    expect(source).toContain("return _rows(_map(reply)['documents']).map(_doc).toList();")
+    // A block says row.id whatever the backend calls it, and the
+    // fields the backend owns are not written back to it.
+    expect(source).toContain("row['id'] = document['\\$id']")
+    expect(source).toContain('_data(row is Map')
+    expect(source).toContain("request.headers.set('x-appwrite-session', token);")
+    expect(source).not.toContain('server-key')
+  })
+
+  it('reads an Appwrite account after signing in, because a session is not a person', () => {
+    const source = dart(APPWRITE)
+    expect(source).toContain("body: {'userId': 'unique()', 'email': email, 'password': password}")
+    expect(source).toContain("_accept(await _call('/account', method: 'GET'));")
+    expect(source).toContain("await _call('/account/sessions/current', method: 'DELETE')")
+    expect(source).toContain("'?project=proj1'")
+  })
 })
 
 /* ---------------------------------------------------------- the Kotlin */
 
 describe('the Kotlin runtime', () => {
-  it('is written for one backend, not for all four', () => {
+  it('is written for one backend, not for every one of them', () => {
     const source = kotlin(SUPABASE)
     expect(source).toContain('"/rest/v1/" + encode(table)')
     expect(source).not.toContain('/api/collections/')
@@ -288,6 +344,25 @@ describe('the Kotlin runtime', () => {
     expect(kotlin(SUPABASE)).toContain('it["error"] ?: it["message"] ?: it["msg"]')
   })
 
+  it('speaks Appwrite: JSON queries, a data wrapper, and row.id restored', () => {
+    const source = kotlin(APPWRITE)
+    expect(source).toContain('"/databases/main/collections/" + encode(table) + "/documents"')
+    expect(source).toContain('.put("method", "equal")')
+    expect(source).toContain('JSONObject().put("documentId", "unique()").put("data", data(body))')
+    expect(source).toContain('return rowsOf(asMap(reply)["documents"]).map(::document)')
+    expect(source).toContain('row["id"] = document["\\$id"]')
+    expect(source).toContain('Backend.token?.let { connection.setRequestProperty("x-appwrite-session", it) }')
+    expect(source).not.toContain('server-key')
+  })
+
+  it('sends the file id Appwrite expects the client to invent', () => {
+    const source = kotlin(APPWRITE)
+    expect(source).toContain('name=\\"fileId\\"')
+    expect(source).toContain('"/storage/buckets/" + encode(bucket) + "/files"')
+    expect(source).toContain('encode(toText(reply["\\$id"]))')
+    expect(source).toContain('/view?project=proj1')
+  })
+
   it('imports only what Android already ships', () => {
     const source = kotlin(SUPABASE)
     expect(source).toContain('import org.json.JSONArray')
@@ -302,7 +377,7 @@ describe('the Kotlin runtime', () => {
 /* ----------------------------------------------------------- the Swift */
 
 describe('the Swift runtime', () => {
-  it('is written for one backend, not for all four', () => {
+  it('is written for one backend, not for every one of them', () => {
     const source = swift(SUPABASE)
     expect(source).toContain('"/rest/v1/" + encode(table)')
     expect(source).not.toContain('/api/collections/')
@@ -375,6 +450,17 @@ describe('the Swift runtime', () => {
     expect(swift(SUPABASE)).toContain('map["error"] ?? map["message"] ?? map["msg"]')
   })
 
+  it('speaks Appwrite: JSON queries, a data wrapper, and row.id restored', () => {
+    const source = swift(APPWRITE)
+    expect(source).toContain('"/databases/main/collections/" + encode(table) + "/documents"')
+    expect(source).toContain('["method": "equal", "attribute": entry.key, "values": [entry.value]]')
+    expect(source).toContain('body: ["documentId": "unique()", "data": body]')
+    expect(source).toContain('return rowsOf(asMap(reply)["documents"]).map(document)')
+    expect(source).toContain('if let value = document["$id"] { row["id"] = value }')
+    expect(source).toContain('request.setValue(token, forHTTPHeaderField: "x-appwrite-session")')
+    expect(source).not.toContain('server-key')
+  })
+
   it('needs nothing but Foundation', () => {
     const source = swift(SUPABASE)
     expect(source).toContain('import Foundation')
@@ -390,6 +476,7 @@ describe('the three mobile runtimes together', () => {
     ['Supabase', SUPABASE],
     ['PocketBase', POCKETBASE],
     ['Vortex', VORTEX],
+    ['Appwrite', APPWRITE],
     ['the generated service', undefined],
   ]
 
@@ -403,6 +490,7 @@ describe('the three mobile runtimes together', () => {
       // And none of them may carry a credential the server keeps.
       expect(source).not.toContain('service-key')
       expect(source).not.toContain('admin-token')
+      expect(source).not.toContain('server-key')
     }
   })
 })

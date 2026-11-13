@@ -26,7 +26,7 @@ import { adapterById, missingFields, type BackendSettings } from './registry'
 import { VORTEX_DEFAULT_URL } from './adapters/vortex'
 
 /** The wire protocols the generated runtime knows how to speak. */
-export type RuntimeDialect = 'tungsten' | 'postgrest' | 'pocketbase' | 'vortex'
+export type RuntimeDialect = 'tungsten' | 'postgrest' | 'pocketbase' | 'vortex' | 'appwrite'
 
 export type RuntimeProfile = {
   /** The adapter id this came from, so a build can be read back. */
@@ -46,6 +46,8 @@ export type RuntimeProfile = {
   token: { header: string; prefix: string }
   /** The collection or table holding users, where the dialect needs its name. */
   users?: string
+  /** The database a collection lives in, where the dialect has databases. */
+  database?: string
   /** Credentials deliberately left out of the build, by field label. */
   withheld: string[]
 }
@@ -114,6 +116,27 @@ export function runtimeProfileFor(settings: BackendSettings): RuntimeProfile | u
         users: value('collection') || 'users',
       }
     }
+    case 'appwrite': {
+      return {
+        ...base,
+        dialect: 'appwrite',
+        base: trim(value('url')),
+        headers: {
+          // The project id is public by design — it is in every URL
+          // the console hands out — and what guards the data is the
+          // collection's permissions, not the secrecy of this.
+          'x-appwrite-project': value('projectId'),
+          'x-appwrite-response-format': '2.6.2',
+        },
+        // A session secret is sent raw, in a header of its own; there
+        // is no scheme in front of it.
+        token: { header: 'x-appwrite-session', prefix: '' },
+        database: value('databaseId') || 'default',
+        // An Appwrite API key acts as the server and ignores every
+        // permission, so it stays here however the field is spelled.
+        withheld: value('apiKey') ? [...withheld, 'API key'] : withheld,
+      }
+    }
     case 'self-hosted': {
       const token = value('token')
       return {
@@ -127,9 +150,10 @@ export function runtimeProfileFor(settings: BackendSettings): RuntimeProfile | u
         withheld: token ? [...withheld, 'Session token'] : withheld,
       }
     }
-    // Appwrite and anything added after it: the IDE speaks them
-    // through an adapter, but the four runtimes a build emits do not
-    // have the dialect yet, so nothing is baked in.
+    // An adapter the IDE speaks but the emitted runtimes do not. There
+    // is none today — `backendRuntime.test.ts` asserts that every ready
+    // adapter reaches this file — and a build falls back to the local
+    // service rather than calling routes nobody implemented.
     default:
       return undefined
   }
@@ -147,10 +171,12 @@ export function describeRuntimeProfile(
   settings?: BackendSettings,
 ): string {
   if (!profile) {
-    // Two different nothings. A backend that is configured and working
-    // in the IDE, but that the generated runtimes cannot speak yet, is
-    // not "no backend yet" -- and telling a user it is would send them
-    // looking for a field they have already filled in.
+    // Two different nothings, and the user can act on only one of
+    // them. "Nothing is configured" means fill in the fields; "a build
+    // cannot speak this one" means the fields are fine and the gap is
+    // ours. There is no adapter in the second state today, and the
+    // sentence stays because the day there is one, saying the first
+    // would send someone hunting for a field they already filled in.
     const adapter = settings ? adapterById(settings.adapter) : undefined
     if (adapter && adapter.info.status !== 'planned' && settings && !missingFields(settings).length) {
       return `Built apps cannot speak ${adapter.info.label} yet, so they will call the local Node service instead. The IDE talks to ${adapter.info.label} either way: the Data tab, the schema and the connection test all go to it.`

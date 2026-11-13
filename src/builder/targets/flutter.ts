@@ -536,22 +536,74 @@ function dartBaseUrl(plan: WirePlan): string {
 
 /** The rows of a reply, wherever this backend keeps them. */
 function dartRows(plan: WirePlan): string {
+  const found = dartRowsFound(plan)
+  return plan.renames.length ? `${found}.map(_doc).toList()` : found
+}
+
+function dartRowsFound(plan: WirePlan): string {
   if (plan.list.envelope === 'array') return '_rows(reply)'
   return `_rows(_map(reply)[${dartString(plan.list.envelope)}])`
 }
 
 /** One row of a reply, wherever this backend keeps it. */
-function dartRow(step: WirePlan['create'] | WirePlan['modify']): string {
-  if (step.envelope === 'self') return '_map(reply)'
-  if (step.envelope === 'row') return "_map(_map(reply)['row'])"
-  return 'rows.isEmpty ? <String, dynamic>{} : rows.first'
+function dartRow(plan: WirePlan, step: WirePlan['create'] | WirePlan['modify']): string {
+  const found = step.envelope === 'self'
+    ? '_map(reply)'
+    : step.envelope === 'row'
+      ? "_map(_map(reply)['row'])"
+      : 'rows.isEmpty ? <String, dynamic>{} : rows.first'
+  return plan.renames.length ? `_doc(${found})` : found
 }
 
 /** The named arguments a write needs: the body, wrapped, and any header. */
 function dartWrite(step: WirePlan['create'] | WirePlan['modify'], body: string): string {
-  const wrapped = step.wrap ? `{${dartString(step.wrap)}: ${body}}` : body
+  let wrapped = step.wrap ? `{${dartString(step.wrap)}: ${body}}` : body
+  if (step.idField) {
+    const id = `${dartString(step.idField.key)}: ${dartString(step.idField.value)}`
+    wrapped = step.wrap ? `{${id}, ${dartString(step.wrap)}: ${body}}` : `{${id}, ...${body}}`
+  }
   const prefer = step.prefer ? `, headers: {'prefer': ${dartString(step.prefer)}}` : ''
   return `method: ${dartString(step.method)}, body: ${wrapped}${prefer}`
+}
+
+/**
+ * Translating this backend's own field names, where it has them.
+ *
+ * Nothing at all for most backends: the generated file does not carry
+ * a function it would never call.
+ */
+function dartRenames(plan: WirePlan): string {
+  if (!plan.renames.length) return ''
+  const copies = plan.renames
+    .map(([wire, local]) => `  if (document.containsKey(${dartString(wire)})) row[${dartString(local)}] = document[${dartString(wire)}];`)
+    .join('\n')
+  const owned = plan.renames.map(([, local]) => dartString(local)).join(', ')
+  return `
+/// This backend's own fields, under the names the blocks use.
+///
+/// A block drawn against a table says row.id whatever is underneath it,
+/// so the fields this backend prefixes are copied across and the
+/// prefixed originals left behind.
+Map<String, dynamic> _doc(Map<String, dynamic> document) {
+  final row = <String, dynamic>{};
+  document.forEach((key, value) {
+    if (!key.startsWith('\\$')) row[key] = value;
+  });
+${copies}
+  return row;
+}
+
+/// The other direction. The fields the backend owns cannot be written
+/// back to it: sending them is an error, not a no-op.
+Map<String, dynamic> _data(Map<String, dynamic> row) {
+  const owned = <String>[${owned}];
+  final body = <String, dynamic>{};
+  row.forEach((key, value) {
+    if (!key.startsWith('\\$') && !owned.contains(key)) body[key] = value;
+  });
+  return body;
+}
+`
 }
 
 /** The filter encoder for this dialect, and nothing else. */
@@ -579,6 +631,22 @@ String _query(Map<String, dynamic>? where) {
       .map((entry) => entry.key + "='" + toText(entry.value).replaceAll("'", "\\\\'") + "'")
       .join(' && ');
   return '?filter=' + Uri.encodeQueryComponent(tests);
+}`
+    case 'queries':
+      return `/// A filter as Appwrite queries.
+///
+/// Each test is a JSON document of its own, in its own queries[]
+/// parameter: there is no \`column=value\` form to fall back on.
+String _query(Map<String, dynamic>? where) {
+  if (where == null || where.isEmpty) return '';
+  final parts = <String>[];
+  var index = 0;
+  where.forEach((key, value) {
+    final test = jsonEncode({'method': 'equal', 'attribute': key, 'values': [value]});
+    parts.add('queries[' + index.toString() + ']=' + Uri.encodeQueryComponent(test));
+    index += 1;
+  });
+  return '?' + parts.join('&');
 }`
     case 'tree':
       return `/// A filter as the tree this backend takes in the body of a query.
@@ -620,7 +688,10 @@ function dartSelect(plan: WirePlan): string {
 function dartAuth(plan: WirePlan): string {
   const credentials = plan.signUp.body === 'record'
     ? "{'email': email, 'password': password, 'passwordConfirm': password}"
-    : "{'email': email, 'password': password}"
+    : plan.signUp.body === 'account'
+      // 'unique()' is this backend's way of saying the server picks.
+      ? "{'userId': 'unique()', 'email': email, 'password': password}"
+      : "{'email': email, 'password': password}"
   const signUpBody = plan.signUp.thenSignIn
     ? `    // Creating the account does not start a session here, so the app
     // signs in straight afterwards rather than handing back a user who
@@ -633,13 +704,14 @@ function dartAuth(plan: WirePlan): string {
     ? "{'identity': email, 'password': password}"
     : "{'email': email, 'password': password}"
 
+  const suffix = plan.oauth.suffix ? ` + ${dartString(plan.oauth.suffix)}` : ''
   const oauth = plan.oauth.kind === 'url'
     ? `  /// The provider's address, built from the backend's own.
   ///
   /// Opening it is the app's business: only the app knows whether that
   /// is a browser tab, a custom tab or a web view.
   Future<Map<String, dynamic>> oauth(String provider) async =>
-      {'url': Backend.baseUrl + ${dartString(plan.oauth.path)} + Uri.encodeComponent(provider), 'provider': provider};`
+      {'url': Backend.baseUrl + ${dartString(plan.oauth.path)} + Uri.encodeComponent(provider)${suffix}, 'provider': provider};`
     : `  /// Starts a provider round trip. The reply carries the URL to open.
   Future<Map<String, dynamic>> oauth(String provider) async =>
       _map(await _call(${dartString(plan.oauth.path)}, method: 'POST', body: {'provider': provider}));`
@@ -655,8 +727,14 @@ function dartAuth(plan: WirePlan): string {
 ${signUpBody}
   }
 
-  Future<Map<String, dynamic>> signIn(String email, String password) async =>
-      _accept(await _call(${dartString(plan.signIn.path)}, method: 'POST', body: ${identity}));
+  Future<Map<String, dynamic>> signIn(String email, String password) async {
+${plan.signIn.then === 'session'
+    ? `    // The reply to this is a session: it carries the secret and
+    // nothing a screen can show, so the account is read next.
+    _accept(await _call(${dartString(plan.signIn.path)}, method: 'POST', body: ${identity}));
+    return _accept(await _call(${dartString(plan.session.path)}, method: ${dartString(plan.session.method)}));`
+    : `    return _accept(await _call(${dartString(plan.signIn.path)}, method: 'POST', body: ${identity}));`}
+  }
 
 ${oauth}
 
@@ -707,12 +785,17 @@ function dartStorage(plan: WirePlan): string {
     ${close}`
 
   const address = upload.idInPath
-    ? `    // A file belongs to a record here, so its address needs the id the
-    // upload came back with.
-    final stored = reply['file'] is List
-        ? toText((reply['file'] as List).first)
-        : toText(reply['file']);
-    return Backend.baseUrl + ${dartPath(upload.publicPath ?? '', { bucket: 'bucket', id: "toText(reply['id'])", name: 'stored' })};`
+    ? `    // The stored file's address is built from what came back, not
+    // from the name that went up.
+${upload.nameKey
+      ? `    final stored = reply[${dartString(upload.nameKey)}] is List
+        ? toText((reply[${dartString(upload.nameKey)}] as List).first)
+        : toText(reply[${dartString(upload.nameKey)}]);\n`
+      : ''}    return Backend.baseUrl + ${dartPath(upload.publicPath ?? '', {
+        bucket: 'bucket',
+        id: `toText(reply[${dartString(upload.idKey)}])`,
+        name: upload.nameKey ? 'stored' : 'name',
+      })};`
     : upload.urlKey
       ? `    final url = toText(reply[${dartString(upload.urlKey)}]);
     ${upload.publicPath
@@ -720,12 +803,21 @@ function dartStorage(plan: WirePlan): string {
       : 'return url;'}`
       : `    return Backend.baseUrl + ${dartPath(upload.publicPath ?? '', { bucket: 'bucket', name: 'name' })};`
 
+  // Text parts some backends want beside the file -- an id they expect
+  // the client to invent, usually.
+  const parts = upload.fields
+    .map(([key, value]) => `      + '--' + boundary + '\\r\\n'
+      + 'Content-Disposition: form-data; name="${key}"\\r\\n\\r\\n'
+      + '${value}' + '\\r\\n'\n`)
+    .join('')
+
   const multipart = upload.form
     ? `
 /// A multipart body, by hand: a generated app should not need a package
 /// to post one file.
 List<int> _multipart(String boundary, String name, List<int> bytes) {
-  final head = utf8.encode('--' + boundary + '\\r\\n'
+  final head = utf8.encode(''
+${parts}      + '--' + boundary + '\\r\\n'
       + 'Content-Disposition: form-data; name="file"; filename="' + name + '"\\r\\n'
       + 'Content-Type: application/octet-stream\\r\\n\\r\\n');
   final tail = utf8.encode('\\r\\n--' + boundary + '--\\r\\n');
@@ -763,6 +855,9 @@ ${address}
  * is the promise the rest of the generator makes too.
  */
 export function dartRuntime(plan: WirePlan): string {
+  // Where a backend owns some of a row's fields, the body of a write
+  // has to have them taken back out before it goes.
+  const written = plan.renames.length ? '_data' : ''
   const constants = plan.headers
     .map(([key, value]) => `  request.headers.set(${dartString(key)}, ${dartString(value)});`)
     .join('\n')
@@ -852,29 +947,32 @@ ${constants}
 }
 
 ${dartFilter(plan)}
-
+${dartRenames(plan)}
 /// Keeps the token from a sign-in reply, and hands back the user.
 Map<String, dynamic> _accept(Object? reply) {
   final map = _map(reply);
   final token = map[${dartString(plan.tokenKey)}];
   if (token is String && token.isNotEmpty) Backend.token = token;
-  final user = map[${dartString(plan.userKey)}];
-  return user is Map<String, dynamic> ? user : map;
+${plan.userKey
+    ? `  final user = map[${dartString(plan.userKey)}];
+  return ${plan.renames.length ? '_doc(user is Map<String, dynamic> ? user : map)' : 'user is Map<String, dynamic> ? user : map'};`
+    : `  // The reply is the account itself here: there is nothing to dig out.
+  return ${plan.renames.length ? '_doc(map)' : 'map'};`}
 }
 
 class Api {
 ${dartSelect(plan)}
 
   Future<Map<String, dynamic>> insert(String table, Object? row) async {
-    final body = row is Map ? Map<String, dynamic>.from(row) : {'value': toText(row)};
+    final body = ${written}(row is Map ? Map<String, dynamic>.from(row) : {'value': toText(row)});
     final reply = await _call(${dartPath(plan.create.path, { table: 'table' })}, ${dartWrite(plan.create, 'body')});
-${plan.create.envelope === 'first' ? '    final rows = _rows(reply);\n' : ''}    return ${dartRow(plan.create)};
+${plan.create.envelope === 'first' ? '    final rows = _rows(reply);\n' : ''}    return ${dartRow(plan, plan.create)};
   }
 
   Future<Map<String, dynamic>> update(String table, String id, Object? changes) async {
-    final body = changes is Map ? Map<String, dynamic>.from(changes) : {'value': toText(changes)};
+    final body = ${written}(changes is Map ? Map<String, dynamic>.from(changes) : {'value': toText(changes)});
     final reply = await _call(${dartPath(plan.modify.path, { table: 'table', id: 'id' })}, ${dartWrite(plan.modify, 'body')});
-${plan.modify.envelope === 'first' ? '    final rows = _rows(reply);\n' : ''}    return ${dartRow(plan.modify)};
+${plan.modify.envelope === 'first' ? '    final rows = _rows(reply);\n' : ''}    return ${dartRow(plan, plan.modify)};
   }
 
   Future<void> remove(String table, String id) async {

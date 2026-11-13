@@ -153,14 +153,18 @@ describe('the backend picker', () => {
     expect(shipped).toContain('stays in the IDE')
   })
 
-  it('distinguishes “not configured” from “the runtimes cannot speak it yet”', () => {
-    // Appwrite works in the IDE and has nothing missing, so telling the
-    // user the project “has no complete backend yet” would send them
-    // looking for a field they already filled in.
-    mount({ adapter: 'appwrite', config: { url: 'https://cloud.appwrite.io/v1', projectId: 'proj1' } })
+  it('promises an Appwrite build the Appwrite project, not the local service', () => {
+    // This sentence used to read “built apps cannot speak Appwrite
+    // yet”. The dialect shipped, so now it names the address — and
+    // leaves the server key behind.
+    mount({
+      adapter: 'appwrite',
+      config: { url: 'https://cloud.appwrite.io/v1', projectId: 'proj1', apiKey: 'server-key' },
+    })
     const shipped = container.querySelector('.backend-shipped')?.textContent ?? ''
-    expect(shipped).toContain('cannot speak Appwrite yet')
-    expect(shipped).toContain('The IDE talks to Appwrite either way')
+    expect(shipped).toContain('Built apps call Appwrite at cloud.appwrite.io')
+    expect(shipped).toContain('API key')
+    expect(shipped).toContain('stays in the IDE')
     expect(shipped).not.toContain('no complete backend yet')
   })
 

@@ -635,23 +635,69 @@ function swiftPath(path: string, values: Record<string, string>): string {
 
 /** The rows of a reply, wherever this backend keeps them. */
 function swiftRows(plan: WirePlan): string {
-  return plan.list.envelope === 'array'
+  const found = plan.list.envelope === 'array'
     ? 'rowsOf(reply)'
     : `rowsOf(asMap(reply)[${swiftString(plan.list.envelope)}])`
+  return plan.renames.length ? `${found}.map(document)` : found
 }
 
 /** One row of a reply, wherever this backend keeps it. */
-function swiftRow(step: WirePlan['create'] | WirePlan['modify']): string {
-  if (step.envelope === 'self') return 'asMap(reply)'
-  if (step.envelope === 'row') return 'asMap(asMap(reply)["row"])'
-  return 'rowsOf(reply).first ?? [:]'
+function swiftRow(plan: WirePlan, step: WirePlan['create'] | WirePlan['modify']): string {
+  const found = step.envelope === 'self'
+    ? 'asMap(reply)'
+    : step.envelope === 'row'
+      ? 'asMap(asMap(reply)["row"])'
+      : 'rowsOf(reply).first ?? [:]'
+  return plan.renames.length ? `document(${found})` : found
 }
 
 /** The arguments a write needs: the body, wrapped, and any extra header. */
 function swiftWrite(step: WirePlan['create'] | WirePlan['modify'], body: string): string {
-  const wrapped = step.wrap ? `[${swiftString(step.wrap)}: ${body}]` : body
+  let wrapped = step.wrap ? `[${swiftString(step.wrap)}: ${body}]` : body
+  if (step.idField) {
+    const id = `${swiftString(step.idField.key)}: ${swiftString(step.idField.value)}`
+    wrapped = step.wrap
+      ? `[${id}, ${swiftString(step.wrap)}: ${body}]`
+      : `${body}.merging([${id}]) { current, _ in current }`
+  }
   const prefer = step.prefer ? `, headers: ["prefer": ${swiftString(step.prefer)}]` : ''
   return `method: ${swiftString(step.method)}, body: ${wrapped}${prefer}`
+}
+
+/**
+ * Translating this backend's own field names, where it has them.
+ *
+ * Nothing at all for most backends: the generated file does not carry
+ * a function it would never call.
+ */
+function swiftRenames(plan: WirePlan): string {
+  if (!plan.renames.length) return ''
+  const copies = plan.renames
+    .map(([wire, local]) => `    if let value = document[${swiftString(wire)}] { row[${swiftString(local)}] = value }`)
+    .join('\n')
+  const owned = plan.renames.map(([, local]) => swiftString(local)).join(', ')
+  return `
+/// This backend's own fields, under the names the blocks use.
+///
+/// A block drawn against a table says row.id whatever is underneath it,
+/// so the fields this backend prefixes are copied across and the
+/// prefixed originals left behind.
+private func document(_ document: [String: Any]) -> [String: Any] {
+    var row: [String: Any] = [:]
+    for (key, value) in document where !key.hasPrefix("$") { row[key] = value }
+${copies}
+    return row
+}
+
+/// The other direction. The fields the backend owns cannot be written
+/// back to it: sending them is an error, not a no-op.
+private func data(_ row: [String: Any]) -> [String: Any] {
+    let owned: Set<String> = [${owned}]
+    var body: [String: Any] = [:]
+    for (key, value) in row where !key.hasPrefix("$") && !owned.contains(key) { body[key] = value }
+    return body
+}
+`
 }
 
 /** The filter encoder for this dialect, and nothing else. */
@@ -677,6 +723,21 @@ private func query(_ filters: [String: Any]) -> String {
     }
     return "?filter=" + encode(tests.joined(separator: " && "))
 }`
+    case 'queries':
+      return `/// A filter as Appwrite queries.
+///
+/// Each test is a JSON document of its own, in its own queries[]
+/// parameter: there is no column=value form to fall back on.
+private func query(_ filters: [String: Any]) -> String {
+    if filters.isEmpty { return "" }
+    var parts: [String] = []
+    for (index, entry) in filters.enumerated() {
+        let test: [String: Any] = ["method": "equal", "attribute": entry.key, "values": [entry.value]]
+        let encoded = (try? JSONSerialization.data(withJSONObject: test)) ?? Data()
+        parts.append("queries[\\(index)]=" + encode(String(data: encoded, encoding: .utf8) ?? ""))
+    }
+    return "?" + parts.joined(separator: "&")
+}`
     case 'tree':
       return `/// A filter as the tree this backend takes in the body of a query.
 private func whereBody(_ filters: [String: Any]) -> [String: Any] {
@@ -697,7 +758,10 @@ private func query(_ filters: [String: Any]) -> String {
 function swiftAuth(plan: WirePlan): string {
   const credentials = plan.signUp.body === 'record'
     ? '["email": email, "password": password, "passwordConfirm": password]'
-    : '["email": email, "password": password]'
+    : plan.signUp.body === 'account'
+      // "unique()" is this backend's way of saying the server picks.
+      ? '["userId": "unique()", "email": email, "password": password]'
+      : '["email": email, "password": password]'
 
   const signUp = plan.signUp.thenSignIn
     ? `        // Creating the account does not start a session here, so the app
@@ -711,12 +775,13 @@ function swiftAuth(plan: WirePlan): string {
     ? '["identity": email, "password": password]'
     : '["email": email, "password": password]'
 
+  const suffix = plan.oauth.suffix ? ` + ${swiftString(plan.oauth.suffix)}` : ''
   const oauth = plan.oauth.kind === 'url'
     ? `    /// The provider's address, built from the backend's own. Opening it
     /// is the app's call: only it knows whether that is a sheet, a tab or
     /// an ASWebAuthenticationSession.
     static func oauth(_ provider: String) async throws -> [String: Any] {
-        ["url": Backend.baseUrl + ${swiftString(plan.oauth.path)} + encode(provider), "provider": provider]
+        ["url": Backend.baseUrl + ${swiftString(plan.oauth.path)} + encode(provider)${suffix}, "provider": provider]
     }`
     : `    /// Starts a provider round trip. The reply carries the URL to open --
     /// opening it is the app's call, not the runtime's.
@@ -736,7 +801,12 @@ ${signUp}
     }
 
     static func signIn(email: String, password: String) async throws -> [String: Any] {
-        accept(try await call(${swiftString(plan.signIn.path)}, method: "POST", body: ${identity}))
+${plan.signIn.then === 'session'
+    ? `        // The reply to this is a session: it carries the secret and
+        // nothing a screen can show, so the account is read next.
+        _ = accept(try await call(${swiftString(plan.signIn.path)}, method: "POST", body: ${identity}))
+        return accept(try await call(${swiftString(plan.session.path)}, method: ${swiftString(plan.session.method)}))`
+    : `        accept(try await call(${swiftString(plan.signIn.path)}, method: "POST", body: ${identity}))`}
     }
 
 ${oauth}
@@ -789,10 +859,15 @@ function swiftStorage(plan: WirePlan): string {
         ${close}`
 
   const address = upload.idInPath
-    ? `        // A file belongs to a record here, so its address needs the id
-        // the upload came back with.
-        let stored = (reply["file"] as? [Any]).map { toText($0.first) } ?? toText(reply["file"])
-        return Backend.baseUrl + ${swiftPath(upload.publicPath ?? '', { bucket: 'bucket', id: 'toText(reply["id"])', name: 'stored' })}`
+    ? `        // The stored file's address is built from what came back, not
+        // from the name that went up.
+${upload.nameKey
+      ? `        let stored = (reply[${swiftString(upload.nameKey)}] as? [Any]).map { toText($0.first) } ?? toText(reply[${swiftString(upload.nameKey)}])\n`
+      : ''}        return Backend.baseUrl + ${swiftPath(upload.publicPath ?? '', {
+        bucket: 'bucket',
+        id: `toText(reply[${swiftString(upload.idKey)}])`,
+        name: upload.nameKey ? 'stored' : 'name',
+      })}`
     : upload.urlKey
       ? `        let url = reply[${swiftString(upload.urlKey)}] as? String ?? ""
         ${upload.publicPath
@@ -800,13 +875,21 @@ function swiftStorage(plan: WirePlan): string {
         : 'return url'}`
       : `        return Backend.baseUrl + ${swiftPath(upload.publicPath ?? '', { bucket: 'bucket', name: 'name' })}`
 
+  // Text parts some backends want beside the file -- an id they expect
+  // the client to invent, usually.
+  const parts = upload.fields
+    .map(([key, value]) => `    body.append(Data(("--" + boundary + "\\r\\n"
+        + "Content-Disposition: form-data; name=\\"${key}\\"\\r\\n\\r\\n"
+        + "${value}" + "\\r\\n").utf8))\n`)
+    .join('')
+
   const multipart = upload.form
     ? `
 /// A multipart body, by hand: a generated app should not need a package
 /// to post one file.
 private func multipart(boundary: String, name: String, bytes: Data) -> Data {
     var body = Data()
-    body.append(Data(("--" + boundary + "\\r\\n"
+${parts}    body.append(Data(("--" + boundary + "\\r\\n"
         + "Content-Disposition: form-data; name=\\"file\\"; filename=\\"" + name + "\\"\\r\\n"
         + "Content-Type: application/octet-stream\\r\\n\\r\\n").utf8))
     body.append(bytes)
@@ -845,6 +928,9 @@ ${address}
  * the code a person would have written for it.
  */
 function swiftBackend(plan: WirePlan): string {
+  // Where a backend owns some of a row's fields, the body of a write
+  // has to have them taken back out before it goes.
+  const written = plan.renames.length ? 'data' : ''
   const constants = plan.headers
     .map(([key, value]) => `    request.setValue(${swiftString(value)}, forHTTPHeaderField: ${swiftString(key)})`)
     .join('\n')
@@ -922,12 +1008,16 @@ ${constants}
 }
 
 ${swiftFilter(plan)}
-
+${swiftRenames(plan)}
 /// Keeps the token from a sign-in reply, and hands back the user.
 private func accept(_ reply: Any?) -> [String: Any] {
     let map = asMap(reply)
     if let token = map[${swiftString(plan.tokenKey)}] as? String, !token.isEmpty { Backend.token = token }
-    return map[${swiftString(plan.userKey)}] as? [String: Any] ?? map
+${plan.userKey
+    ? `    let found = map[${swiftString(plan.userKey)}] as? [String: Any] ?? map
+    return ${plan.renames.length ? 'document(found)' : 'found'}`
+    : `    // The reply is the account itself here: there is nothing to dig out.
+    return ${plan.renames.length ? 'document(map)' : 'map'}`}
 }
 
 enum Api {
@@ -940,15 +1030,15 @@ enum Api {
     }
 
     static func insert(_ table: String, _ row: Any?) async throws -> [String: Any] {
-        let body = row as? [String: Any] ?? ["value": toText(row)]
+        let body = ${written}(row as? [String: Any] ?? ["value": toText(row)])
         let reply = try await call(${swiftPath(plan.create.path, { table: 'table' })}, ${swiftWrite(plan.create, 'body')})
-        return ${swiftRow(plan.create)}
+        return ${swiftRow(plan, plan.create)}
     }
 
     static func update(_ table: String, id: String, changes: Any?) async throws -> [String: Any] {
-        let body = changes as? [String: Any] ?? ["value": toText(changes)]
+        let body = ${written}(changes as? [String: Any] ?? ["value": toText(changes)])
         let reply = try await call(${swiftPath(plan.modify.path, { table: 'table', id: 'id' })}, ${swiftWrite(plan.modify, 'body')})
-        return ${swiftRow(plan.modify)}
+        return ${swiftRow(plan, plan.modify)}
     }
 
     static func remove(_ table: String, id: String) async throws {

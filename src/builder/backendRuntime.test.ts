@@ -27,7 +27,7 @@ import { schemaFromGraph } from './uiSchema'
 import { previewHtml, PREVIEW_CHANNEL, type PreviewMessage } from './previewRuntime'
 import { compile } from './compile'
 import { describeRuntimeProfile, runtimeProfileFor, type RuntimeProfile } from '../backend/runtimeProfile'
-import type { BackendSettings } from '../backend/registry'
+import { backendChoices, type BackendSettings } from '../backend/registry'
 
 const registry = createRegistry(builtinBlocks)
 
@@ -38,6 +38,10 @@ const SUPABASE: BackendSettings = {
 const POCKETBASE: BackendSettings = { adapter: 'pocketbase', config: { url: 'http://127.0.0.1:8090/' } }
 const VORTEX: BackendSettings = { adapter: 'vortex', config: { projectKey: 'proj_1' } }
 const SELF: BackendSettings = { adapter: 'self-hosted', config: { url: 'http://localhost:8787' } }
+const APPWRITE: BackendSettings = {
+  adapter: 'appwrite',
+  config: { url: 'https://cloud.appwrite.io/v1', projectId: 'proj1', databaseId: 'main', apiKey: 'server-key' },
+}
 
 function profileOf(settings: BackendSettings): RuntimeProfile {
   const profile = runtimeProfileFor(settings)
@@ -149,20 +153,34 @@ describe('the backend profile', () => {
     expect(runtimeProfileFor({ adapter: 'firebase', config: { projectId: 'p', apiKey: 'k' } })).toBeUndefined()
   })
 
-  it('separates a backend it cannot emit from one that is half filled in', () => {
-    // Appwrite's adapter is built and nothing is missing from the
-    // settings, but no runtime speaks its dialect yet, so a build
-    // falls back to the generated service rather than calling routes
-    // that do not exist.
-    const appwrite = { adapter: 'appwrite', config: { url: 'https://cloud.appwrite.io/v1', projectId: 'proj1' } }
-    expect(runtimeProfileFor(appwrite)).toBeUndefined()
+  it('gives every adapter the IDE can reach a profile a build can use', () => {
+    // The adapter list and the dialect list are two lists, and the day
+    // they disagree a project that works in the IDE silently builds an
+    // app calling the local service instead. Rather than leave that to
+    // be noticed on a phone, it fails here.
+    const complete: Record<string, BackendSettings> = {
+      supabase: SUPABASE,
+      pocketbase: POCKETBASE,
+      vortex: VORTEX,
+      'self-hosted': SELF,
+      appwrite: APPWRITE,
+    }
+    for (const choice of backendChoices().filter((entry) => entry.status !== 'planned')) {
+      const settings = complete[choice.id]
+      expect(settings, `no filled-in settings for ${choice.id}`).toBeDefined()
+      expect(runtimeProfileFor(settings), `${choice.id} has no runtime profile`).toBeDefined()
+    }
+  })
 
-    const told = describeRuntimeProfile(undefined, appwrite)
-    expect(told).toContain('cannot speak Appwrite yet')
-    expect(told).toContain('local Node service')
-    // The other nothing: a field is genuinely missing.
+  it('still says the two different nothings apart', () => {
+    // A field is missing: the user can act on that.
     const half = { adapter: 'supabase', config: { url: 'https://x.supabase.co' } }
     expect(describeRuntimeProfile(undefined, half)).toContain('no complete backend yet')
+    expect(describeRuntimeProfile(profileOf(APPWRITE), APPWRITE))
+      .toContain('Built apps call Appwrite at cloud.appwrite.io')
+    // An API key acts as the server and ignores every permission, so a
+    // downloadable build does not get one.
+    expect(describeRuntimeProfile(profileOf(APPWRITE), APPWRITE)).toContain('API key')
   })
 
   it('normalises the address and fills in the defaults each backend has', () => {
@@ -177,6 +195,11 @@ describe('the backend profile', () => {
     expect(profileOf(SUPABASE).token).toEqual({ header: 'authorization', prefix: 'Bearer ' })
     // PocketBase takes the raw token, with no scheme in front of it.
     expect(profileOf(POCKETBASE).token).toEqual({ header: 'authorization', prefix: '' })
+    // Appwrite's session secret has a header of its own.
+    expect(profileOf(APPWRITE).token).toEqual({ header: 'x-appwrite-session', prefix: '' })
+    expect(profileOf(APPWRITE).database).toBe('main')
+    expect(profileOf(APPWRITE).headers['x-appwrite-project']).toBe('proj1')
+    expect(JSON.stringify(profileOf(APPWRITE))).not.toContain('server-key')
   })
 })
 
@@ -227,6 +250,29 @@ describe('a built app reading rows', () => {
     expect(calls[0].method).toBe('GET')
   })
 
+  it('sends Appwrite a JSON query document, and renames $id back to id', async () => {
+    const { calls, messages } = await run(
+      queryGraph('notes', '{ title: "ink" }'),
+      profileOf(APPWRITE),
+      [{ documents: [{ $id: 'doc1', $createdAt: '2026-01-01', title: 'ink' }], total: 1 }],
+    )
+
+    const url = new URL(calls[0].url)
+    expect(url.pathname).toBe('/v1/databases/main/collections/notes/documents')
+    // There is no column=value form here: every test is a JSON
+    // document of its own, in its own queries[] parameter.
+    expect(JSON.parse(url.searchParams.get('queries[0]') ?? ''))
+      .toEqual({ method: 'equal', attribute: 'title', values: ['ink'] })
+    expect(calls[0].headers['x-appwrite-project']).toBe('proj1')
+
+    // A block drawn against this table says row.id, whatever the
+    // backend underneath calls it.
+    const said = logs(messages).join(' ')
+    expect(said).toContain('"id":"doc1"')
+    expect(said).toContain('"created_at":"2026-01-01"')
+    expect(said).not.toContain('$id')
+  })
+
   it('asks for every row when there is no filter', async () => {
     const { calls } = await run(queryGraph('notes'), profileOf(SUPABASE), [[]])
     expect(calls[0].url).toBe('https://demo.supabase.co/rest/v1/notes?select=*')
@@ -254,6 +300,17 @@ describe('a built app writing a row', () => {
   it('wraps the row the way Vortex expects', async () => {
     const { calls } = await run(insertGraph(), profileOf(VORTEX), [{ row: { id: 7 } }])
     expect(JSON.parse(String(calls[0].body))).toEqual({ row: { title: 'Note' } })
+  })
+
+  it('nests the fields under data for Appwrite, and names the document', async () => {
+    const { calls } = await run(insertGraph(), profileOf(APPWRITE), [{ $id: 'doc1', title: 'Note' }])
+    expect(calls[0].url).toBe('https://cloud.appwrite.io/v1/databases/main/collections/notes/documents')
+    // 'unique()' is this backend's way of saying the server picks the
+    // id after all; the fields it owns are not in the body.
+    expect(JSON.parse(String(calls[0].body))).toEqual({
+      documentId: 'unique()',
+      data: { title: 'Note' },
+    })
   })
 })
 
@@ -290,6 +347,23 @@ describe('a built app signing somebody in', () => {
     expect(calls[1].headers.authorization).toBe('pb-token')
   })
 
+  it('reads the account after an Appwrite sign-in, which answers with a session', async () => {
+    const { calls } = await run(signInGraph(), profileOf(APPWRITE), [
+      { $id: 'session1', secret: 'aw-secret', userId: 'u1' },
+      { $id: 'u1', email: 'ada@example.com' },
+      { documents: [] },
+    ])
+
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/v1/account/sessions/email',
+      '/v1/account',
+      '/v1/databases/main/collections/notes/documents',
+    ])
+    // The session secret is sent raw, in a header of its own.
+    expect(calls[2].headers['x-appwrite-session']).toBe('aw-secret')
+    expect(calls[2].headers.authorization).toBeUndefined()
+  })
+
   it('signs a new PocketBase account in, because creating it does not', async () => {
     const { graph, ids } = build(['event.start', 'auth.signUp'], [[0, 'exec', 1, 'exec']])
     const named = setNodeValue(setNodeValue(graph, ids[1], 'email', 'ada@example.com'), ids[1], 'password', 'hunter2')
@@ -315,6 +389,15 @@ describe('a built app uploading a file', () => {
     const { calls, messages } = await run(uploadGraph(), profileOf(SUPABASE), [{ Key: 'shots/upload' }])
     expect(calls[0].url).toBe('https://demo.supabase.co/storage/v1/object/shots/upload')
     expect(logs(messages)).toContain('https://demo.supabase.co/storage/v1/object/public/shots/upload')
+  })
+
+  it('reports a view URL for an Appwrite file, project and all', async () => {
+    const { calls, messages } = await run(uploadGraph(), profileOf(APPWRITE), [{ $id: 'file1', name: 'upload' }])
+    expect(calls[0].url).toBe('https://cloud.appwrite.io/v1/storage/buckets/shots/files')
+    // The project travels in the URL here, because a browser opening
+    // this address sends none of the app's headers.
+    expect(logs(messages))
+      .toContain('https://cloud.appwrite.io/v1/storage/buckets/shots/files/file1/view?project=proj1')
   })
 
   it('reports a record-scoped URL for PocketBase', async () => {

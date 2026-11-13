@@ -430,7 +430,7 @@ function bindClick(screen, target, handler) {
 /**
  * Where the backend is, if there is one.
  *
- * The same four services answer three ways over. Inside the IDE there
+ * The same five services answer three ways over. Inside the IDE there
  * is no server and must not be one -- a preview that wrote to a
  * database would be a preview that could ruin your afternoon -- so the
  * calls are simulated and say so in the log. A build with a backend
@@ -446,6 +446,10 @@ const PROFILE = (typeof window !== 'undefined' && window.TUNGSTEN_BACKEND) || BA
 const BACKEND = (typeof window !== 'undefined' && window.TUNGSTEN_API) || (PROFILE && PROFILE.base) || API_BASE || ''
 const TOKEN_SLOT = (PROFILE && PROFILE.token) || { header: 'authorization', prefix: 'Bearer ' }
 const USERS = (PROFILE && PROFILE.users) || 'users'
+// Appwrite puts the database in the path and the project in a URL the
+// app opens outside itself, where no header can travel.
+const DATABASE = (PROFILE && PROFILE.database) || 'default'
+const PROJECT = (PROFILE && PROFILE.headers && PROFILE.headers['x-appwrite-project']) || ''
 
 let AUTH_TOKEN = null
 
@@ -478,6 +482,37 @@ async function backend(path, options) {
 const nameOf = (file) => (file && file.name) || 'upload'
 const blobOf = (file) => (file instanceof Blob ? file : new Blob([String(file == null ? '' : file)]))
 const pairs = (where) => Object.keys(where || {}).map((key) => [key, where[key]])
+
+/**
+ * A document as a row, and a row as a document.
+ *
+ * Named rowOf rather than document because this code runs in a page,
+ * and a page already has a document.
+ *
+ * Only one backend prefixes its own fields with a $, but the blocks
+ * cannot know that: they say row.id, and a write that sent an id
+ * back
+ * would be rejected rather than ignored.
+ */
+const RENAMED = { $id: 'id', $createdAt: 'created_at', $updatedAt: 'updated_at' }
+const OWNED = ['id', 'created_at', 'updated_at']
+
+function rowOf(reply) {
+  const given = reply && typeof reply === 'object' ? reply : {}
+  const row = {}
+  for (const key of Object.keys(given)) if (key.charAt(0) !== '$') row[key] = given[key]
+  for (const key of Object.keys(RENAMED)) if (key in given) row[RENAMED[key]] = given[key]
+  return row
+}
+
+function dataOf(row) {
+  const given = row && typeof row === 'object' ? row : {}
+  const body = {}
+  for (const key of Object.keys(given)) {
+    if (key.charAt(0) !== '$' && OWNED.indexOf(key) < 0) body[key] = given[key]
+  }
+  return body
+}
 
 /**
  * One entry per wire protocol.
@@ -601,6 +636,68 @@ const WIRE = {
       + (Array.isArray(reply.file) ? reply.file[0] : reply.file),
   },
 
+  appwrite: {
+    list: (table, where) => ({
+      path: '/databases/' + DATABASE + '/collections/' + table + '/documents'
+        + (pairs(where).length
+          ? '?' + pairs(where).map((pair, index) => 'queries[' + index + ']=' + encodeURIComponent(
+            JSON.stringify({ method: 'equal', attribute: pair[0], values: [pair[1]] }),
+          )).join('&')
+          : ''),
+    }),
+    // A block drawn against a table says row.id whatever is
+    // underneath it, so $id and the timestamps are renamed and the
+    // backend's own fields left behind.
+    rows: (reply) => (reply.documents || []).map(rowOf),
+    create: (table, row) => ({
+      path: '/databases/' + DATABASE + '/collections/' + table + '/documents',
+      method: 'POST',
+      json: { documentId: 'unique()', data: dataOf(row) },
+    }),
+    row: (reply) => rowOf(reply),
+    patch: (table, id, changes) => ({
+      path: '/databases/' + DATABASE + '/collections/' + table + '/documents/' + id,
+      method: 'PATCH',
+      json: { data: dataOf(changes) },
+    }),
+    drop: (table, id) => ({
+      path: '/databases/' + DATABASE + '/collections/' + table + '/documents/' + id,
+      method: 'DELETE',
+    }),
+    // Creating an account does not sign it in, and signing in answers
+    // with a session rather than a person, so both steps end at the
+    // account.
+    signUp: (email, password) => ({
+      path: '/account',
+      method: 'POST',
+      json: { userId: 'unique()', email, password },
+      then: 'sign-in',
+    }),
+    signIn: (email, password) => ({
+      path: '/account/sessions/email',
+      method: 'POST',
+      json: { email, password },
+      then: 'session',
+    }),
+    session: () => ({ path: '/account' }),
+    signOut: () => ({ path: '/account/sessions/current', method: 'DELETE' }),
+    oauth: (provider, redirect) => ({
+      url: BACKEND + '/account/sessions/oauth2/' + encodeURIComponent(provider)
+        + '?project=' + encodeURIComponent(PROJECT)
+        + '&success=' + encodeURIComponent(redirect) + '&failure=' + encodeURIComponent(redirect),
+    }),
+    token: (reply) => reply.secret,
+    user: (reply) => rowOf(reply),
+    upload: (bucket, file) => {
+      const form = new FormData()
+      form.append('fileId', 'unique()')
+      form.append('file', blobOf(file), nameOf(file))
+      return { path: '/storage/buckets/' + bucket + '/files', method: 'POST', body: form }
+    },
+    uploaded: (reply, bucket) => BACKEND + '/storage/buckets/' + bucket + '/files/'
+      + reply.$id + '/view?project=' + encodeURIComponent(PROJECT),
+  },
+
   vortex: {
     list: (table, where) => ({
       path: '/v1/data/' + table + '/query',
@@ -706,7 +803,7 @@ const auth = {
     // Some backends create the account without signing it in. Handing
     // back a user with no session would leave the next block
     // unauthorised for a reason nobody could see.
-    if (request.then === 'sign-in') return accept(await ask(wire.signIn(email, password)))
+    if (request.then === 'sign-in') return auth.signIn(email, password)
     return accept(reply)
   },
   signIn: async (email, password) => {
@@ -714,7 +811,12 @@ const auth = {
       log('auth.signIn("' + email + '") — preview account')
       return { id: 'preview-user', email }
     }
-    return accept(await ask(wire.signIn(email, password)))
+    const request = wire.signIn(email, password)
+    const user = accept(await ask(request))
+    // And some answer a sign-in with a session rather than a person:
+    // it carries the token and nothing a screen can show.
+    if (request.then === 'session') return accept(await ask(wire.session()))
+    return user
   },
   oauth: async (provider) => {
     if (!BACKEND) {
