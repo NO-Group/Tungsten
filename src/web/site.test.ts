@@ -15,6 +15,7 @@ import {
   normaliseDomain,
   readSite,
   siteUrl,
+  stampBuild,
   type SiteConfig,
 } from './site'
 
@@ -253,5 +254,49 @@ describe('buildHeaders', () => {
     const headers = buildHeaders()
     const worker = headers.slice(headers.indexOf('/sw.js'), headers.indexOf('/index.html'))
     expect(worker).toContain('no-cache')
+  })
+})
+
+describe('stampBuild', () => {
+  // The boot screen ships with `dev` and `local` in these slots, which is
+  // what the dev server should show. Vite fills the version in; only
+  // build-web.mjs knows the build id, so the two halves arrive separately.
+  const page = [
+    '<p class="spec">',
+    '<span>Version <span data-boot-version>dev</span></span>',
+    '<span>Build <span data-boot-build>local</span></span>',
+    '</p>',
+  ].join('')
+
+  it('writes the version without touching the build id', () => {
+    const next = stampBuild(page, { version: '2.2.0' })
+    expect(next).toContain('<span data-boot-version>2.2.0</span>')
+    expect(next).toContain('<span data-boot-build>local</span>')
+  })
+
+  it('writes the build id without touching the version', () => {
+    const next = stampBuild(page, { buildId: '2afb90405ca6' })
+    expect(next).toContain('<span data-boot-build>2afb90405ca6</span>')
+    expect(next).toContain('<span data-boot-version>dev</span>')
+  })
+
+  it('is idempotent, because the build stamps twice', () => {
+    const once = stampBuild(page, { version: '2.2.0', buildId: 'abc123' })
+    expect(stampBuild(once, { version: '2.2.0', buildId: 'abc123' })).toBe(once)
+  })
+
+  it('leaves the placeholders alone when it has nothing to say', () => {
+    expect(stampBuild(page, {})).toBe(page)
+    expect(stampBuild(page, { version: '' })).toBe(page)
+  })
+
+  it('escapes, because a version string reaches the page as markup', () => {
+    expect(stampBuild(page, { version: '1.0-<script>' }))
+      .toContain('<span data-boot-version>1.0-&lt;script&gt;</span>')
+  })
+
+  it('does not care that the page has other markup around it', () => {
+    const full = `<html><body>${page}<div id="root"></div></body></html>`
+    expect(stampBuild(full, { version: '9.9.9' })).toContain('>9.9.9</span>')
   })
 })

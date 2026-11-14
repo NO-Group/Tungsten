@@ -13,9 +13,26 @@
 
       Inline, because it has to paint on the first frame: a <link> to a
       stylesheet or a React mount both arrive after the bundle, which is
-      exactly the wait this is here to cover. Nothing below needs
-      JavaScript to animate -- the script only advances the checklist and
-      takes the screen away at the end.
+      exactly the wait this is here to cover.
+
+      It is designed as a still image, not as an intro.
+
+      Tungsten starts in well under a second, so almost nobody ever sees a
+      boot *sequence* -- they see one frame, maybe two, and form an opinion
+      from it. An entrance choreography is therefore the wrong instrument:
+      it is a thing that looks good only in the one case nobody wants, a
+      slow start, and that spends the fast case rendering a half-finished
+      composition. So nothing here animates its way in. The layout is
+      correct and complete in the first painted frame, and the only things
+      that move afterwards are the two that represent real work: the
+      progress bar, and the line of text naming what is being loaded.
+
+      What carries it instead is typography and the Graphene principles --
+      dense over airy, one accent, contrast earned, instrumentation rather
+      than decoration. The mark is the element cell: tungsten is 74 on the
+      table, symbol W, 183.84 u, and it melts at 3422 degrees, higher than
+      any other metal. That is where the name comes from and it is worth
+      saying once, plainly, in a box.
 
       The colours are Graphene, copied here as first-paint values the same
       way the :root block in styles.css is. `src/boot/splash.test.ts` fails
@@ -30,19 +47,15 @@
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        gap: 26px;
-        background:
-          radial-gradient(120% 90% at 50% 12%, #1d201d 0%, #111311 42%, #0e100e 100%);
+        background: #111311;
         color: #d5d9d5;
         font-family: 'DM Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         overflow: hidden;
         /*
-          No filter here. A blur on a full-screen layer is the most
-          expensive thing this file could ask for, and it would be asked
-          for at the exact moment React is mounting the workbench
-          underneath -- so the one frame the user judges the product on is
-          the one frame guaranteed to drop. Opacity and transform are
-          composited.
+          No filter on the way out. A blur on a full-screen layer would be
+          asked for at the exact moment React is mounting the workbench
+          underneath, so the one frame the product is judged on is the one
+          frame guaranteed to drop. Opacity and transform are composited.
         */
         transition: opacity 340ms ease, transform 340ms cubic-bezier(0.3, 0, 0.2, 1);
         will-change: opacity, transform;
@@ -50,261 +63,210 @@
 
       #boot.done {
         opacity: 0;
-        /* Pulling *in* rather than scaling up: the screen recedes to let
-           the workbench through, instead of lunging at the camera. */
+        /* Receding, not lunging: the screen steps back to let the
+           workbench through. */
         transform: scale(0.985);
         pointer-events: none;
       }
 
-      /* A drifting lattice, because tungsten is a crystal before it is a metal. */
+      /*
+        A static lattice. It was drifting before; a 14-second loop nobody
+        is present for is just a repaint, and on a weak machine it is a
+        repaint competing with the parse of the bundle this screen exists
+        to cover.
+      */
       #boot .grid {
         position: absolute;
-        inset: -60px;
+        inset: 0;
         background-image:
           linear-gradient(#2b302b 1px, transparent 1px),
           linear-gradient(90deg, #2b302b 1px, transparent 1px);
-        background-size: 46px 46px;
-        opacity: 0.22;
-        mask-image: radial-gradient(70% 60% at 50% 45%, #000 20%, transparent 78%);
-        animation: boot-drift 14s linear infinite;
+        background-size: 44px 44px;
+        opacity: 0.14;
+        mask-image: radial-gradient(68% 58% at 50% 48%, #000 10%, transparent 76%);
       }
 
-      @keyframes boot-drift {
-        to { transform: translate(46px, 46px); }
-      }
-
+      /* One soft lift behind the composition so it is not floating on flat black. */
       #boot .glow {
         position: absolute;
-        width: 620px;
-        height: 620px;
+        width: 760px;
+        height: 420px;
         border-radius: 50%;
-        background: radial-gradient(circle, #c8f16920 0%, transparent 62%);
-        animation: boot-breathe 3.4s ease-in-out infinite;
+        background: radial-gradient(60% 60% at 50% 50%, #c8f16920 0%, transparent 70%);
+        opacity: 0.6;
       }
 
-      @keyframes boot-breathe {
-        0%, 100% { opacity: 0.55; transform: scale(0.94); }
-        50% { opacity: 1; transform: scale(1.06); }
-      }
+      /* ------------------------------------------------------- the plate */
 
-      #boot .mark {
+      #boot .plate {
         position: relative;
-        width: 168px;
-        height: 168px;
-      }
-
-      #boot .mark svg { position: absolute; inset: 0; overflow: visible; }
-      #boot .chevron { transform-box: fill-box; transform-origin: center; }
-
-      /* The shield draws itself first, in metal. */
-      #boot .shield {
-        fill: none;
-        stroke: #d5d9d5;
-        stroke-width: 3;
-        stroke-linejoin: round;
-        stroke-dasharray: 420;
-        stroke-dashoffset: 420;
-        animation: boot-draw 620ms cubic-bezier(0.65, 0, 0.35, 1) forwards;
-        filter: drop-shadow(0 1px 0 #383e38);
-      }
-
-      #boot .strut {
-        fill: none;
-        stroke-dasharray: 130;
-        stroke-dashoffset: 130;
-        animation: boot-draw 420ms ease-out forwards;
-      }
-
-      #boot .metal { stroke: #858c86; stroke-width: 2.4; stroke-linecap: round; }
-      #boot .strut:nth-of-type(1) { animation-delay: 0.34s; }
-      #boot .strut:nth-of-type(2) { animation-delay: 0.41s; }
-
-      /* Then the chevrons arrive, lit. */
-      #boot .chevron {
-        fill: none;
-        stroke: #c8f169;
-        stroke-width: 6;
-        stroke-linecap: round;
-        stroke-linejoin: round;
-        opacity: 0;
-        filter: drop-shadow(0 0 8px #c8f16980);
-        animation: boot-light 340ms ease 0.46s forwards;
-      }
-
-      #boot .chevron.right { animation-delay: 0.55s; }
-
-      @keyframes boot-light {
-        from { opacity: 0; transform: scale(0.82); }
-        to { opacity: 1; transform: scale(1); }
-      }
-
-      @keyframes boot-draw {
-        to { stroke-dashoffset: 0; }
-      }
-
-      /* Two rings, counter-rotating, one dashed like a caliper scale. */
-      #boot .ring {
-        fill: none;
-        stroke: #383e38;
-        stroke-width: 1.2;
-        transform-origin: 50% 50%;
-        animation: boot-spin 9s linear infinite;
-      }
-
-      #boot .ring.inner {
-        stroke: #2b302b;
-        stroke-dasharray: 3 9;
-        animation: boot-spin 6s linear infinite reverse;
-      }
-
-      @keyframes boot-spin {
-        to { transform: rotate(360deg); }
-      }
-
-      /* The arc: a bolt that strikes the cell every couple of seconds. */
-      #boot .bolt {
-        fill: none;
-        stroke: #eaffb0;
-        stroke-width: 2;
-        stroke-linecap: round;
-        opacity: 0;
-        filter: drop-shadow(0 0 6px #c8f169);
-        animation: boot-strike 2.6s steps(1, end) infinite;
-      }
-
-      #boot .bolt.second { animation-delay: 1.3s; }
-
-      @keyframes boot-strike {
-        0%, 6% { opacity: 0; }
-        8% { opacity: 1; }
-        10% { opacity: 0.1; }
-        12% { opacity: 0.95; }
-        16% { opacity: 0; }
-        100% { opacity: 0; }
+        width: 460px;
+        max-width: calc(100vw - 48px);
       }
 
       /*
-        A sheen crossing the mark: the metal read.
-
-        The background is moved rather than the element, so the highlight
-        never leaves the mark's box -- translating it would slide a bright
-        band across the rest of the screen, since nothing here clips.
+        Registration marks. Four corner ticks, drawn as borders on two
+        pseudo-elements, the way a drawing is trimmed. They frame the
+        composition without boxing it in, which a full rectangle would.
       */
-      #boot .sheen {
+      #boot .plate::before,
+      #boot .plate::after {
+        content: '';
+        position: absolute;
+        width: 13px;
+        height: 13px;
+        border: 1px solid #2b302b;
+      }
+
+      #boot .plate::before {
+        top: -17px;
+        left: -17px;
+        border-right: 0;
+        border-bottom: 0;
+      }
+
+      #boot .plate::after {
+        right: -17px;
+        bottom: -17px;
+        border-left: 0;
+        border-top: 0;
+      }
+
+      /* ------------------------------------------------- identity, row 1 */
+
+      #boot .identity {
+        display: flex;
+        align-items: stretch;
+        gap: 20px;
+      }
+
+      /*
+        The element cell. Everything in it is true, which is the whole
+        reason it is more interesting than a logo: 74, W, 183.84 u.
+      */
+      #boot .cell {
+        position: relative;
+        flex: none;
+        width: 92px;
+        height: 92px;
+        border: 1px solid #383e38;
+        background: #171a17;
+      }
+
+      /* The accent appears exactly twice on this screen. Once here. */
+      #boot .cell::before {
+        content: '';
+        position: absolute;
+        top: -1px;
+        left: -1px;
+        width: 15px;
+        height: 15px;
+        border-top: 1px solid #c8f169;
+        border-left: 1px solid #c8f169;
+      }
+
+      #boot .cell .number,
+      #boot .cell .mass {
+        position: absolute;
+        font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+        font-size: 9.5px;
+        letter-spacing: 0.08em;
+        color: #858c86;
+      }
+
+      #boot .cell .number { top: 7px; left: 9px; }
+      #boot .cell .mass { right: 9px; bottom: 7px; }
+
+      #boot .cell .symbol {
         position: absolute;
         inset: 0;
-        background: linear-gradient(105deg, transparent 38%, #f0f3ef2e 48%, transparent 58%);
-        background-size: 260% 100%;
-        background-position: 130% 0;
-        animation: boot-sheen 2.8s ease-in-out infinite;
-      }
-
-      @keyframes boot-sheen {
-        0% { background-position: 130% 0; }
-        60%, 100% { background-position: -130% 0; }
-      }
-
-      #boot .wordmark {
         display: flex;
-        gap: 9px;
-        font-size: 27px;
-        font-weight: 600;
-        letter-spacing: 0.34em;
-        /* The tracking is applied to the right of each letter, so without
-           this the block sits half a space off centre. */
-        margin-left: 0.34em;
+        align-items: center;
+        justify-content: center;
+        /* Optical, not geometric: a W is bottom-heavy and sits low in its
+           box unless it is lifted. */
+        padding-bottom: 4px;
+        font-size: 52px;
+        font-weight: 500;
+        letter-spacing: -0.02em;
         color: #f0f3ef;
       }
 
-      #boot .wordmark span {
-        opacity: 0;
-        transform: translateY(9px);
-        animation: boot-letter 380ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+      #boot .naming {
+        display: flex;
+        flex: 1;
+        flex-direction: column;
+        justify-content: center;
+        min-width: 0;
       }
 
-      @keyframes boot-letter {
-        to { opacity: 1; transform: translateY(0); }
+      #boot .wordmark {
+        font-size: 26px;
+        font-weight: 600;
+        line-height: 1;
+        letter-spacing: 0.3em;
+        /* Tracking is added to the right of the last letter too, so
+           without this the word sits visibly off its own left edge. */
+        margin-right: -0.3em;
+        color: #f0f3ef;
+        white-space: nowrap;
+      }
+
+      #boot .rule {
+        height: 1px;
+        margin: 13px 0;
+        background: linear-gradient(90deg, #383e38, #2b302b 62%, transparent);
       }
 
       #boot .tagline {
-        margin: -14px 0 0;
-        color: #5b615c;
-        font-size: 11px;
-        letter-spacing: 0.22em;
+        margin: 0;
+        font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+        font-size: 10px;
+        line-height: 1.5;
+        letter-spacing: 0.18em;
         text-transform: uppercase;
-        opacity: 0;
-        animation: boot-fade 360ms ease 0.52s forwards;
+        color: #858c86;
       }
 
-      @keyframes boot-fade {
-        to { opacity: 1; }
-      }
+      /* -------------------------------------------------- readout, row 2 */
 
-      #boot .console {
-        position: relative;
-        width: 330px;
-        opacity: 0;
-        animation: boot-fade 320ms ease 0.3s forwards;
-      }
+      #boot .console { position: relative; margin-top: 30px; }
 
       #boot .track {
-        height: 4px;
-        border-radius: 2px;
-        background: #1d201d;
+        height: 2px;
+        background: #232723;
         overflow: hidden;
       }
 
       #boot .fill {
         position: relative;
-        overflow: hidden;
         height: 100%;
         width: 4%;
-        border-radius: 2px;
-        background: linear-gradient(90deg, #8fae4b, #c8f169);
-        box-shadow: 0 0 10px #c8f16980;
+        background: #c8f169;
+        /* The accent, the second and last time. */
+        box-shadow: 0 0 9px #c8f16960;
         transition: width 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
-      }
-
-      /*
-        A highlight travelling along the filled part, so the bar still
-        reads as working during the pauses between milestones -- without
-        the width ever moving on its own, which would be the lie this
-        whole screen is built to avoid.
-      */
-      #boot .fill::after {
-        content: '';
-        position: absolute;
-        inset: 0;
-        background: linear-gradient(90deg, transparent, #f0f3ef2e, transparent);
-        background-size: 50% 100%;
-        background-repeat: no-repeat;
-        animation: boot-scan 1.4s ease-in-out infinite;
-      }
-
-      @keyframes boot-scan {
-        from { background-position: -60% 0; }
-        to { background-position: 160% 0; }
       }
 
       /*
         Six milestones, one line.
 
-        This used to be a six-row checklist, which is a shape borrowed from
-        installers -- things that take minutes. Tungsten starts in under a
-        second, so the checklist spent its whole life being half-read: a
-        wall of text that ticked itself off faster than anyone could follow
-        and then vanished. The milestones are still all here and still all
-        honest; they are stacked and crossfaded, so the line reads as one
-        label that keeps changing rather than six that flicker.
+        This was a six-row checklist, which is a shape borrowed from
+        installers -- things that take minutes. At this length it was a
+        wall of text that ticked itself off faster than anyone could read
+        it. The milestones are all still here and still honest; they are
+        stacked and crossfaded, so it reads as one label that keeps
+        changing rather than six that flicker.
       */
       #boot .steps {
         position: relative;
-        height: 15px;
-        margin: 14px 0 0;
+        height: 14px;
+        margin: 11px 0 0;
         padding: 0;
         list-style: none;
         font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
         font-size: 10.5px;
+        letter-spacing: 0.04em;
       }
 
       #boot .steps li {
@@ -315,39 +277,56 @@
         gap: 8px;
         color: #858c86;
         opacity: 0;
-        transform: translateY(5px);
-        transition: opacity 220ms ease, transform 220ms ease;
+        transition: opacity 200ms ease;
       }
 
       #boot .steps li::before {
-        content: '›';
-        color: #383e38;
+        content: '\203A';
+        color: #5b615c;
       }
 
-      #boot .steps li.active {
-        opacity: 1;
-        transform: none;
-        color: #d5d9d5;
-      }
-
+      #boot .steps li.active { opacity: 1; color: #d5d9d5; }
       #boot .steps li.active::before { color: #c8f169; }
 
-      /* A step that is done and not current has been superseded: the one
-         after it is the line now. */
-      #boot .steps li.done { opacity: 0; transform: translateY(-5px); }
-      #boot .steps li.done.active { opacity: 1; transform: none; }
+      /* Done and not current means superseded: the next one is the line now. */
+      #boot .steps li.done { opacity: 0; }
+      #boot .steps li.done.active { opacity: 1; }
 
       #boot .steps li .detail { margin-left: auto; color: #5b615c; }
+
+      /* ----------------------------------------------------- spec, row 3 */
+
+      /*
+        Three facts. Two of them are the build you are actually looking at,
+        stamped in at build time -- which is the difference between a
+        decoration and an instrument. When someone says the site is broken,
+        this line is the first question answered.
+      */
+      #boot .spec {
+        display: flex;
+        gap: 14px;
+        margin: 26px 0 0;
+        font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+        font-size: 9.5px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        color: #5b615c;
+      }
+
+      #boot .spec span { white-space: nowrap; }
+      #boot .spec .melt { margin-left: auto; }
 
       #boot .hint {
         position: absolute;
         bottom: 26px;
-        color: #5b615c;
-        font-size: 10.5px;
+        font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+        font-size: 10px;
         letter-spacing: 0.08em;
+        color: #5b615c;
       }
 
-      /* What the watchdog shows when the bundle never arrives. */
+      /* ---------------------------------------- when it could not start */
+
       #boot .failed {
         margin: 0;
         color: #df756f;
@@ -359,9 +338,9 @@
 
       #boot .failed-help {
         margin: 10px 0 0;
-        color: #858c86;
         font-size: 11px;
         line-height: 1.6;
+        color: #858c86;
       }
 
       #boot .failed-actions {
@@ -373,9 +352,9 @@
       #boot .failed-actions button {
         padding: 7px 13px;
         border: 1px solid #2b302b;
-        border-radius: 7px;
+        border-radius: 3px;
         background: #c8f169;
-        color: #111311;
+        color: #10140c;
         font: inherit;
         font-size: 11px;
         font-weight: 600;
@@ -387,16 +366,25 @@
         color: #d5d9d5;
       }
 
+      /* ------------------------------------------------------- narrow */
+
+      @media (max-width: 520px) {
+        #boot .identity { gap: 15px; }
+        #boot .cell { width: 72px; height: 72px; }
+        #boot .cell .symbol { font-size: 40px; }
+        #boot .wordmark { font-size: 20px; letter-spacing: 0.24em; margin-right: -0.24em; }
+        #boot .spec .melt { display: none; }
+      }
+
       /*
-        Someone who asked for less movement gets less movement, and gets it
-        over with: no drift, no sheen, no strike, and the minimum time on
-        screen drops to almost nothing.
+        There is almost nothing here to turn off, which is the point: a
+        still composition is already the reduced-motion version. What
+        remains is the progress bar easing its width, and that is the one
+        thing on screen reporting real work, so it stays -- it just stops
+        easing and simply moves.
       */
       @media (prefers-reduced-motion: reduce) {
-        #boot .grid, #boot .glow, #boot .sheen, #boot .bolt, #boot .ring { animation: none; }
-        #boot .fill::after { animation: none; opacity: 0; }
-        #boot .shield, #boot .strut, #boot .chevron { animation-duration: 1ms; animation-delay: 0ms; }
-        #boot .wordmark span, #boot .tagline, #boot .console { animation-duration: 1ms; animation-delay: 0ms; }
+        #boot, #boot .fill, #boot .steps li { transition-duration: 1ms; }
       }
     </style>
   </head>
@@ -407,48 +395,37 @@
       <div class="grid"></div>
       <div class="glow"></div>
 
-      <div class="mark">
-        <svg viewBox="0 0 168 168" aria-hidden="true">
-          <circle class="ring" cx="84" cy="84" r="80" />
-          <circle class="ring inner" cx="84" cy="84" r="66" />
-          <!--
-            The application icon, drawn as line work: the shield, the T
-            through it, and the two chevrons. The boot screen and the icon
-            in the dock should be recognisably the same object.
-          -->
-          <path class="shield" d="M30 46 L84 20 L138 46 L138 94 L84 150 L30 94 Z" />
-          <path class="strut metal" d="M50 62 H118" />
-          <path class="strut metal" d="M84 62 V142" />
-          <path class="chevron" d="M72 86 L58 100 L72 114" />
-          <path class="chevron right" d="M96 86 L110 100 L96 114" />
-          <path class="bolt" d="M104 30 L86 74 L100 74 L74 126" />
-          <path class="bolt second" d="M136 60 L112 86 L124 90 L104 118" />
-        </svg>
-        <div class="sheen"></div>
-      </div>
+      <div class="plate">
+        <div class="identity">
+          <div class="cell" aria-hidden="true">
+            <span class="number">74</span>
+            <span class="symbol">W</span>
+            <span class="mass">183.84</span>
+          </div>
+          <div class="naming">
+            <div class="wordmark">TUNGSTEN</div>
+            <div class="rule"></div>
+            <p class="tagline">A rugged development environment</p>
+          </div>
+        </div>
 
-      <div class="wordmark" aria-hidden="true">
-        <span style="animation-delay: 0.24s">T</span>
-        <span style="animation-delay: 0.28s">U</span>
-        <span style="animation-delay: 0.31s">N</span>
-        <span style="animation-delay: 0.34s">G</span>
-        <span style="animation-delay: 0.38s">S</span>
-        <span style="animation-delay: 0.42s">T</span>
-        <span style="animation-delay: 0.45s">E</span>
-        <span style="animation-delay: 0.48s">N</span>
-      </div>
-      <p class="tagline">A rugged development environment</p>
+        <div class="console">
+          <div class="track"><div class="fill" data-boot-fill></div></div>
+          <ul class="steps" data-boot-steps>
+            <li data-step="chrome">Graphene theme</li>
+            <li data-step="workbench">Workbench</li>
+            <li data-step="grammars">Language grammars</li>
+            <li data-step="shell">Shell dictionary</li>
+            <li data-step="blocks">Block library</li>
+            <li data-step="workspace">Workspace</li>
+          </ul>
+        </div>
 
-      <div class="console">
-        <div class="track"><div class="fill" data-boot-fill></div></div>
-        <ul class="steps" data-boot-steps>
-          <li data-step="chrome">Graphene theme</li>
-          <li data-step="workbench">Workbench</li>
-          <li data-step="grammars">Language grammars</li>
-          <li data-step="shell">Shell dictionary</li>
-          <li data-step="blocks">Block library</li>
-          <li data-step="workspace">Workspace</li>
-        </ul>
+        <p class="spec">
+          <span>Version <span data-boot-version>dev</span></span>
+          <span>Build <span data-boot-build>local</span></span>
+          <span class="melt">Melts at 3422 &#176;C</span>
+        </p>
       </div>
 
       <p class="hint">Press Ctrl+Shift+P for the command palette</p>

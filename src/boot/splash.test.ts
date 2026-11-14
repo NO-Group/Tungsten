@@ -104,18 +104,71 @@ describe('the boot screen markup', () => {
     expect(used.has(tokens.accent.base.toLowerCase())).toBe(true)
   })
 
-  it('does not hold the user longer than its own animation', () => {
+  it('is a still image: nothing animates its way in', () => {
+    // The screen is up for well under a second, so what the user sees is
+    // one frame, not a sequence. An entrance choreography only looks
+    // right in the case nobody wants -- a slow start -- and spends the
+    // fast case rendering a half-drawn composition. The layout must be
+    // correct and complete in the first painted frame.
+    const block = /#boot \{[\s\S]*?<\/style>/.exec(html)?.[0] ?? ''
+    expect(block).not.toMatch(/\banimation(-name|-delay|-duration)?\s*:/)
+    expect(block).not.toContain('@keyframes')
+  })
+
+  it('holds the user only long enough not to flash', () => {
     // The floor exists so a fast start does not flash something
-    // illegible. It is not a stage wait: once the intro has resolved,
-    // every extra millisecond is the product wasting the user's time on
-    // every single load.
-    const delays = [...html.matchAll(/animation(?:-delay)?:[^;}"]*?([\d.]+)m?s[^;}"]*/g)]
-    const latest = [...html.matchAll(/animation: boot-(?:light|letter|fade) ([\d.]+)m?s[^;]*?([\d.]+)s/g)]
-      .map(([, duration, delay]) => Number(duration) * (duration.includes('.') ? 1000 : 1) + Number(delay) * 1000)
-    expect(delays.length).toBeGreaterThan(0)
-    expect(Math.max(...latest)).toBeLessThanOrEqual(MIN_VISIBLE_MS)
-    // …and the floor is close to it, rather than padded well past it.
-    expect(MIN_VISIBLE_MS).toBeLessThanOrEqual(1200)
+    // illegible, and for nothing else. It used to be 3200ms, which is
+    // the product making you wait on every single load, for ever.
+    expect(MIN_VISIBLE_MS).toBeLessThanOrEqual(1000)
+    expect(MIN_VISIBLE_MS).toBeGreaterThanOrEqual(400)
+  })
+
+  it('moves only the two things that represent real work', () => {
+    // The bar's width and the step label. Both are driven by the
+    // controller from milestones that actually happened; everything else
+    // on screen is fixed.
+    const moving = [...html.matchAll(/#boot ([^{]*?)\{[^}]*?transition:/g)]
+      .map(([, selector]) => selector.trim())
+    expect(moving.sort()).toEqual(['', '.fill', '.steps li'])
+  })
+
+  it('states the element, and states it correctly', () => {
+    // The mark is a periodic-table cell rather than a logo, so the three
+    // values in it are claims. Tungsten is 74, W, 183.84 u, and it melts
+    // higher than any other metal.
+    const cell = /<div class="cell"[\s\S]*?<\/div>/.exec(html)?.[0] ?? ''
+    expect(cell).toContain('>74<')
+    expect(cell).toContain('>W<')
+    expect(cell).toContain('>183.84<')
+    expect(html).toContain('Melts at 3422')
+  })
+
+  it('keeps the accent off everything that is only type', () => {
+    // Graphene's first principle: one accent, carrying only what matters.
+    // On this screen it marks the live things -- the progress fill, the
+    // current step, the corner of the cell, the recovery button -- and
+    // the static type is left in the neutral ramp, where it belongs.
+    const block = /#boot \{[\s\S]*?<\/style>/.exec(html)?.[0] ?? ''
+    const rules = block.split('}').filter((rule) => /#c8f169\b/.test(rule))
+    const selectors = rules.map((rule) => rule.slice(rule.lastIndexOf('#boot')).split('{')[0].trim())
+    expect(selectors.sort()).toEqual([
+      '#boot .cell::before',
+      '#boot .failed-actions button',
+      '#boot .fill',
+      '#boot .steps li.active::before',
+    ])
+    // Named here so the list above cannot be widened by accident.
+    for (const quiet of ['.wordmark', '.tagline', '.spec', '.hint', '.grid', '.rule']) {
+      const rule = new RegExp(`#boot \\${quiet} \\{[^}]*\\}`).exec(block)?.[0] ?? ''
+      expect(rule).not.toContain('#c8f169')
+    }
+  })
+
+  it('names the build it is, with somewhere to stamp it', () => {
+    // A boot screen that can say which deploy it came from turns "the
+    // site is broken" into a question that is already answered.
+    expect(html).toContain('<span data-boot-version>dev</span>')
+    expect(html).toContain('<span data-boot-build>local</span>')
   })
 
   it('fades for exactly as long as the stylesheet says it does', () => {
@@ -138,6 +191,10 @@ describe('the boot screen markup', () => {
     const rule = /#boot \.steps li \{[\s\S]*?\}/.exec(html)?.[0] ?? ''
     expect(rule).toContain('position: absolute')
     expect(rule).toContain('opacity: 0')
+  })
+
+  it('reads at a phone width without the composition collapsing', () => {
+    expect(html).toContain('@media (max-width: 520px)')
   })
 
   it('asks for less movement when the machine does', () => {

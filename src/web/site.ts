@@ -170,6 +170,31 @@ function escapeAttribute(value: string): string {
 }
 
 /**
+ * Writes the real build into the boot screen.
+ *
+ * The boot screen shows the version and the build id because that is the
+ * difference between a decoration and an instrument: when somebody says
+ * the site is broken, the first question is always which copy of it they
+ * are looking at, and the answer is already on their screen.
+ *
+ * The page ships with `dev` and `local` in those slots, which is exactly
+ * what a developer running the dev server should see. Each stamp is
+ * independent -- Vite knows the version at build time, and only
+ * `build-web.mjs` knows the build id -- so this is called twice with
+ * different halves of the answer.
+ */
+export function stampBuild(html: string, stamp: { version?: string; buildId?: string }): string {
+  const write = (text: string, slot: 'version' | 'build', value: string | undefined) => {
+    if (!value) return text
+    return text.replace(
+      new RegExp(`(<span data-boot-${slot}>)[^<]*(</span>)`),
+      `$1${escapeAttribute(value)}$2`,
+    )
+  }
+  return write(write(html, 'version', stamp.version), 'build', stamp.buildId)
+}
+
+/**
  * The tags a deployed page needs and a dev page does not.
  *
  * Absolute URLs appear only when there is a domain to make them from: a

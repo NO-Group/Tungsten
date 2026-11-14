@@ -23,6 +23,7 @@ import { join, relative } from 'node:path'
 
 import { checkDeployment, describeProblems } from '../src/web/deployCheck.ts'
 import {
+  stampBuild,
   buildHeaders,
   buildManifest,
   buildNotFoundPage,
@@ -54,7 +55,9 @@ function listFiles(directory) {
 const written = []
 function emit(name, contents) {
   writeFileSync(join(DIST, name), contents)
-  written.push({ name, size: Buffer.byteLength(contents) })
+  const already = written.find((file) => file.name === name)
+  if (already) already.size = Buffer.byteLength(contents)
+  else written.push({ name, size: Buffer.byteLength(contents) })
 }
 
 const kb = (bytes) => `${(bytes / 1024).toFixed(bytes < 10_240 ? 1 : 0)} kB`
@@ -111,6 +114,14 @@ const buildId = createHash('sha256')
   .slice(0, 12)
 
 emit('sw.js', serviceWorkerSource({ cache: cacheName(buildId), precache }))
+
+// The boot screen names the build it belongs to, so a report of "the site
+// is broken" arrives with the answer to "which copy of it?" already on
+// screen. Stamped after the id exists, which means index.html grows by
+// the difference between the placeholder and the id -- deterministic,
+// because vite rewrites dist/ from scratch on every build, so the input
+// to the hash above is always the placeholder length.
+emit('index.html', stampBuild(readFileSync(join(DIST, 'index.html'), 'utf8'), { buildId }))
 
 // ------------------------------------------------------------------ check
 

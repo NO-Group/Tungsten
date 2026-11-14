@@ -65,6 +65,26 @@ address, including `file://` — you just do not get the canonical link, the
 social card or the sitemap. `npm run domain` with no argument prints the
 current setting.
 
+## Which build am I looking at?
+
+The boot screen says, bottom-left of the plate:
+
+```
+VERSION 3.0.0    BUILD 7f5029389028    MELTS AT 3422 °C
+```
+
+The version comes from `package.json` and is stamped by a Vite plugin, so
+every build has it. The build id is the first twelve hex of a sha256 over
+the published file list, stamped by `scripts/build-web.mjs`, and it is the
+same id the service worker uses for its cache name (`tungsten-<id>`). So
+a screenshot of a stuck boot screen already answers "which deploy?" and
+"is the worker serving an old one?" — if the id on screen is not the id of
+the deploy you expect, you are looking at a cached shell, and **Clear
+cached app data** will fix it.
+
+Both read `dev` / `local` on the dev server, which is correct: there is no
+build to name.
+
 ## When the deployed site is stuck on the boot screen
 
 Work down this list; it is ordered by how often each one is the answer.

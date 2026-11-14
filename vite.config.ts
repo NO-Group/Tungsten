@@ -4,6 +4,7 @@ import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
 import { tungstenShell } from './server/shellPlugin.ts'
+import { stampBuild } from './src/web/site.ts'
 
 // package.json is the only place the version is written down; the About
 // dialog, the terminal banner and the installer all read it from here.
@@ -14,7 +15,20 @@ export default defineConfig({
   define: { __APP_VERSION__: JSON.stringify(version) },
   // The shell plugin gives the browser build a real PTY, the way the
   // desktop build gets one from Electron. Dev and preview only.
-  plugins: [react(), tungstenShell()],
+  plugins: [
+    react(),
+    tungstenShell(),
+    // The boot screen names the build it belongs to. Vite is the only
+    // part of the pipeline that always runs, so the version is stamped
+    // here; `scripts/build-web.mjs` adds the build id afterwards.
+    {
+      name: 'tungsten-boot-stamp',
+      transformIndexHtml: {
+        order: 'post' as const,
+        handler: (html: string) => stampBuild(html, { version }),
+      },
+    },
+  ],
   build: {
     target: 'es2022',
     chunkSizeWarningLimit: 4500,
