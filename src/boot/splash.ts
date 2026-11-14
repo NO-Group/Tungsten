@@ -15,6 +15,13 @@
  *  - The screen stays up for a minimum time. Not to pad the wait -- to stop
  *    a fast start flashing something illegible on screen for 80ms, which
  *    reads as a glitch rather than as a product.
+ *
+ * That minimum is a budget, not a target, and it is easy to spend too
+ * much of someone else's time with it. It is set to the shortest interval
+ * in which the mark finishes drawing and the wordmark finishes landing
+ * (see the animation delays in index.html), and not one frame longer. A
+ * boot screen that outstays the boot is the thing people mean when they
+ * call one lame.
  */
 
 /** The milestones, in the order they occur. Must match the markup. */
@@ -22,12 +29,19 @@ export const BOOT_STEPS = ['chrome', 'workbench', 'grammars', 'shell', 'blocks',
 
 export type BootStep = (typeof BOOT_STEPS)[number]
 
-/** How long the screen stays up at the very least. */
-export const MIN_VISIBLE_MS = 3200
+/**
+ * How long the screen stays up at the very least.
+ *
+ * Long enough for the intro in index.html to resolve -- the chevrons land
+ * at 0.89s and the wordmark at 0.86s -- and no longer. Anything beyond
+ * this is the product making the user wait for an animation it already
+ * finished, on every single load, for ever.
+ */
+export const MIN_VISIBLE_MS = 900
 /** …and how long when the machine has asked for less motion. */
 export const REDUCED_VISIBLE_MS = 700
 /** Matches the CSS transition, so the node is removed once it has faded. */
-export const FADE_MS = 560
+export const FADE_MS = 340
 /**
  * The failsafe.
  *
@@ -35,8 +49,13 @@ export const FADE_MS = 560
  * never reaches `finish` -- a failed chunk, a thrown effect -- a beautiful
  * boot screen becomes a beautiful wall. After this long it leaves anyway
  * and lets the user see whatever state the app did reach.
+ *
+ * It cannot cover the case where *this file* never loads, because then
+ * nothing here runs. That one belongs to the inline watchdog in
+ * index.html, which hands the screen over as soon as `createSplash`
+ * marks it.
  */
-export const MAX_VISIBLE_MS = 12000
+export const MAX_VISIBLE_MS = 9000
 
 export type SplashOptions = {
   document?: Document
@@ -67,6 +86,12 @@ export function createSplash(options: SplashOptions = {}): Splash {
 
   const root = doc?.getElementById('boot')
   if (!doc || !root) return ABSENT
+
+  // The watchdog in index.html is inline and classic, so it runs even
+  // when this file never arrives. This is how it knows it has: once the
+  // controller is attached the screen has an owner, and the watchdog
+  // stands down rather than talking over a start-up that is merely slow.
+  root.setAttribute('data-controller', 'on')
 
   const reduced = options.reducedMotion
     ?? Boolean(doc.defaultView?.matchMedia?.('(prefers-reduced-motion: reduce)')?.matches)

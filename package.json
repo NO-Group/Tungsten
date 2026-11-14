@@ -27,6 +27,7 @@
     "icon": "node scripts/prepare-icon.mjs",
     "web:icons": "node scripts/web-icons.mjs",
     "web:build": "node scripts/build-web.mjs",
+    "web:check": "node scripts/web-check.mjs",
     "web:serve": "node scripts/build-web.mjs && vite preview --host 0.0.0.0 --outDir dist",
     "domain": "node scripts/set-domain.mjs"
   },

@@ -21,6 +21,7 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative } from 'node:path'
 
+import { checkDeployment, describeProblems } from '../src/web/deployCheck.ts'
 import {
   buildHeaders,
   buildManifest,
@@ -111,6 +112,18 @@ const buildId = createHash('sha256')
 
 emit('sw.js', serviceWorkerSource({ cache: cacheName(buildId), precache }))
 
+// ------------------------------------------------------------------ check
+
+// Read back what was just written, the way a browser would read the
+// deployed site. A folder that cannot start should fail on the machine
+// that built it, not on the domain.
+const published = listFiles(DIST).map((file) => file.path)
+const problems = checkDeployment({
+  html: readFileSync(join(DIST, 'index.html'), 'utf8'),
+  files: published,
+  serviceWorker: readFileSync(join(DIST, 'sw.js'), 'utf8'),
+})
+
 // ----------------------------------------------------------------- report
 
 const total = files.reduce((sum, file) => sum + file.size, 0)
@@ -122,6 +135,14 @@ console.log('')
 console.log(`web: ${precache.length} files precached (${kb(precacheBytes(files))} on first visit);`)
 console.log(`     the remaining ${kb(total - precacheBytes(files))} is cached as it is used.`)
 console.log(`web: cache ${cacheName(buildId)}`)
+
+console.log('')
+console.log(describeProblems(problems))
+if (problems.some((problem) => problem.severity === 'fatal')) {
+  console.error('')
+  console.error('web: that folder would show the boot screen and stop. Not deployable.')
+  process.exit(1)
+}
 
 if (isValidDomain(site.domain)) {
   console.log('')

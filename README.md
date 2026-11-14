@@ -269,7 +269,11 @@ app; the web build is a folder of static files you can put on any host.
 npm run domain -- yourdomain.com   # once, after you buy the domain
 npm run web:build                  # dist/ is now a deployable site
 npm run web:serve                  # build it and serve it locally
+npm run web:check                  # re-read dist/ as a browser would
 ```
+
+Host settings, and what to do when a deployed site is stuck on the boot
+screen, are in **[docs/DEPLOYING.md](docs/DEPLOYING.md)**.
 
 The domain lives in `site.json`, along with the title, description and theme
 colour. It is the only file to edit, and everything derived from it — the
@@ -338,6 +342,15 @@ npx netlify deploy --prod --dir dist      # Netlify reads _headers and _redirect
 npx vercel deploy --prebuilt dist         # Vercel
 rsync -av --delete dist/ server:/var/www/tungsten/   # nginx, Caddy, anything
 ```
+
+On Cloudflare Pages the build command is `npm run web:build` and the output
+directory is **`dist`**. That second setting is the one worth checking twice:
+left blank, Pages publishes the repository, whose `index.html` loads
+`/src/main.tsx` — TypeScript that no browser can run and no static host will
+compile. The page paints the boot screen and stops there. `npm run web:build`
+now reads `dist/` back after writing it and fails rather than shipping a
+folder in that state, and the boot screen carries an inline watchdog that
+says what happened instead of spinning for ever.
 
 For a hand-rolled server the only rules that matter are the ones in
 `_headers`: serve `index.html` for unknown paths, never cache `index.html` or

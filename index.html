@@ -36,13 +36,23 @@
         color: #d5d9d5;
         font-family: 'DM Sans', Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
         overflow: hidden;
-        transition: opacity 560ms ease, transform 560ms ease, filter 560ms ease;
+        /*
+          No filter here. A blur on a full-screen layer is the most
+          expensive thing this file could ask for, and it would be asked
+          for at the exact moment React is mounting the workbench
+          underneath -- so the one frame the user judges the product on is
+          the one frame guaranteed to drop. Opacity and transform are
+          composited.
+        */
+        transition: opacity 340ms ease, transform 340ms cubic-bezier(0.3, 0, 0.2, 1);
+        will-change: opacity, transform;
       }
 
       #boot.done {
         opacity: 0;
-        transform: scale(1.06);
-        filter: blur(9px);
+        /* Pulling *in* rather than scaling up: the screen recedes to let
+           the workbench through, instead of lunging at the camera. */
+        transform: scale(0.985);
         pointer-events: none;
       }
 
@@ -94,7 +104,7 @@
         stroke-linejoin: round;
         stroke-dasharray: 420;
         stroke-dashoffset: 420;
-        animation: boot-draw 1.5s cubic-bezier(0.65, 0, 0.35, 1) forwards;
+        animation: boot-draw 620ms cubic-bezier(0.65, 0, 0.35, 1) forwards;
         filter: drop-shadow(0 1px 0 #383e38);
       }
 
@@ -102,12 +112,12 @@
         fill: none;
         stroke-dasharray: 130;
         stroke-dashoffset: 130;
-        animation: boot-draw 1.1s ease-out forwards;
+        animation: boot-draw 420ms ease-out forwards;
       }
 
       #boot .metal { stroke: #858c86; stroke-width: 2.4; stroke-linecap: round; }
-      #boot .strut:nth-of-type(1) { animation-delay: 0.8s; }
-      #boot .strut:nth-of-type(2) { animation-delay: 0.95s; }
+      #boot .strut:nth-of-type(1) { animation-delay: 0.34s; }
+      #boot .strut:nth-of-type(2) { animation-delay: 0.41s; }
 
       /* Then the chevrons arrive, lit. */
       #boot .chevron {
@@ -118,10 +128,10 @@
         stroke-linejoin: round;
         opacity: 0;
         filter: drop-shadow(0 0 8px #c8f16980);
-        animation: boot-light 700ms ease 1.15s forwards;
+        animation: boot-light 340ms ease 0.46s forwards;
       }
 
-      #boot .chevron.right { animation-delay: 1.3s; }
+      #boot .chevron.right { animation-delay: 0.55s; }
 
       @keyframes boot-light {
         from { opacity: 0; transform: scale(0.82); }
@@ -200,13 +210,16 @@
         font-size: 27px;
         font-weight: 600;
         letter-spacing: 0.34em;
+        /* The tracking is applied to the right of each letter, so without
+           this the block sits half a space off centre. */
+        margin-left: 0.34em;
         color: #f0f3ef;
       }
 
       #boot .wordmark span {
         opacity: 0;
         transform: translateY(9px);
-        animation: boot-letter 620ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
+        animation: boot-letter 380ms cubic-bezier(0.2, 0.8, 0.2, 1) forwards;
       }
 
       @keyframes boot-letter {
@@ -220,7 +233,7 @@
         letter-spacing: 0.22em;
         text-transform: uppercase;
         opacity: 0;
-        animation: boot-fade 700ms ease 1.5s forwards;
+        animation: boot-fade 360ms ease 0.52s forwards;
       }
 
       @keyframes boot-fade {
@@ -231,27 +244,63 @@
         position: relative;
         width: 330px;
         opacity: 0;
-        animation: boot-fade 600ms ease 0.7s forwards;
+        animation: boot-fade 320ms ease 0.3s forwards;
       }
 
       #boot .track {
-        height: 3px;
+        height: 4px;
         border-radius: 2px;
         background: #1d201d;
         overflow: hidden;
       }
 
       #boot .fill {
+        position: relative;
+        overflow: hidden;
         height: 100%;
         width: 4%;
         border-radius: 2px;
         background: linear-gradient(90deg, #8fae4b, #c8f169);
         box-shadow: 0 0 10px #c8f16980;
-        transition: width 420ms cubic-bezier(0.2, 0.8, 0.2, 1);
+        transition: width 300ms cubic-bezier(0.2, 0.8, 0.2, 1);
       }
 
+      /*
+        A highlight travelling along the filled part, so the bar still
+        reads as working during the pauses between milestones -- without
+        the width ever moving on its own, which would be the lie this
+        whole screen is built to avoid.
+      */
+      #boot .fill::after {
+        content: '';
+        position: absolute;
+        inset: 0;
+        background: linear-gradient(90deg, transparent, #f0f3ef2e, transparent);
+        background-size: 50% 100%;
+        background-repeat: no-repeat;
+        animation: boot-scan 1.4s ease-in-out infinite;
+      }
+
+      @keyframes boot-scan {
+        from { background-position: -60% 0; }
+        to { background-position: 160% 0; }
+      }
+
+      /*
+        Six milestones, one line.
+
+        This used to be a six-row checklist, which is a shape borrowed from
+        installers -- things that take minutes. Tungsten starts in under a
+        second, so the checklist spent its whole life being half-read: a
+        wall of text that ticked itself off faster than anyone could follow
+        and then vanished. The milestones are still all here and still all
+        honest; they are stacked and crossfaded, so the line reads as one
+        label that keeps changing rather than six that flicker.
+      */
       #boot .steps {
-        margin: 13px 0 0;
+        position: relative;
+        height: 15px;
+        margin: 14px 0 0;
         padding: 0;
         list-style: none;
         font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
@@ -259,25 +308,35 @@
       }
 
       #boot .steps li {
+        position: absolute;
+        inset: 0;
         display: flex;
         align-items: center;
         gap: 8px;
-        padding: 2px 0;
-        color: #5b615c;
-        transition: color 260ms ease;
+        color: #858c86;
+        opacity: 0;
+        transform: translateY(5px);
+        transition: opacity 220ms ease, transform 220ms ease;
       }
 
       #boot .steps li::before {
-        content: '○';
-        width: 10px;
+        content: '›';
         color: #383e38;
-        transition: color 260ms ease;
       }
 
-      #boot .steps li.active { color: #d5d9d5; }
-      #boot .steps li.active::before { content: '◌'; color: #68c3c8; animation: boot-spin 1.1s linear infinite; }
-      #boot .steps li.done { color: #858c86; }
-      #boot .steps li.done::before { content: '●'; color: #c8f169; }
+      #boot .steps li.active {
+        opacity: 1;
+        transform: none;
+        color: #d5d9d5;
+      }
+
+      #boot .steps li.active::before { color: #c8f169; }
+
+      /* A step that is done and not current has been superseded: the one
+         after it is the line now. */
+      #boot .steps li.done { opacity: 0; transform: translateY(-5px); }
+      #boot .steps li.done.active { opacity: 1; transform: none; }
+
       #boot .steps li .detail { margin-left: auto; color: #5b615c; }
 
       #boot .hint {
@@ -288,6 +347,46 @@
         letter-spacing: 0.08em;
       }
 
+      /* What the watchdog shows when the bundle never arrives. */
+      #boot .failed {
+        margin: 0;
+        color: #df756f;
+        font-family: 'JetBrains Mono', 'SFMono-Regular', Consolas, monospace;
+        font-size: 11px;
+        line-height: 1.6;
+        word-break: break-word;
+      }
+
+      #boot .failed-help {
+        margin: 10px 0 0;
+        color: #858c86;
+        font-size: 11px;
+        line-height: 1.6;
+      }
+
+      #boot .failed-actions {
+        display: flex;
+        gap: 8px;
+        margin-top: 16px;
+      }
+
+      #boot .failed-actions button {
+        padding: 7px 13px;
+        border: 1px solid #2b302b;
+        border-radius: 7px;
+        background: #c8f169;
+        color: #111311;
+        font: inherit;
+        font-size: 11px;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      #boot .failed-actions button.quiet {
+        background: #1d201d;
+        color: #d5d9d5;
+      }
+
       /*
         Someone who asked for less movement gets less movement, and gets it
         over with: no drift, no sheen, no strike, and the minimum time on
@@ -295,6 +394,7 @@
       */
       @media (prefers-reduced-motion: reduce) {
         #boot .grid, #boot .glow, #boot .sheen, #boot .bolt, #boot .ring { animation: none; }
+        #boot .fill::after { animation: none; opacity: 0; }
         #boot .shield, #boot .strut, #boot .chevron { animation-duration: 1ms; animation-delay: 0ms; }
         #boot .wordmark span, #boot .tagline, #boot .console { animation-duration: 1ms; animation-delay: 0ms; }
       }
@@ -328,14 +428,14 @@
       </div>
 
       <div class="wordmark" aria-hidden="true">
-        <span style="animation-delay: 0.62s">T</span>
-        <span style="animation-delay: 0.69s">U</span>
-        <span style="animation-delay: 0.76s">N</span>
-        <span style="animation-delay: 0.83s">G</span>
-        <span style="animation-delay: 0.90s">S</span>
-        <span style="animation-delay: 0.97s">T</span>
-        <span style="animation-delay: 1.04s">E</span>
-        <span style="animation-delay: 1.11s">N</span>
+        <span style="animation-delay: 0.24s">T</span>
+        <span style="animation-delay: 0.28s">U</span>
+        <span style="animation-delay: 0.31s">N</span>
+        <span style="animation-delay: 0.34s">G</span>
+        <span style="animation-delay: 0.38s">S</span>
+        <span style="animation-delay: 0.42s">T</span>
+        <span style="animation-delay: 0.45s">E</span>
+        <span style="animation-delay: 0.48s">N</span>
       </div>
       <p class="tagline">A rugged development environment</p>
 
@@ -353,6 +453,121 @@
 
       <p class="hint">Press Ctrl+Shift+P for the command palette</p>
     </div>
+
+    <!--
+      The watchdog.
+
+      The boot screen's own failsafe lives in src/boot/splash.ts, which is
+      inside the bundle -- so it covers a slow start and a crashed render,
+      and covers nothing at all when the bundle is the thing that failed.
+      That is the one case where a boot screen becomes a permanent wall:
+      the markup above paints with no JavaScript whatsoever, so a 404 on
+      the module below leaves it spinning for ever with no way to tell.
+
+      Hence this: inline, classic (not a module, so a browser that cannot
+      parse the bundle can still parse this), and deliberately ES5. It
+      stands down the moment the real controller attaches, and otherwise
+      says what went wrong in words somebody can act on.
+    -->
+    <script data-boot-watchdog>
+      (function () {
+        var DEADLINE_MS = 9000
+        var boot = document.getElementById('boot')
+        if (!boot) return
+
+        var reason = ''
+        var shown = false
+
+        function sentence(error) {
+          if (!error) return ''
+          if (error.target && error.target !== window && error.target.src) {
+            return 'The application bundle did not load: ' + error.target.src
+          }
+          return error.message ? 'The application failed while starting: ' + error.message : ''
+        }
+
+        function show(text) {
+          if (shown || !document.getElementById('boot')) return
+          shown = true
+          var console_ = boot.querySelector('.console')
+          var tagline = boot.querySelector('.tagline')
+          if (tagline) tagline.textContent = 'Could not start'
+          if (!console_) return
+
+          console_.innerHTML = ''
+          var said = document.createElement('p')
+          said.className = 'failed'
+          said.textContent = text || 'The application did not start, and did not say why.'
+          console_.appendChild(said)
+
+          var help = document.createElement('p')
+          help.className = 'failed-help'
+          help.textContent = text.indexOf('bundle') > -1
+            ? 'A file the page asked for was not served. If this is a fresh deployment, check that the host is publishing the build output (dist) rather than the repository.'
+            : 'Reloading is safe: nothing in the workspace is lost by it.'
+          console_.appendChild(help)
+
+          var row = document.createElement('div')
+          row.className = 'failed-actions'
+
+          var again = document.createElement('button')
+          again.type = 'button'
+          again.textContent = 'Try again'
+          again.onclick = function () { location.reload() }
+          row.appendChild(again)
+
+          var clear = document.createElement('button')
+          clear.type = 'button'
+          clear.className = 'quiet'
+          clear.textContent = 'Clear cached app data'
+          clear.onclick = function () {
+            clear.textContent = 'Clearing…'
+            var jobs = []
+            // A service worker holding yesterday's shell is the other way
+            // this screen stays up, and no amount of reloading fixes it.
+            if (navigator.serviceWorker && navigator.serviceWorker.getRegistrations) {
+              jobs.push(navigator.serviceWorker.getRegistrations().then(function (list) {
+                return Promise.all(list.map(function (one) { return one.unregister() }))
+              }))
+            }
+            if (window.caches && caches.keys) {
+              jobs.push(caches.keys().then(function (keys) {
+                return Promise.all(keys.map(function (key) { return caches.delete(key) }))
+              }))
+            }
+            Promise.all(jobs)['catch'](function () { return null }).then(function () { location.reload() })
+          }
+          row.appendChild(clear)
+
+          console_.appendChild(row)
+        }
+
+        // A resource that failed to load fires on the window in the
+        // capture phase only, which is why this listener is not `onerror`.
+        window.addEventListener('error', function (event) {
+          var said = sentence(event)
+          if (!said) return
+          reason = reason || said
+          // A missing bundle is final: there is nothing still coming.
+          if (event.target && event.target.src) show(reason)
+        }, true)
+
+        window.addEventListener('unhandledrejection', function (event) {
+          var error = event.reason
+          reason = reason || ('The application failed while starting: '
+            + ((error && error.message) || String(error)))
+        })
+
+        setTimeout(function () {
+          var still = document.getElementById('boot')
+          if (!still) return
+          // The controller attached, so the bundle is running and its own
+          // failsafe owns the screen from here.
+          if (still.getAttribute('data-controller') === 'on') return
+          show(reason)
+        }, DEADLINE_MS)
+      })()
+    </script>
 
     <script type="module" src="/src/main.tsx"></script>
   </body>

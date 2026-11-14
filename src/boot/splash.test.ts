@@ -11,7 +11,7 @@
 
 import { readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   BOOT_STEPS, FADE_MS, MAX_VISIBLE_MS, MIN_VISIBLE_MS, REDUCED_VISIBLE_MS, createSplash,
@@ -24,9 +24,24 @@ const html = readFileSync(resolve(process.cwd(), 'index.html'), 'utf8')
 
 /** The boot markup, lifted out of index.html so the test uses the real thing. */
 function mountRealMarkup() {
-  const body = /<div id="boot"[\s\S]*?<\/div>\s*<script/.exec(html)
-  document.body.innerHTML = (body ? body[0].replace(/<script$/, '') : '')
+  const body = /<div id="boot"[\s\S]*?<\/div>\s*<!--/.exec(html)
+  document.body.innerHTML = (body ? body[0].replace(/<!--$/, '') : '')
 }
+
+/**
+ * The inline watchdog from index.html, run for real.
+ *
+ * Extracted rather than reimplemented: the whole value of that script is
+ * that it is the one in the page, and a copy of it here would pass while
+ * the shipped one was broken.
+ */
+function runWatchdog() {
+  const source = /<script data-boot-watchdog>([\s\S]*?)<\/script>/.exec(html)?.[1]
+  if (!source) throw new Error('index.html has no boot watchdog')
+  new Function(source).call(window)
+}
+
+const failure = () => document.querySelector('#boot .failed')?.textContent ?? ''
 
 /** A clock the test drives by hand. */
 function harness(options: { reducedMotion?: boolean } = {}) {
@@ -89,6 +104,42 @@ describe('the boot screen markup', () => {
     expect(used.has(tokens.accent.base.toLowerCase())).toBe(true)
   })
 
+  it('does not hold the user longer than its own animation', () => {
+    // The floor exists so a fast start does not flash something
+    // illegible. It is not a stage wait: once the intro has resolved,
+    // every extra millisecond is the product wasting the user's time on
+    // every single load.
+    const delays = [...html.matchAll(/animation(?:-delay)?:[^;}"]*?([\d.]+)m?s[^;}"]*/g)]
+    const latest = [...html.matchAll(/animation: boot-(?:light|letter|fade) ([\d.]+)m?s[^;]*?([\d.]+)s/g)]
+      .map(([, duration, delay]) => Number(duration) * (duration.includes('.') ? 1000 : 1) + Number(delay) * 1000)
+    expect(delays.length).toBeGreaterThan(0)
+    expect(Math.max(...latest)).toBeLessThanOrEqual(MIN_VISIBLE_MS)
+    // …and the floor is close to it, rather than padded well past it.
+    expect(MIN_VISIBLE_MS).toBeLessThanOrEqual(1200)
+  })
+
+  it('fades for exactly as long as the stylesheet says it does', () => {
+    // The node is removed on a timer, so a shorter CSS transition leaves
+    // a dead layer over the workbench and a longer one cuts the fade off.
+    const transition = /#boot \{[\s\S]*?transition: opacity (\d+)ms/.exec(html)?.[1]
+    expect(Number(transition)).toBe(FADE_MS)
+  })
+
+  it('does not blur a full-screen layer while the workbench mounts', () => {
+    // The one frame the product is judged on is the frame React mounts;
+    // a filter on a viewport-sized element is the surest way to drop it.
+    const rule = /#boot\.done \{[\s\S]*?\}/.exec(html)?.[0] ?? ''
+    expect(rule).not.toContain('filter:')
+  })
+
+  it('shows one milestone at a time rather than a six-row checklist', () => {
+    // The steps are stacked and crossfaded. If they ever go back to being
+    // laid out in flow, six lines will flicker past in under a second.
+    const rule = /#boot \.steps li \{[\s\S]*?\}/.exec(html)?.[0] ?? ''
+    expect(rule).toContain('position: absolute')
+    expect(rule).toContain('opacity: 0')
+  })
+
   it('asks for less movement when the machine does', () => {
     expect(html).toContain('prefers-reduced-motion: reduce')
   })
@@ -96,6 +147,64 @@ describe('the boot screen markup', () => {
   it('announces itself to a screen reader', () => {
     expect(boot()?.getAttribute('role')).toBe('status')
     expect(boot()?.getAttribute('aria-live')).toBe('polite')
+  })
+})
+
+describe('the boot watchdog', () => {
+  // The screen's own failsafe lives in the bundle, so it covers a slow
+  // start and a crashed render -- and covers nothing when the bundle is
+  // what failed. That is the case that leaves a boot screen up for ever,
+  // and the only code that can speak to it is inline in the page.
+  beforeEach(() => { vi.useFakeTimers() })
+  afterEach(() => { vi.useRealTimers() })
+
+  it('is a classic script, because a module cannot report a module failing', () => {
+    const tag = /<script data-boot-watchdog[^>]*>/.exec(html)?.[0] ?? ''
+    expect(tag).not.toContain('type="module"')
+    expect(html.indexOf('data-boot-watchdog')).toBeLessThan(html.indexOf('src="/src/main.tsx"'))
+  })
+
+  it('says so when the bundle never loaded, rather than spinning for ever', () => {
+    runWatchdog()
+    expect(failure()).toBe('')
+
+    vi.advanceTimersByTime(9000)
+    expect(failure()).toContain('did not start')
+    // And offers the two things that actually help.
+    const buttons = [...document.querySelectorAll('#boot .failed-actions button')]
+    expect(buttons.map((button) => button.textContent))
+      .toEqual(['Try again', 'Clear cached app data'])
+  })
+
+  it('names the file that 404d, and does not wait to say it', () => {
+    runWatchdog()
+    const script = document.createElement('script')
+    script.src = 'https://tungsten.example/src/main.tsx'
+    document.body.append(script)
+    script.dispatchEvent(new Event('error', { bubbles: false }))
+
+    // A missing bundle is final: nothing else is coming, so there is
+    // nothing to wait for.
+    expect(failure()).toContain('https://tungsten.example/src/main.tsx')
+    expect(document.querySelector('#boot .failed-help')?.textContent)
+      .toContain('publishing the build output')
+  })
+
+  it('stands down the moment the real controller attaches', () => {
+    runWatchdog()
+    harness()
+    vi.advanceTimersByTime(60_000)
+    // A slow start is not a failed one, and two things talking over each
+    // other on the same screen is worse than either.
+    expect(failure()).toBe('')
+    expect(boot()?.getAttribute('data-controller')).toBe('on')
+  })
+
+  it('says nothing at all once the screen has been taken away', () => {
+    runWatchdog()
+    document.getElementById('boot')?.remove()
+    vi.advanceTimersByTime(60_000)
+    expect(document.querySelector('.failed')).toBeNull()
   })
 })
 
